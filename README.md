@@ -23,10 +23,10 @@ Every stage writes a file under `data/books/<book_id>/`, every file is inspectab
 
 ## Setup
 
-Python 3.11 or newer.
+Python 3.11, 3.12 or 3.13. Not 3.14 yet: torch and onnxruntime (a chatterbox-tts dependency) don't have wheels for it at the time of writing, and the failure is silent rather than a clear install error — `chatterbox-tts` installs fine, then crashes on the first render with `'NoneType' object is not callable` deep inside a watermarking dependency. If `python3 --version` on your machine already says 3.14, install an older one first (`uv python install 3.12`) and point `uv venv` at it, as below.
 
 ```bash
-uv venv .venv && source .venv/bin/activate
+uv venv --python 3.12 .venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 cp .env.example .env        # fill in ANTHROPIC_API_KEY; the rest is optional
 ```

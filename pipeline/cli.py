@@ -175,19 +175,38 @@ def doctor():
     """Show the platform profile and which optional pieces are installed (run this first on a new machine)."""
     import importlib
     import shutil
+    import sys
 
     settings = state["settings"]
+    if sys.version_info >= (3, 14):
+        typer.echo(
+            f"  WARNING: running on Python {sys.version_info.major}.{sys.version_info.minor}. torch and "
+            "onnxruntime (a chatterbox-tts dependency, used for watermarking) commonly lag new Python "
+            "releases by months and fail to import silently on a version they don't ship wheels for. If "
+            "chatterbox crashes with something like \"'NoneType' object is not callable\" in perth, "
+            "recreate the venv on 3.11-3.13, e.g.:\n"
+            "    uv python install 3.12 && uv venv --python 3.12 .venv && source .venv/bin/activate && "
+            'uv pip install -e ".[dev,mac]"'
+        )
     typer.echo("profile:")
     for k, v in settings.profile().items():
         typer.echo(f"  {k}: {v}")
     typer.echo("packages:")
-    for name in ("torch", "chatterbox", "piper", "faster_whisper", "whisperx", "mlx_whisper", "soxr", "pyloudnorm"):
+    for name in ("torch", "chatterbox", "perth", "piper", "faster_whisper", "whisperx", "mlx_whisper", "soxr", "pyloudnorm"):
         try:
             mod = importlib.import_module(name)
             version = getattr(mod, "__version__", "")
             typer.echo(f"  {name}: ok {version}")
         except Exception as exc:  # noqa: BLE001
             typer.echo(f"  {name}: missing ({type(exc).__name__})")
+    try:
+        import perth  # type: ignore
+
+        if getattr(perth, "PerthImplicitWatermarker", None) is None:
+            typer.echo("  WARNING: perth.PerthImplicitWatermarker is None - its onnxruntime import failed "
+                      "silently (see the Python version note above). Chatterbox will crash on first render.")
+    except Exception:  # noqa: BLE001
+        pass
     try:
         import torch  # type: ignore
 

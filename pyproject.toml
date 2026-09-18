@@ -7,7 +7,7 @@ name = "studiepodcast"
 version = "0.1.0"
 description = "Turn a Dutch study book (PDF) into a podcast series with a recurring cast."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 dependencies = [
     "pymupdf>=1.24",
