@@ -32,11 +32,13 @@ async function loadBooks() {
 }
 
 async function openBook(bookId) {
+  if (bookId !== state.book) {
+    state.chapter = null;
+    $("#chapter-panel").hidden = true;
+  }
   state.book = bookId;
-  state.chapter = null;
   const s = await api.get(`/api/books/${bookId}`);
   $("#book-panel").hidden = false;
-  $("#chapter-panel").hidden = true;
   $("#book-title").textContent = `${s.title || bookId} (structuur: ${s.structure_method || "-"}, lexicon: ${s.glossary_entries})`;
   const tbody = $("#chapters tbody");
   tbody.innerHTML = "";
