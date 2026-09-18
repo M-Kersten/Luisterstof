@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Secrets and local config
+.env
+
+# Generated book data (PDFs, plans, scripts, renders). Keep the folder, not the contents.
+data/books/*
+!data/books/.gitkeep
+data/auditions/
+data/jobs.sqlite*
+
+# Voice references and stings are personal audio, never committed.
+cast/refs/*
+!cast/refs/.gitkeep
+cast/stings/*
+!cast/stings/.gitkeep
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store

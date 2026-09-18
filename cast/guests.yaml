@@ -1,0 +1,36 @@
+# Kleine poule van terugkerende experts. Een gast wordt gekozen op domein.
+# Vaste voice ids houden een expert herkenbaar over afleveringen heen.
+guests:
+  - id: hanna_vos
+    name: Hanna Vos
+    domains: ["statistiek", "kansrekening", "data-analyse", "econometrie", "wiskunde"]
+    voice_id_final: ""
+    voice_id_draft: "nl_BE-nathalie-medium"
+    voice_ref: "refs/hanna_vos.wav"
+    persona: >-
+      Hoogleraar die alles terugbrengt tot één voorbeeld met dobbelstenen.
+      Geduldig, licht formeel, corrigeert vriendelijk en laat stiltes vallen.
+    tic_markers: []
+    exaggeration: 0.35
+  - id: ruben_bakker
+    name: Ruben Bakker
+    domains: ["informatica", "algoritmen", "machine learning", "programmeren", "software"]
+    voice_id_final: ""
+    voice_id_draft: "nl_BE-rdh-medium"
+    voice_ref: "refs/ruben_bakker.wav"
+    persona: >-
+      Ontwikkelaar die twintig jaar productiesystemen bouwde. Praat in
+      voorbeelden uit echte projecten en wordt ongeduldig van theorie zonder code.
+    tic_markers: []
+    exaggeration: 0.45
+  - id: sam_de_wit
+    name: Sam de Wit
+    domains: []
+    voice_id_final: ""
+    voice_id_draft: "nl_BE-nathalie-medium"
+    voice_ref: "refs/sam_de_wit.wav"
+    persona: >-
+      Vakexpert op afroep, de gast die wordt gebeld als niemand anders past.
+      Praat kort, met voorbeelden uit de praktijk, en zegt eerlijk wat onzeker is.
+    tic_markers: []
+    exaggeration: 0.4

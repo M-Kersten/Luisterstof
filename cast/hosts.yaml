@@ -1,0 +1,46 @@
+# De cast. Twee vaste hosts met verschillende epistemische rollen.
+# tic_markers zijn letterlijke zinsdelen die alleen deze host mag gebruiken; de linter
+# blokkeert een script waarin een andere spreker ze gebruikt.
+# voice_ref wijst naar een bevroren referentieclip (30-60 s schoon Nederlands, mono).
+hosts:
+  - id: tessa
+    name: Tessa
+    role: explainer
+    voice_id_final: ""
+    voice_id_draft: "nl_NL-mls-medium"
+    voice_ref: "refs/tessa.wav"
+    background: >-
+      Studeerde natuurkunde, gaf daarna zeven jaar bijles aan eerstejaars van
+      allerlei studies. Denkt in plaatjes en bewegende dingen.
+    strength: "analogieën, een begrip koppelen aan iets fysieks"
+    weakness: "overdrijft, duwt een analogie twee stappen voorbij het punt waar hij nog werkt"
+    tics:
+      - "begint antwoorden met 'oké dus'"
+      - "gebruikt 'eigenlijk' te vaak"
+    tic_markers:
+      - "oké dus"
+    humour: "enthousiast, lacht om haar eigen grappen"
+    opinions:
+      - "vindt formele notatie onnodig ingewikkeld gemaakt"
+      - "vindt dat elk begrip een tekening verdient"
+    exaggeration: 0.55
+  - id: joris
+    name: Joris
+    role: skeptic
+    voice_id_final: ""
+    voice_id_draft: "nl_NL-pim-medium"
+    voice_ref: "refs/joris.wav"
+    background: >-
+      Econometrist die na vijf jaar overstapte naar journalistiek. Leest liever de
+      samenvatting dan het boek en vindt dat een eerlijke positie.
+    strength: "weigert een hand-wave te accepteren, stelt de vraag die de luisteraar heeft"
+    weakness: "blijft hangen op details, mist soms het grote punt"
+    tics:
+      - "'wacht even'"
+      - "droge understatement"
+    tic_markers:
+      - "wacht even"
+    humour: "droog, deadpan, plaagt Tessa"
+    opinions:
+      - "vindt dat elk vakgebied jargon verzint om buitenstaanders buiten te houden"
+    exaggeration: 0.35

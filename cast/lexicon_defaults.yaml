@@ -1,0 +1,31 @@
+# Standaard lexicon dat elk boek erft. Per boek aangevuld door de lexiconfase.
+# kind: loanword_en | notation | abbreviation. lock: true betekent dat de spelling vaststaat.
+entries:
+  - { surface: "bijv.", kind: abbreviation, spoken: "bijvoorbeeld", lock: true }
+  - { surface: "bv.", kind: abbreviation, spoken: "bijvoorbeeld", lock: true }
+  - { surface: "m.b.t.", kind: abbreviation, spoken: "met betrekking tot", lock: true }
+  - { surface: "o.a.", kind: abbreviation, spoken: "onder andere", lock: true }
+  - { surface: "d.w.z.", kind: abbreviation, spoken: "dat wil zeggen", lock: true }
+  - { surface: "i.p.v.", kind: abbreviation, spoken: "in plaats van", lock: true }
+  - { surface: "t.o.v.", kind: abbreviation, spoken: "ten opzichte van", lock: true }
+  - { surface: "m.a.w.", kind: abbreviation, spoken: "met andere woorden", lock: true }
+  - { surface: "e.d.", kind: abbreviation, spoken: "en dergelijke", lock: true }
+  - { surface: "enz.", kind: abbreviation, spoken: "enzovoort", lock: true }
+  - { surface: "etc.", kind: abbreviation, spoken: "etcetera", lock: true }
+  - { surface: "ca.", kind: abbreviation, spoken: "circa", lock: true }
+  - { surface: "resp.", kind: abbreviation, spoken: "respectievelijk", lock: true }
+  - { surface: "zgn.", kind: abbreviation, spoken: "zogenaamde", lock: true }
+  - { surface: "z.g.n.", kind: abbreviation, spoken: "zogenaamde", lock: true }
+  - { surface: "e.g.", kind: abbreviation, spoken: "bijvoorbeeld", lock: true }
+  - { surface: "i.e.", kind: abbreviation, spoken: "dat wil zeggen", lock: true }
+  - { surface: "vs.", kind: abbreviation, spoken: "versus", lock: true }
+  - { surface: "t.a.v.", kind: abbreviation, spoken: "ten aanzien van", lock: true }
+  - { surface: "n.a.v.", kind: abbreviation, spoken: "naar aanleiding van", lock: true }
+  - { surface: "o.b.v.", kind: abbreviation, spoken: "op basis van", lock: true }
+  - { surface: "a.d.h.v.", kind: abbreviation, spoken: "aan de hand van", lock: true }
+  - { surface: "%", kind: notation, spoken: " procent", lock: true }
+  - { surface: "≈", kind: notation, spoken: " ongeveer ", lock: true }
+  - { surface: "≤", kind: notation, spoken: " kleiner dan of gelijk aan ", lock: true }
+  - { surface: "≥", kind: notation, spoken: " groter dan of gelijk aan ", lock: true }
+  - { surface: "→", kind: notation, spoken: " leidt tot ", lock: true }
+  - { surface: "×", kind: notation, spoken: " keer ", lock: true }

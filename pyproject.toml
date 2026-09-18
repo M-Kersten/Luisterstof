@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "studiepodcast"
+version = "0.1.0"
+description = "Turn a Dutch study book (PDF) into a podcast series with a recurring cast."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pymupdf>=1.24",
+    "pydantic>=2.6",
+    "pyyaml>=6",
+    "anthropic>=1.0",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "pyloudnorm>=0.1",
+    "rapidfuzz>=3",
+    "typer>=0.12",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Local synthesis tier. Installed separately because torch pulls a CUDA build.
+local = [
+    "chatterbox-tts",
+    "faster-whisper>=1.0",
+    "whisperx",
+    "piper-tts",
+]
+dev = [
+    "pytest>=8",
+    "pytest-cov",
+    "ruff",
+]
+
+[project.scripts]
+studiepodcast = "pipeline.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["app*", "pipeline*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]

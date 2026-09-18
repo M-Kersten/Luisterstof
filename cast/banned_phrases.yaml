@@ -1,0 +1,66 @@
+# Lint-regels voor de scriptfase. Nul tolerantie: één treffer blokkeert de premium render.
+# phrases: letterlijke zinsdelen, hoofdletterongevoelig, na normalisatie van witruimte.
+# patterns: reguliere expressies (hoofdletterongevoelig). severity: blocking | warning.
+phrases:
+  - "dat is echt fascinerend"
+  - "fascinerend"
+  - "goede vraag"
+  - "goeie vraag"
+  - "geweldige vraag"
+  - "uitstekende vraag"
+  - "laten we eens duiken in"
+  - "laten we duiken in"
+  - "duiken we in"
+  - "diep duiken"
+  - "deep dive"
+  - "aan het eind van de dag"
+  - "aan het einde van de dag"
+  - "welkom bij"
+  - "welkom terug"
+  - "in deze aflevering"
+  - "vandaag gaan we het hebben over"
+  - "vandaag hebben we het over"
+  - "dat is een interessante"
+  - "interessant punt"
+  - "super interessant"
+  - "heel interessant"
+  - "wat een reis"
+  - "game changer"
+  - "gamechanger"
+  - "het mooie is"
+  - "laten we het even samenvatten"
+  - "om het samen te vatten"
+  - "samengevat"
+  - "samenvattend"
+  - "kortom"
+  - "dus wat hebben we geleerd"
+  - "wat hebben we vandaag geleerd"
+  - "als we terugkijken"
+  - "even recapituleren"
+  - "de takeaway"
+  - "take-away"
+  - "belangrijkste inzicht"
+  - "ontrafelen"
+  - "de essentie is"
+  - "in essentie"
+  - "in een notendop"
+  - "dat brengt ons bij"
+  - "dat brengt ons naadloos"
+  - "zonder verder oponthoud"
+  - "zoals we allemaal weten"
+  - "het is belangrijk om te onthouden"
+  - "het is belangrijk om te benadrukken"
+  - "essentieel om te begrijpen"
+  - "cruciaal om te begrijpen"
+  - "tot de volgende keer"
+  - "bedankt voor het luisteren"
+patterns:
+  - name: summary_opener
+    severity: blocking
+    regex: '^\s*(dus|oké|ok|nou|goed)?[,.]?\s*(samengevat|samenvattend|kortom|om (het|dit|alles) (even )?samen te vatten|wat we (dus |nu )?(hebben )?geleerd (hebben)?|als (we|ik) (het )?even (terug|samen)\w*)'
+  - name: not_x_but_y
+    severity: warning
+    regex: '\bniet\s+(alleen\s+)?\w+(\s+\w+){0,4},?\s+maar\s+(ook\s+)?\w+'
+  - name: three_part_flourish
+    severity: warning
+    regex: '\b(\w{3,}),\s+(\w{3,})\s+en\s+(\w{3,})[.!?]'
