@@ -149,8 +149,9 @@ def status(book_id: Annotated[str | None, typer.Argument()] = None):
 
 
 @app.command()
-def audition(text_file: Path, ref: list[str], out_dir: Path = Path("data/auditions"),
-             exaggerations: str = "0.3,0.5,0.7", verify: bool = True):
+def audition(text_file: Path,
+             ref: Annotated[list[str], typer.Option(help="name=path.wav, repeatable, e.g. --ref tessa=cast/refs/tessa.wav")],
+             out_dir: Path = Path("data/auditions"), exaggerations: str = "0.3,0.5,0.7", verify: bool = True):
     """M0: render one real paragraph with each reference voice (name=path.wav) before building anything."""
     from pipeline.audio.asr import make_transcriber
     from pipeline.audio.audition import audition as run_audition
