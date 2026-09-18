@@ -1,12 +1,19 @@
 """Speech recognition (verification) and forced alignment (word timestamps).
 
-faster-whisper stays resident for the take-selection loop; WhisperX gives the
-word onsets the timeline needs for interrupts and backchannels. Both have
-fakes so the timeline math is testable without models.
+Two backends:
+
+* ``faster`` (CUDA box): faster-whisper stays resident for the take-selection
+  loop; WhisperX forced alignment gives the word onsets the timeline needs.
+* ``mlx`` (Apple Silicon): MLX Whisper transcribes on the GPU and returns word
+  timestamps in the same pass; the accepted take's timestamps are matched onto
+  the script tokens, so no second model is needed for alignment.
+
+Both have fakes so the timeline math is testable without models.
 """
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from collections.abc import Callable
@@ -74,11 +81,16 @@ class WhisperXAligner:
         self._metadata = None
         self.fallback = fallback or UniformAligner()
 
+    @property
+    def device(self) -> str:
+        # wav2vec2 alignment is cheap; only CUDA is worth the trouble, everything else runs on cpu.
+        return "cuda" if self.settings.device.startswith("cuda") else "cpu"
+
     def _load(self):
         if self._model is None:
             import whisperx  # type: ignore
 
-            self._model, self._metadata = whisperx.load_align_model(language_code="nl", device=self.settings.device)
+            self._model, self._metadata = whisperx.load_align_model(language_code="nl", device=self.device)
         return self._model, self._metadata
 
     def align(self, clip: AudioClip, text: str, language: str = "nl") -> list[WordTiming]:
@@ -88,38 +100,138 @@ class WhisperXAligner:
             model, metadata = self._load()
             audio = to_16k(clip)
             segments = [{"text": text, "start": 0.0, "end": clip.duration_s}]
-            result = whisperx.align(segments, model, metadata, audio, self.settings.device, return_char_alignments=False)
+            result = whisperx.align(segments, model, metadata, audio, self.device, return_char_alignments=False)
             words = []
             for w in result.get("word_segments", []):
                 if "start" in w and "end" in w:
                     words.append(WordTiming(str(w.get("word", "")), float(w["start"]), float(w["end"])))
             if words:
-                return _fill_missing(words, text, clip.duration_s)
+                return match_words_to_text(tokenize(text), words, clip.duration_s)
         except Exception as exc:
             log.warning("whisperx alignment failed, using uniform fallback: %s", exc)
         return self.fallback.align(clip, text, language)
 
 
-def _fill_missing(words: list[WordTiming], text: str, duration: float) -> list[WordTiming]:
-    """WhisperX skips words it cannot align (numbers, symbols). Interpolate them."""
-    tokens = tokenize(text)
-    if len(words) >= len(tokens):
-        return words
-    aligned = {w.word.casefold().strip(".,;:!?"): w for w in words}
+# ---------------------------------------------------------------------------
+# MLX Whisper (Apple Silicon)
+# ---------------------------------------------------------------------------
+
+def _asr_words_to_meta(words: list[WordTiming]) -> list[list]:
+    return [[w.word, round(w.start, 4), round(w.end, 4)] for w in words]
+
+
+def asr_words_from_meta(raw: object) -> list[WordTiming] | None:
+    if not isinstance(raw, list):
+        return None
+    try:
+        return [WordTiming(str(w[0]), float(w[1]), float(w[2])) for w in raw]
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+class MlxWhisperTranscriber:
+    """Whisper on the Apple GPU via MLX. Word timestamps ride along in ``clip.meta['asr_words']``."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.model = settings.mlx_whisper_model
+
+    def transcribe(self, clip: AudioClip, language: str = "nl") -> str:
+        import mlx_whisper  # type: ignore
+
+        result = mlx_whisper.transcribe(
+            to_16k(clip), path_or_hf_repo=self.model, language=language, word_timestamps=True,
+            condition_on_previous_text=False,
+        )
+        words: list[WordTiming] = []
+        for seg in result.get("segments", []):
+            for w in seg.get("words", []) or []:
+                if "start" in w and "end" in w:
+                    words.append(WordTiming(str(w.get("word", "")).strip(), float(w["start"]), float(w["end"])))
+        if words:
+            clip.meta["asr_words"] = _asr_words_to_meta(words)
+        return str(result.get("text", "")).strip()
+
+
+class MlxWhisperAligner:
+    """Uses the word timestamps of the accepted take (already transcribed by the take loop).
+
+    Falls back to a fresh MLX transcription when the clip carries none, and to
+    uniform spacing when no model is available.
+    """
+
+    def __init__(self, settings: Settings, fallback: Aligner | None = None):
+        self.settings = settings
+        self.fallback = fallback or UniformAligner()
+        self._transcriber: MlxWhisperTranscriber | None = None
+
+    def align(self, clip: AudioClip, text: str, language: str = "nl") -> list[WordTiming]:
+        words = asr_words_from_meta(clip.meta.get("asr_words"))
+        if words is None:
+            try:
+                self._transcriber = self._transcriber or MlxWhisperTranscriber(self.settings)
+                self._transcriber.transcribe(clip, language)
+                words = asr_words_from_meta(clip.meta.get("asr_words"))
+            except Exception as exc:
+                log.warning("mlx alignment failed, using uniform fallback: %s", exc)
+        if not words:
+            return self.fallback.align(clip, text, language)
+        return match_words_to_text(tokenize(text), words, clip.duration_s)
+
+
+def _norm_token(word: str) -> str:
+    return re.sub(r"[^\w]", "", word.casefold())
+
+
+def match_words_to_text(tokens: list[str], asr_words: list[WordTiming], duration: float) -> list[WordTiming]:
+    """Map script tokens onto ASR word timings.
+
+    Matched tokens take the recogniser's times; substituted runs of equal length
+    are assumed one-to-one (a misheard word still has an onset); anything else
+    is interpolated between the nearest anchors, weighted by token length.
+    """
+    if not tokens:
+        return []
+    if not asr_words:
+        return UniformAligner().align(AudioClip.silence(duration, 100), " ".join(tokens))
+    a = [_norm_token(t) for t in tokens]
+    b = [_norm_token(w.word) for w in asr_words]
+    matched: list[WordTiming | None] = [None] * len(tokens)
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        if tag == "equal" or (tag == "replace" and (i2 - i1) == (j2 - j1)):
+            for k in range(i2 - i1):
+                src = asr_words[j1 + k]
+                matched[i1 + k] = WordTiming(tokens[i1 + k], src.start, src.end)
+    # Enforce monotonic anchors; drop any that run backwards.
+    last_end = -1.0
+    for i, w in enumerate(matched):
+        if w is not None:
+            if w.start < last_end - 0.05:
+                matched[i] = None
+            else:
+                last_end = w.end
     out: list[WordTiming] = []
-    last_end = 0.0
-    for i, tok in enumerate(tokens):
-        w = aligned.get(tok.casefold().strip(".,;:!?"))
-        if w is not None and w.start >= last_end - 0.05:
-            out.append(w)
-            last_end = w.end
-        else:
-            remaining = len(tokens) - i
-            nxt = next((x for x in words if x.start > last_end), None)
-            horizon = nxt.start if nxt else duration
-            step = max(0.05, (horizon - last_end) / max(1, remaining))
-            out.append(WordTiming(tok, last_end, min(duration, last_end + step)))
-            last_end = min(duration, last_end + step)
+    i = 0
+    n = len(tokens)
+    while i < n:
+        if matched[i] is not None:
+            out.append(matched[i])  # type: ignore[arg-type]
+            i += 1
+            continue
+        j = i
+        while j < n and matched[j] is None:
+            j += 1
+        start = out[-1].end if out else (asr_words[0].start if i == 0 else 0.0)
+        end = matched[j].start if j < n else max(start + 0.05 * (j - i), min(duration, asr_words[-1].end))  # type: ignore[union-attr]
+        end = max(end, start + 0.05 * (j - i))
+        weights = [len(tokens[k]) + 1.0 for k in range(i, j)]
+        total = sum(weights)
+        cursor = start
+        for k, w in zip(range(i, j), weights, strict=True):
+            width = (end - start) * w / total
+            out.append(WordTiming(tokens[k], cursor, cursor + width * 0.9))
+            cursor += width
+        i = j
     return out
 
 
@@ -179,8 +291,16 @@ class EchoTranscriber:
 
 
 def make_transcriber(settings: Settings, fake: bool = False) -> Transcriber:
-    return EchoTranscriber() if fake else FasterWhisperTranscriber(settings)
+    if fake:
+        return EchoTranscriber()
+    if settings.whisper_backend == "mlx":
+        return MlxWhisperTranscriber(settings)
+    return FasterWhisperTranscriber(settings)
 
 
 def make_aligner(settings: Settings, fake: bool = False) -> Aligner:
-    return UniformAligner() if fake else WhisperXAligner(settings)
+    if fake:
+        return UniformAligner()
+    if settings.whisper_backend == "mlx":
+        return MlxWhisperAligner(settings)
+    return WhisperXAligner(settings)

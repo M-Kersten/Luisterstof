@@ -218,6 +218,36 @@ class PiperSynth:
 # Chatterbox Multilingual (final tier)
 # ---------------------------------------------------------------------------
 
+def resolve_torch_device(requested: str) -> str:
+    """Pick cuda, mps or cpu from the request and what torch can actually see.
+
+    On Apple Silicon this also enables the CPU fallback for the few ops Metal
+    lacks and makes checkpoints saved on CUDA load onto the local device.
+    """
+    if requested.startswith("mps"):
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    import torch  # type: ignore
+
+    device = requested
+    if requested.startswith("cuda") and not torch.cuda.is_available():
+        log.warning("CUDA requested but not available; falling back to cpu")
+        device = "cpu"
+    if requested.startswith("mps") and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        log.warning("MPS requested but not available; falling back to cpu")
+        device = "cpu"
+    if not device.startswith("cuda") and not getattr(torch.load, "_studiepodcast_patched", False):
+        original = torch.load
+        target = torch.device(device)
+
+        def patched_load(*args, **kwargs):
+            kwargs.setdefault("map_location", target)
+            return original(*args, **kwargs)
+
+        patched_load._studiepodcast_patched = True  # type: ignore[attr-defined]
+        torch.load = patched_load
+    return device
+
+
 class ChatterboxSynth:
     name = "chatterbox"
     deterministic = False
@@ -228,24 +258,28 @@ class ChatterboxSynth:
         self.cfg_weight = cfg_weight
         self._model = None
         self.sample_rate = 24000
+        self.device = settings.device
 
     def _load(self):
         if self._model is None:
+            self.device = resolve_torch_device(self.settings.device)
             from chatterbox.mtl_tts import ChatterboxMultilingualTTS  # type: ignore
 
-            self._model = ChatterboxMultilingualTTS.from_pretrained(device=self.settings.device)
+            self._model = ChatterboxMultilingualTTS.from_pretrained(device=self.device)
             self.sample_rate = int(getattr(self._model, "sr", 24000))
         return self._model
 
     def render(self, text: str, voice: VoiceSpec, *, exaggeration: float, seed: int) -> AudioClip:
+        model = self._load()
         import torch  # type: ignore
 
-        model = self._load()
         if voice.ref_path is None or not Path(voice.ref_path).is_file():
             raise FileNotFoundError(f"reference clip missing for {voice.speaker_id}: {voice.ref_path}")
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+        if self.device == "mps" and hasattr(torch, "mps"):
+            torch.mps.manual_seed(seed)
         wav = model.generate(
             text,
             language_id=self.language_id,

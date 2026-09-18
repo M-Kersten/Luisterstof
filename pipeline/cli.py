@@ -170,6 +170,48 @@ def audition(text_file: Path, ref: list[str], out_dir: Path = Path("data/auditio
 
 
 @app.command()
+def doctor():
+    """Show the platform profile and which optional pieces are installed (run this first on a new machine)."""
+    import importlib
+    import shutil
+
+    settings = state["settings"]
+    typer.echo("profile:")
+    for k, v in settings.profile().items():
+        typer.echo(f"  {k}: {v}")
+    typer.echo("packages:")
+    for name in ("torch", "chatterbox", "piper", "faster_whisper", "whisperx", "mlx_whisper", "soxr", "pyloudnorm"):
+        try:
+            mod = importlib.import_module(name)
+            version = getattr(mod, "__version__", "")
+            typer.echo(f"  {name}: ok {version}")
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"  {name}: missing ({type(exc).__name__})")
+    try:
+        import torch  # type: ignore
+
+        mps = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+        typer.echo(f"torch devices: cuda={torch.cuda.is_available()} mps={mps}")
+    except Exception:  # noqa: BLE001
+        typer.echo("torch devices: torch not installed")
+    typer.echo(f"piper binary: {shutil.which(settings.piper_bin) or 'not on PATH (python package is enough)'}")
+    voices = sorted(p.stem for p in settings.piper_voices_dir.glob("*.onnx")) if settings.piper_voices_dir.exists() else []
+    typer.echo(f"piper voices in {settings.piper_voices_dir}: {', '.join(voices) or 'none'}")
+    from pipeline.script.cast import load_cast
+
+    try:
+        cast = load_cast(settings.cast_dir)
+        for sp in list(cast.hosts) + list(cast.guests):
+            ref = settings.cast_dir / sp.voice_ref if sp.voice_ref else None
+            typer.echo(f"  ref {sp.id}: {'ok' if ref and ref.is_file() else 'missing'} ({ref})")
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"cast: {exc}")
+    typer.echo(f"keys: anthropic={'set' if settings.anthropic_api_key else 'missing'} elevenlabs={'set' if settings.elevenlabs_api_key else 'missing'}")
+    stings = [p.name for p in (settings.cast_dir / "stings").glob("*.wav")] if (settings.cast_dir / "stings").exists() else []
+    typer.echo(f"stings: {', '.join(stings) or 'none'}")
+
+
+@app.command()
 def continuity(last: int = 10):
     """Print the continuity log the writer will see."""
     from pipeline.script.cast import continuity_text, load_continuity

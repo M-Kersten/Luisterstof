@@ -23,16 +23,25 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "python-multipart>=0.0.9",
     "httpx>=0.27",
+    "soxr>=0.3",
 ]
 
 [project.optional-dependencies]
-# Local synthesis tier. Installed separately because torch pulls a CUDA build.
-local = [
+# Local synthesis tiers. Installed separately because torch is large and platform-specific.
+# 24GB CUDA box: Chatterbox x3, faster-whisper on GPU, WhisperX alignment.
+cuda = [
     "chatterbox-tts",
     "faster-whisper>=1.0",
     "whisperx",
     "piper-tts",
 ]
+# Apple Silicon (M-series, 16GB+): Chatterbox on Metal, one worker, MLX Whisper for verification and word timings.
+mac = [
+    "chatterbox-tts",
+    "mlx-whisper>=0.4",
+    "piper-tts",
+]
+local = ["studiepodcast[cuda]"]
 dev = [
     "pytest>=8",
     "pytest-cov",

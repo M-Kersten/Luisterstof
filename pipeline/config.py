@@ -7,6 +7,7 @@ instance instead of reading os.environ itself, so tests can override freely.
 from __future__ import annotations
 
 import os
+import platform
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -47,6 +48,15 @@ def _env_float(name: str, default: float) -> float:
     return float(value) if value is not None else default
 
 
+def apple_silicon() -> bool:
+    """True on an M-series Mac: Metal for Chatterbox, MLX for Whisper, one worker."""
+    return platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64")
+
+
+def default_device() -> str:
+    return "mps" if apple_silicon() else "cuda"
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path = Path("data")
@@ -62,13 +72,16 @@ class Settings:
     elevenlabs_api_key: str | None = None
     elevenlabs_model: str = "eleven_v3"
 
-    # Local synthesis.
+    # Local synthesis. Defaults follow the platform: CUDA with three workers on a
+    # 24GB GPU box, Metal with one worker and MLX Whisper on an M-series Mac.
     piper_bin: str = "piper"
     piper_voices_dir: Path = Path("~/.local/share/piper/voices")
     device: str = "cuda"
     chatterbox_workers: int = 3
+    whisper_backend: str = "faster"  # faster (CTranslate2) | mlx (Apple Silicon)
     whisper_model: str = "large-v3"
     whisper_compute_type: str = "int8"
+    mlx_whisper_model: str = "mlx-community/whisper-large-v3-turbo"
 
     # Episode shape.
     target_minutes: int = 25
@@ -96,14 +109,31 @@ class Settings:
             elevenlabs_model=_env_str("ELEVENLABS_MODEL", "eleven_v3"),
             piper_bin=_env_str("PIPER_BIN", "piper"),
             piper_voices_dir=Path(_env_str("PIPER_VOICES_DIR", "~/.local/share/piper/voices")).expanduser(),
-            device=_env_str("STUDIEPODCAST_DEVICE", "cuda"),
-            chatterbox_workers=_env_int("CHATTERBOX_WORKERS", 3),
+            device=_env_str("STUDIEPODCAST_DEVICE", default_device()),
+            chatterbox_workers=_env_int("CHATTERBOX_WORKERS", 1 if apple_silicon() else 3),
+            whisper_backend=_env_str("WHISPER_BACKEND", "mlx" if apple_silicon() else "faster"),
             whisper_model=_env_str("WHISPER_MODEL", "large-v3"),
             whisper_compute_type=_env_str("WHISPER_COMPUTE_TYPE", "int8"),
+            mlx_whisper_model=_env_str("MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"),
             target_minutes=_env_int("STUDIEPODCAST_TARGET_MINUTES", 25),
             chars_per_second=_env_float("STUDIEPODCAST_CHARS_PER_SECOND", 15.0),
+            takes_per_line=_env_int("STUDIEPODCAST_TAKES", 3),
+            wer_threshold=_env_float("STUDIEPODCAST_WER_THRESHOLD", 0.05),
         )
         return replace(base, **overrides) if overrides else base
 
     def with_(self, **overrides) -> Settings:
         return replace(self, **overrides)
+
+    def profile(self) -> dict[str, object]:
+        return {
+            "platform": f"{platform.system()} {platform.machine()}",
+            "apple_silicon": apple_silicon(),
+            "device": self.device,
+            "chatterbox_workers": self.chatterbox_workers,
+            "whisper_backend": self.whisper_backend,
+            "whisper_model": self.mlx_whisper_model if self.whisper_backend == "mlx" else self.whisper_model,
+            "takes_per_line": self.takes_per_line,
+            "wer_threshold": self.wer_threshold,
+            "llm_model": self.llm_model,
+        }

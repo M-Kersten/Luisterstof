@@ -90,7 +90,8 @@ def render_with_takes(
             cache.put(key, clip, {"text": text, "speaker": voice.speaker_id, "seed": seed, "exaggeration": exag, "synth": synth.name})
         if verify and transcript is None:
             transcript = transcriber.transcribe(clip)  # type: ignore[union-attr]
-            cache.update_meta(key, transcript=transcript)
+            extra = {"asr_words": clip.meta["asr_words"]} if clip.meta.get("asr_words") else {}
+            cache.update_meta(key, transcript=transcript, **extra)
         rate = word_error_rate(text, transcript, glossary) if verify and transcript is not None else None
         accepted = True if rate is None else rate <= wer_threshold
         record = TakeRecord(seed=seed, exaggeration=exag, path=str(cache.path(key)), duration_s=clip.duration_s,

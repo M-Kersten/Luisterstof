@@ -31,13 +31,27 @@ uv pip install -e ".[dev]"
 cp .env.example .env        # fill in ANTHROPIC_API_KEY; the rest is optional
 ```
 
-Local synthesis is a separate install because torch pulls a CUDA build:
+Local synthesis is a separate install because torch is large and platform-specific. Pick one:
 
 ```bash
-uv pip install -e ".[local]"   # chatterbox-tts, faster-whisper, whisperx, piper-tts
+uv pip install -e ".[cuda]"    # 24GB GPU box: chatterbox-tts, faster-whisper, whisperx, piper-tts
+uv pip install -e ".[mac]"     # Apple Silicon: chatterbox-tts, mlx-whisper, piper-tts
+studiepodcast doctor           # shows the platform profile and what is installed
 ```
 
 Piper voices go under `PIPER_VOICES_DIR` (default `~/.local/share/piper/voices`) as `<name>.onnx` plus `<name>.onnx.json`. The draft voices named in `cast/hosts.yaml` are `nl_NL-mls-medium` and `nl_NL-pim-medium`.
+
+### Apple Silicon (M3 Pro, 18 GB)
+
+The defaults switch when the machine is an M-series Mac, so nothing needs to be set by hand. What changes:
+
+- Chatterbox runs on Metal (`STUDIEPODCAST_DEVICE=mps`) with one worker instead of three. The multilingual model takes a few GB of unified memory; three copies would not fit next to Whisper and the OS. Expect roughly real time per take, so a 25-minute episode at three takes per turn is an hour or two of rendering. It is unattended, and the cache means a re-render after editing a few lines takes minutes.
+- Verification uses MLX Whisper (`WHISPER_BACKEND=mlx`, model `mlx-community/whisper-large-v3-turbo`) on the GPU. faster-whisper only has a CPU path on Apple Silicon and would take longer than the synthesis it checks. MLX Whisper returns word timestamps in the same pass, so the accepted take's timestamps are matched onto the script and WhisperX is not needed.
+- Piper runs on the CPU everywhere and is unchanged.
+
+The first thing to lower on a laptop is the take count: `STUDIEPODCAST_TAKES=2` cuts render time by a third at the cost of a few more flagged turns. If Metal lacks an op, PyTorch falls back to the CPU for that op automatically (`PYTORCH_ENABLE_MPS_FALLBACK` is set by the adapter). `studiepodcast doctor` prints the resolved profile, whether torch sees MPS, which packages import, and whether the reference clips and Piper voices are in place.
+
+An Intel Mac works the same way on the CPU, just slowly; set `STUDIEPODCAST_DEVICE=cpu` and `WHISPER_BACKEND=faster` there.
 
 ### Dry run without any keys or models
 
@@ -141,9 +155,12 @@ API summary: `POST /api/books` (upload), `GET /api/books/{id}`, `GET /api/books/
 | `STUDIEPODCAST_LLM_EFFORT` | `high` | `low` to `max` |
 | `ELEVENLABS_API_KEY` | | Accent tier |
 | `PIPER_BIN`, `PIPER_VOICES_DIR` | `piper`, `~/.local/share/piper/voices` | Draft tier |
-| `STUDIEPODCAST_DEVICE` | `cuda` | Chatterbox, faster-whisper, WhisperX |
-| `CHATTERBOX_WORKERS` | `3` | Parallel model instances (about 6 GB each) |
-| `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE` | `large-v3`, `int8` | Verification model |
+| `STUDIEPODCAST_DEVICE` | `cuda`, `mps` on Apple Silicon | Chatterbox device |
+| `CHATTERBOX_WORKERS` | `3`, `1` on Apple Silicon | Parallel model instances (a few GB each) |
+| `WHISPER_BACKEND` | `faster`, `mlx` on Apple Silicon | Verification and alignment backend |
+| `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE` | `large-v3`, `int8` | faster-whisper model |
+| `MLX_WHISPER_MODEL` | `mlx-community/whisper-large-v3-turbo` | MLX Whisper model |
+| `STUDIEPODCAST_TAKES`, `STUDIEPODCAST_WER_THRESHOLD` | `3`, `0.05` | Take loop |
 | `STUDIEPODCAST_DATA_DIR`, `STUDIEPODCAST_CAST_DIR` | `data`, `cast` | Storage |
 
 ## Tests
@@ -156,4 +173,4 @@ The suite runs the whole pipeline on a generated four-page study book with a fak
 
 ## What has not been exercised here
 
-The Chatterbox, Piper, faster-whisper, WhisperX and ElevenLabs adapters are written against their documented APIs but were not run in this environment (no GPU, no keys). M0 is where they get their first real test, which is also the point of M0.
+The Chatterbox, Piper, faster-whisper, WhisperX, MLX Whisper and ElevenLabs adapters are written against their documented APIs but were not run in this environment (no GPU, no Apple Silicon, no keys). M0 is where they get their first real test, which is also the point of M0.
