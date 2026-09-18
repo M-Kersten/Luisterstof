@@ -1,0 +1,55 @@
+:root { --bg: #f6f5f2; --fg: #1f1f1f; --muted: #6b6b6b; --line: #d9d6cf; --accent: #2b5d8a; --ok: #2e7d32; --warn: #b26a00; --bad: #b3261e; --card: #fff; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
+header { display: flex; align-items: baseline; gap: 1rem; padding: .6rem 1rem; border-bottom: 1px solid var(--line); background: var(--card); }
+header h1 { font-size: 1.1rem; margin: 0; }
+main { display: grid; grid-template-columns: 280px 1fr; min-height: calc(100vh - 44px); }
+aside { border-right: 1px solid var(--line); padding: 1rem; background: var(--card); }
+aside section { margin-bottom: 1.5rem; }
+h2 { font-size: 1rem; margin: 0 0 .5rem; }
+h3 { font-size: .95rem; margin: 1rem 0 .4rem; }
+ul { list-style: none; padding: 0; margin: 0; }
+#books li, #jobs li { padding: .3rem .4rem; border-radius: 4px; cursor: pointer; }
+#books li:hover, #books li.active { background: #eef3f8; }
+#jobs li { cursor: default; font-size: .85rem; color: var(--muted); }
+#jobs li.running { color: var(--accent); }
+#jobs li.failed { color: var(--bad); }
+form input, form select, form button { display: block; width: 100%; margin: .3rem 0; }
+button { font: inherit; padding: .35rem .7rem; border: 1px solid var(--line); border-radius: 4px; background: #fff; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.link { border: none; background: none; color: var(--accent); padding: 0; font-size: .8rem; }
+#content { padding: 1rem 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+.bar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.bar.small { font-size: .85rem; }
+.actions button { margin-left: .25rem; }
+.tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--line); }
+.tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; }
+.tabs button.active { border-bottom-color: var(--accent); color: var(--accent); }
+table { border-collapse: collapse; width: 100%; background: var(--card); }
+th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: #eef3f8; }
+.badge { display: inline-block; padding: 0 .4rem; border-radius: 3px; font-size: .75rem; background: #eee; }
+.badge.ok { background: #e3f1e4; color: var(--ok); }
+.badge.warn { background: #fdf0d8; color: var(--warn); }
+.badge.bad { background: #f9e0dd; color: var(--bad); }
+.muted { color: var(--muted); }
+.segment { margin: 1rem 0 .3rem; font-weight: 600; color: var(--accent); }
+.line { display: grid; grid-template-columns: 52px 110px 1fr 220px; gap: .5rem; padding: .35rem 0; border-bottom: 1px dashed var(--line); }
+.line.has-issue { background: #fff6f5; }
+.line .id { color: var(--muted); font-size: .8rem; }
+.line textarea { width: 100%; min-height: 3.2em; font: inherit; border: 1px solid transparent; background: transparent; resize: vertical; }
+.line textarea:focus { border-color: var(--line); background: #fff; }
+.line .meta input, .line .meta select { font-size: .8rem; width: 100%; margin-bottom: .15rem; }
+.line .issues { grid-column: 3 / span 2; font-size: .8rem; color: var(--bad); }
+.issue { padding: .3rem .5rem; border-left: 3px solid var(--bad); margin: .3rem 0; background: var(--card); }
+.issue.warning { border-left-color: var(--warn); }
+#log-panel { margin-top: auto; }
+#log { background: #1e1e1e; color: #d6d6d6; padding: .6rem; height: 180px; overflow: auto; font-size: .78rem; border-radius: 4px; }
+pre { white-space: pre-wrap; }
+.block { display: flex; gap: .6rem; align-items: center; padding: .3rem 0; border-bottom: 1px dashed var(--line); }
+.block audio { height: 30px; }
+.claim { margin: .2rem 0; }
+.claim .id { color: var(--muted); font-size: .8rem; margin-right: .3rem; }
+#glossary input[type=text] { width: 100%; font-size: .85rem; }

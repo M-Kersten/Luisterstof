@@ -17,7 +17,7 @@ from pathlib import Path
 import pymupdf
 
 try:  # silence the layout-package advertisement
-    pymupdf.TOOLS.unset_quad_corrections(True)
+    pymupdf.no_recommend_layout()
 except Exception:  # pragma: no cover
     pass
 

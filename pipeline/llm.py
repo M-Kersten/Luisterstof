@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
-ContentBlocks = str | list[dict[str, Any]]
+ContentBlocks = str | list[dict[str, Any] | str]
 
 
 class LLMError(RuntimeError):
@@ -105,7 +105,7 @@ def image_block(data_b64: str, media_type: str = "image/png") -> dict[str, Any]:
 def _as_blocks(content: ContentBlocks) -> list[dict[str, Any]]:
     if isinstance(content, str):
         return [text_block(content)]
-    return [dict(b) for b in content]
+    return [text_block(b) if isinstance(b, str) else dict(b) for b in content]
 
 
 class AnthropicLLM:

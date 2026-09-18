@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Studiepodcast</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Studiepodcast</h1>
+  <span id="health" class="muted"></span>
+</header>
+<main>
+  <aside id="sidebar">
+    <section>
+      <h2>Nieuw boek</h2>
+      <form id="upload">
+        <input type="file" name="file" accept="application/pdf" required>
+        <input type="text" name="book_id" placeholder="book id (optioneel)">
+        <select name="method">
+          <option value="auto">structuur: auto</option>
+          <option value="fonts">fonts</option>
+          <option value="toc">toc</option>
+          <option value="llm">llm</option>
+        </select>
+        <label><input type="checkbox" name="auto" checked> direct doorlopen tot de Piper-draft</label>
+        <button type="submit">Upload</button>
+      </form>
+    </section>
+    <section>
+      <h2>Boeken</h2>
+      <ul id="books"></ul>
+    </section>
+    <section>
+      <h2>Jobs</h2>
+      <ul id="jobs"></ul>
+    </section>
+  </aside>
+
+  <section id="content">
+    <div id="book-panel" hidden>
+      <h2 id="book-title"></h2>
+      <table id="chapters">
+        <thead><tr><th>Hoofdstuk</th><th>Plan</th><th>Script</th><th>Audit</th><th>Draft</th><th>Goedgekeurd</th><th>Final</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="chapter-panel" hidden>
+      <div class="bar">
+        <h2 id="chapter-title"></h2>
+        <div class="actions">
+          <button data-run="plan">Plan</button>
+          <button data-run="glossary">Lexicon</button>
+          <button data-run="script">Script</button>
+          <button data-run="audit">Audit</button>
+          <button data-run="draft">Piper draft</button>
+          <button id="approve">Goedkeuren</button>
+          <button data-run="render" id="render">Chatterbox render</button>
+        </div>
+      </div>
+      <nav class="tabs">
+        <button data-tab="script" class="active">Script</button>
+        <button data-tab="audit">Audit</button>
+        <button data-tab="plan">Plan</button>
+        <button data-tab="lexicon">Lexicon</button>
+        <button data-tab="audio">Audio</button>
+        <button data-tab="artifacts">Artefacten</button>
+      </nav>
+
+      <div class="tab" id="tab-script">
+        <div class="bar small">
+          <span id="script-meta" class="muted"></span>
+          <div><button id="save-script">Script opslaan</button></div>
+        </div>
+        <div id="script-lines"></div>
+      </div>
+      <div class="tab" id="tab-audit" hidden><pre id="audit-summary"></pre><div id="audit-issues"></div></div>
+      <div class="tab" id="tab-plan" hidden><div id="plan-view"></div></div>
+      <div class="tab" id="tab-lexicon" hidden>
+        <div class="bar small"><span class="muted">Per boek. Vergrendelde termen klinken in elk hoofdstuk hetzelfde.</span><button id="save-glossary">Lexicon opslaan</button></div>
+        <table id="glossary"><thead><tr><th>surface</th><th>kind</th><th>spoken</th><th>lock</th><th></th></tr></thead><tbody></tbody></table>
+        <button id="add-entry">+ term</button>
+      </div>
+      <div class="tab" id="tab-audio" hidden>
+        <h3>Piper draft</h3><div id="draft-audio" class="muted">nog niet gerenderd</div>
+        <h3>Chatterbox final</h3><div id="final-audio" class="muted">nog niet gerenderd</div>
+        <div id="flagged"></div>
+        <h3>Blokken (accent tier)</h3>
+        <div id="blocks"></div>
+        <button id="eleven">Geselecteerde blokken met ElevenLabs renderen</button>
+      </div>
+      <div class="tab" id="tab-artifacts" hidden><ul id="artifact-list"></ul></div>
+    </div>
+
+    <div id="log-panel">
+      <h3>Log <button id="clear-log" class="link">wissen</button></h3>
+      <pre id="log"></pre>
+    </div>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

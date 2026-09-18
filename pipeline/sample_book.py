@@ -1,6 +1,6 @@
 """Generate a small synthetic Dutch study book as PDF for tests and demos.
 
-Usage: python -m tests.pdfgen out.pdf [--no-toc]
+Usage: python -m pipeline.sample_book out.pdf [--no-toc]
 """
 
 from __future__ import annotations
