@@ -23,7 +23,7 @@ Every stage writes a file under `data/books/<book_id>/`, every file is inspectab
 
 ## Setup
 
-Python 3.11, 3.12 or 3.13. Not 3.14 yet: torch and onnxruntime (a chatterbox-tts dependency) don't have wheels for it at the time of writing, and the failure is silent rather than a clear install error — `chatterbox-tts` installs fine, then crashes on the first render with `'NoneType' object is not callable` deep inside a watermarking dependency. If `python3 --version` on your machine already says 3.14, install an older one first (`uv python install 3.12`) and point `uv venv` at it, as below.
+Python 3.11, 3.12 or 3.13. Not 3.14 yet: torch commonly lags a new Python release by months and doesn't have wheels for it at the time of writing. If `python3 --version` on your machine already says 3.14, install an older one first (`uv python install 3.12`) and point `uv venv` at it, as below.
 
 ```bash
 uv venv --python 3.12 .venv && source .venv/bin/activate
@@ -40,6 +40,16 @@ studiepodcast doctor           # shows the platform profile and what is installe
 ```
 
 `--no-build-isolation-package pkuseg` works around a real bug in `pkuseg` (a `chatterbox-tts` dependency, used for Chinese text segmentation): its `setup.py` calls `numpy.get_include()` without declaring numpy as a build dependency, which breaks under the isolated build environment `uv` (and modern `pip`) uses by default. The flag builds that one package against the venv's own packages instead of a throwaway one, so numpy — already installed by the `.[dev]` step above — is visible to it. If you're on plain `pip` instead of `uv`, run `pip install --no-build-isolation "pkuseg==0.0.25"` once first, then the normal `pip install -e ".[mac]"`.
+
+### Troubleshooting: chatterbox crashes with `'NoneType' object is not callable` in `perth`
+
+This means `chatterbox-tts`'s watermarking dependency, `resemble-perth`, failed to import its `PerthImplicitWatermarker` class and silently fell back to `None` instead of raising — `perth/__init__.py` wraps that import in a bare `try/except ImportError`. The real cause is always that one of `torch==2.6.0`, `torchaudio==2.6.0`, `librosa==0.11.0`, `pyyaml` or `scipy` isn't actually importable, even though `pip`/`uv` may have reported no error (a partial install, a version conflict resolved by silently skipping one, or a build that produced a broken wheel). `studiepodcast doctor` (or `python -m pipeline.cli doctor`) now catches this and prints the real underlying exception instead of the generic crash. If you'd rather check by hand:
+
+```bash
+python -c "from perth.perth_net.perth_net_implicit.perth_watermarker import PerthImplicitWatermarker"
+```
+
+That raises the actual missing or broken import. Reinstall exactly that package (pin the version `chatterbox-tts` wants if it's `torch` or `torchaudio`, e.g. `uv pip install torch==2.6.0 torchaudio==2.6.0`), then retry.
 
 Piper voices go under `PIPER_VOICES_DIR` (default `~/.local/share/piper/voices`) as `<name>.onnx` plus `<name>.onnx.json`. The draft voices named in `cast/hosts.yaml` are `nl_NL-mls-medium` and `nl_NL-pim-medium`.
 

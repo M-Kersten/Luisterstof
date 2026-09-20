@@ -180,11 +180,10 @@ def doctor():
     settings = state["settings"]
     if sys.version_info >= (3, 14):
         typer.echo(
-            f"  WARNING: running on Python {sys.version_info.major}.{sys.version_info.minor}. torch and "
-            "onnxruntime (a chatterbox-tts dependency, used for watermarking) commonly lag new Python "
-            "releases by months and fail to import silently on a version they don't ship wheels for. If "
-            "chatterbox crashes with something like \"'NoneType' object is not callable\" in perth, "
-            "recreate the venv on 3.11-3.13, e.g.:\n"
+            f"  WARNING: running on Python {sys.version_info.major}.{sys.version_info.minor}. torch commonly "
+            "lags a new Python release by months and fails to build or import on a version it has no wheels "
+            "for yet. If chatterbox crashes with something like \"'NoneType' object is not callable\" in "
+            "perth, recreate the venv on 3.11-3.13, e.g.:\n"
             "    uv python install 3.12 && uv venv --python 3.12 .venv && source .venv/bin/activate && "
             'uv pip install -e ".[dev,mac]"'
         )
@@ -203,8 +202,21 @@ def doctor():
         import perth  # type: ignore
 
         if getattr(perth, "PerthImplicitWatermarker", None) is None:
-            typer.echo("  WARNING: perth.PerthImplicitWatermarker is None - its onnxruntime import failed "
-                      "silently (see the Python version note above). Chatterbox will crash on first render.")
+            # perth/__init__.py swallows the real ImportError and leaves this None. Walk the same
+            # import chain directly so the actual missing/broken package is visible instead of a
+            # generic "'NoneType' object is not callable" three steps later, inside chatterbox.
+            try:
+                from perth.perth_net.perth_net_implicit.perth_watermarker import (
+                    PerthImplicitWatermarker as _,  # noqa: F401
+                )
+                cause = "unknown (re-import succeeded the second time; try re-running chatterbox)"
+            except Exception as exc:  # noqa: BLE001
+                cause = f"{type(exc).__name__}: {exc}"
+            typer.echo(f"  WARNING: perth.PerthImplicitWatermarker is None. Real cause: {cause}")
+            typer.echo("    chatterbox-tts needs torch==2.6.0, torchaudio==2.6.0, librosa==0.11.0 and "
+                      "resemble-perth's own transitive deps (pyyaml, scipy) all importable, not just "
+                      "installed. If pip/uv reported no error, reinstall the missing one directly, e.g.:\n"
+                      "        uv pip install librosa==0.11.0 torch==2.6.0 torchaudio==2.6.0")
     except Exception:  # noqa: BLE001
         pass
     try:
