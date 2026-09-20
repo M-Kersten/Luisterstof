@@ -34,10 +34,12 @@ cp .env.example .env        # fill in ANTHROPIC_API_KEY; the rest is optional
 Local synthesis is a separate install because torch is large and platform-specific. Pick one:
 
 ```bash
-uv pip install -e ".[cuda]"    # 24GB GPU box: chatterbox-tts, faster-whisper, whisperx, piper-tts
-uv pip install -e ".[mac]"     # Apple Silicon: chatterbox-tts, mlx-whisper, piper-tts
+uv pip install -e ".[cuda]" --no-build-isolation-package pkuseg    # 24GB GPU box
+uv pip install -e ".[mac]" --no-build-isolation-package pkuseg     # Apple Silicon
 studiepodcast doctor           # shows the platform profile and what is installed
 ```
+
+`--no-build-isolation-package pkuseg` works around a real bug in `pkuseg` (a `chatterbox-tts` dependency, used for Chinese text segmentation): its `setup.py` calls `numpy.get_include()` without declaring numpy as a build dependency, which breaks under the isolated build environment `uv` (and modern `pip`) uses by default. The flag builds that one package against the venv's own packages instead of a throwaway one, so numpy — already installed by the `.[dev]` step above — is visible to it. If you're on plain `pip` instead of `uv`, run `pip install --no-build-isolation "pkuseg==0.0.25"` once first, then the normal `pip install -e ".[mac]"`.
 
 Piper voices go under `PIPER_VOICES_DIR` (default `~/.local/share/piper/voices`) as `<name>.onnx` plus `<name>.onnx.json`. The draft voices named in `cast/hosts.yaml` are `nl_NL-mls-medium` and `nl_NL-pim-medium`.
 
