@@ -91,6 +91,7 @@ class Settings:
     wer_threshold: float = 0.05
     takes_per_line: int = 3
     max_interrupts_per_10min: int = 4
+    min_connective_per_10min: float = 2.0  # interrupts + backchannels; below this a script tends to read as two monologues
     max_unwritten_gap_s: float = 1.2
     sample_rate: int = 24000
 

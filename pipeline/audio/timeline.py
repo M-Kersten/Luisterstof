@@ -1,6 +1,15 @@
 """Timeline assembly: where every rendered turn starts, how overlaps land.
 
 * Normal turn: gap sampled from 180-420 ms. A fixed gap is the clearest tell.
+* Quick handoff: a normal turn whose prior line reads as expecting an
+  immediate reply (ends in "?", or is short and reactive) gets a much
+  tighter, sometimes genuinely overlapping gap instead, with a gentle duck
+  on the outgoing tail. Every line is still synthesized in isolation (the
+  model has no cross-speaker context to draw on), so without this the
+  timing itself is the only thing that can read as conversational momentum
+  rather than turn-taking narration; a uniform 180-420ms silence before
+  every single handoff is what makes back-and-forth exchanges sound like
+  separate monologues even when the words are right.
 * interrupt: line B starts 250 ms before the cut word's onset in A; A is
   ducked 12 dB with an 80 ms fade and its buried fragment runs 400-600 ms
   underneath before fading out.
@@ -13,15 +22,21 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass, field
 
 from pipeline.audio.asr import WordTiming
 from pipeline.audio.synth import AudioClip
 from pipeline.audio.turns import Turn
 from pipeline.audio.wer import normalise
+from pipeline.models import Line
 
 GAP_RANGE = (0.18, 0.42)
 SEGMENT_GAP_RANGE = (0.6, 0.9)
+QUICK_GAP_RANGE = (-0.06, 0.09)  # a "yes, and-" handoff: often a touch of real overlap, never a long silence
+QUICK_DUCK_DB = 4.0  # gentle, nowhere near INTERRUPT_DUCK_DB: blends the handoff, never buries a word
+QUICK_DUCK_FADE = 0.05
+QUICK_WORD_LIMIT = 6
 INTERRUPT_LEAD = 0.25
 INTERRUPT_DUCK_DB = 12.0
 INTERRUPT_DUCK_FADE = 0.08
@@ -30,6 +45,21 @@ FRAGMENT_FADE = 0.12
 BACKCHANNEL_GAIN_DB = -8.0
 BACKCHANNEL_POINT = 0.6
 LAUGH_POINT = 0.5
+
+
+def is_quick_handoff(line: Line) -> bool:
+    """True when the line reads as expecting an immediate reply, not a considered pause.
+
+    A question invites an answer right away; a short reactive line ("Ja, precies.",
+    "Wacht even.") is itself the kind of thing that gets said quickly in response to
+    something, and tends to be replied to just as quickly in turn.
+    """
+    text = line.text.strip()
+    if not text:
+        return False
+    if text.endswith("?"):
+        return True
+    return len(re.findall(r"\w+", text)) <= QUICK_WORD_LIMIT
 
 
 @dataclass
@@ -143,15 +173,30 @@ def assemble(
             tl.qa.append(f"overlap on {turn.first.id} ignored: target not the previous turn or same speaker")
 
         segment_change = prev_advancing is not None and prev_advancing.turn.segment_index != turn.segment_index
+        quick = (
+            prev_advancing is not None
+            and not segment_change
+            and pending_gap == 0.0
+            and prev_advancing.turn.speaker != turn.speaker
+            and is_quick_handoff(prev_advancing.turn.last)
+        )
         if prev_advancing is None:
             gap = 0.0
         elif segment_change:
             gap = rng.uniform(*SEGMENT_GAP_RANGE)
+        elif quick:
+            gap = rng.uniform(*QUICK_GAP_RANGE)
         else:
             gap = rng.uniform(*GAP_RANGE)
         gap += pending_gap
         start = cursor + gap
         placement = Placement(turn, clip, start, [w.shifted(start) for w in rel_words])
+        if quick and gap < 0 and prev_advancing is not None:
+            # a genuine brief overlap: duck the outgoing tail just enough to blend the
+            # handoff, never enough to bury a word the way an interrupt's duck does
+            prev_advancing.duck_at = start
+            prev_advancing.duck_db = QUICK_DUCK_DB
+            prev_advancing.duck_fade = QUICK_DUCK_FADE
         if prev_advancing is not None:
             prev_advancing.deliberate_gap_after = pending_gap + (gap - pending_gap if segment_change else 0.0)
         tl.placements.append(placement)

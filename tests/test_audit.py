@@ -55,6 +55,27 @@ def test_interrupt_budget(cast, banned, settings):
     assert any(r == "too_many_interrupts" for r, _ in _rules(s, cast, banned, settings))
 
 
+def test_too_few_overlaps_warns_on_overlap_light_script(cast, banned, settings):
+    s = _script([
+        Line(id="l001", speaker="tessa", text="Dit is een rustige uitleg zonder enige onderbreking of reactie ertussen."),
+        Line(id="l002", speaker="joris", text="En dit is het vervolg, ook gewoon netjes na elkaar zonder overlap."),
+    ])
+    # force the per-10-min threshold well above what two plain, unoverlapped lines could ever meet
+    strict = settings.with_(min_connective_per_10min=100.0)
+    issues = lint_rules(s, cast, banned, None, strict)
+    hit = next((i for i in issues if i.rule == "too_few_overlaps"), None)
+    assert hit is not None and hit.severity == "warning" and hit.line_id is None
+
+
+def test_too_few_overlaps_not_raised_when_threshold_met(cast, banned, settings):
+    s = _script([
+        Line(id="l001", speaker="tessa", text="Wat vind jij daarvan?"),
+        Line(id="l002", speaker="joris", text="Wacht even.", overlap=Overlap(mode="interrupt", target="l001")),
+    ])
+    issues = lint_rules(s, cast, banned, None, settings)
+    assert not any(i.rule == "too_few_overlaps" for i in issues)
+
+
 def test_structure_checks(cast):
     s = _script([
         Line(id="l001", speaker="piet", text="Wie ben ik?"),

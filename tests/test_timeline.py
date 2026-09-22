@@ -1,8 +1,16 @@
 import numpy as np
+import pytest
 
 from pipeline.audio.asr import UniformAligner
 from pipeline.audio.synth import AudioClip, NullSynth, VoiceSpec
-from pipeline.audio.timeline import GAP_RANGE, INTERRUPT_LEAD, SEGMENT_GAP_RANGE, assemble
+from pipeline.audio.timeline import (
+    GAP_RANGE,
+    INTERRUPT_LEAD,
+    QUICK_GAP_RANGE,
+    SEGMENT_GAP_RANGE,
+    assemble,
+    is_quick_handoff,
+)
 from pipeline.audio.turns import group_turns
 from pipeline.models import Line, Overlap, Script, Segment
 
@@ -85,3 +93,73 @@ def test_missing_audio_and_bad_overlap_reported():
     assert any("has no audio" in q for q in tl.qa)
     assert isinstance(tl.placements[0].clip, AudioClip) and tl.duration > 0
     assert np.isfinite(tl.duration)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Wat bedoel je daarmee?", True),  # question
+    ("Ja precies.", True),  # short reactive line
+    ("Nee.", True),  # very short
+    ("Dat is een lang antwoord met behoorlijk wat woorden erin, geen snelle reactie.", False),
+])
+def test_is_quick_handoff(text, expected):
+    assert is_quick_handoff(Line(id="l001", speaker="tessa", text=text)) is expected
+
+
+def test_is_quick_handoff_guards_blank_text():
+    # Line's own validator rejects empty text on construction or assignment; reach the function's
+    # blank-text branch by writing the attribute directly, bypassing pydantic's validate_assignment.
+    line = Line(id="l001", speaker="tessa", text="x")
+    object.__setattr__(line, "text", "")
+    assert is_quick_handoff(line) is False
+
+
+def _quick_handoff_script(first_text: str) -> Script:
+    return Script(episode_id="ch01", segments=[Segment(type="body", lines=[
+        Line(id="l001", speaker="joris", text=first_text),
+        Line(id="l002", speaker="tessa", text="Dat leg ik zo uit, geef me even de ruimte om het rustig op te bouwen."),
+    ])])
+
+
+def test_quick_handoff_uses_tight_gap_range_and_ducks_on_overlap():
+    turns = group_turns(_quick_handoff_script("Hoe zit dat dan precies?"))
+    tl = assemble(turns, _render(turns), sr=SR, seed=1)
+    a, b = tl.by_line()["l001"], tl.by_line()["l002"]
+    gap = b.start - a.end
+    assert QUICK_GAP_RANGE[0] - 1e-6 <= gap <= QUICK_GAP_RANGE[1] + 1e-6
+    assert gap < GAP_RANGE[0]  # unambiguously tighter than a normal handoff would ever sample
+    # seed=1 is verified to draw a negative (overlapping) value first from QUICK_GAP_RANGE
+    assert gap < 0
+    assert a.duck_at == b.start and a.duck_db == 4.0 and a.duck_db < 12.0  # gentle, not an interrupt-strength duck
+    # the ducked line still plays out in full - a quick handoff never buries a word the way interrupt does
+    assert a.cut_at is None
+
+
+def test_normal_handoff_after_a_long_declarative_line_is_unaffected():
+    turns = group_turns(_quick_handoff_script("Dat is precies waarom ik het daar niet mee eens ben, en ik zal uitleggen waarom."))
+    tl = assemble(turns, _render(turns), sr=SR, seed=1)
+    a, b = tl.by_line()["l001"], tl.by_line()["l002"]
+    gap = b.start - a.end
+    assert GAP_RANGE[0] - 1e-6 <= gap <= GAP_RANGE[1] + 1e-6
+    assert a.duck_at is None
+
+
+def test_quick_handoff_suppressed_by_explicit_pause_or_segment_change():
+    # an explicit written beat overrides the quick-handoff shortcut even after a question
+    paused = Script(episode_id="ch01", segments=[Segment(type="body", lines=[
+        Line(id="l001", speaker="joris", text="Wat denk jij dat het antwoord is?", pause_after_ms=1500),
+        Line(id="l002", speaker="tessa", text="Nou..."),
+    ])])
+    turns = group_turns(paused)
+    tl = assemble(turns, _render(turns), sr=SR, seed=1)
+    a, b = tl.by_line()["l001"], tl.by_line()["l002"]
+    assert b.start - a.end >= 1.5 + GAP_RANGE[0] - 1e-6
+
+    # a segment boundary always gets the deliberate long gap, even after a question
+    across_segments = Script(episode_id="ch01", segments=[
+        Segment(type="cold_open", lines=[Line(id="l001", speaker="joris", text="Klaar voor het volgende deel?")]),
+        Segment(type="body", lines=[Line(id="l002", speaker="tessa", text="Helemaal.")]),
+    ])
+    turns2 = group_turns(across_segments)
+    tl2 = assemble(turns2, _render(turns2), sr=SR, seed=1)
+    a2, b2 = tl2.by_line()["l001"], tl2.by_line()["l002"]
+    assert b2.start - a2.end >= SEGMENT_GAP_RANGE[0] - 1e-6

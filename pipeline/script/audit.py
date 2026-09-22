@@ -124,6 +124,7 @@ def lint_rules(script: Script, cast: Cast, banned: BannedRules, glossary: Glossa
 
     prev = None
     interrupts = 0
+    backchannels = 0
     for seg in script.segments:
         for line in seg.lines:
             text = norm(line.text)
@@ -160,9 +161,11 @@ def lint_rules(script: Script, cast: Cast, banned: BannedRules, glossary: Glossa
                     if ov.cut_word and ov.cut_word.casefold() not in target_text.casefold():
                         issues.append(AuditIssue(check="lint", severity="warning", rule="cut_word_missing", line_id=line.id,
                                                  message=f"Afkapwoord '{ov.cut_word}' staat niet in de onderbroken regel."))
-                if ov.mode == "backchannel" and len(line.text.split()) > 8:
-                    issues.append(AuditIssue(check="lint", rule="backchannel_too_long", line_id=line.id,
-                                             message="Een backchannel is kort: hooguit een paar woorden."))
+                if ov.mode == "backchannel":
+                    backchannels += 1
+                    if len(line.text.split()) > 8:
+                        issues.append(AuditIssue(check="lint", rule="backchannel_too_long", line_id=line.id,
+                                                 message="Een backchannel is kort: hooguit een paar woorden."))
             if not line.covers and seg.type in ("body", "guest", "reexplain", "quiz", "recap") and (
                     NUMBERISH.search(line.text) and len(line.text) > 60):
                 issues.append(AuditIssue(check="lint", severity="warning", rule="uncovered_fact", line_id=line.id,
@@ -174,6 +177,14 @@ def lint_rules(script: Script, cast: Cast, banned: BannedRules, glossary: Glossa
     if interrupts > budget:
         issues.append(AuditIssue(check="lint", rule="too_many_interrupts",
                                  message=f"{interrupts} onderbrekingen bij een budget van {budget} (max {settings.max_interrupts_per_10min} per 10 minuten)."))
+    connective = interrupts + backchannels
+    min_connective = max(1, math.ceil(minutes / 10 * settings.min_connective_per_10min))
+    if connective < min_connective:
+        issues.append(AuditIssue(check="lint", severity="warning", rule="too_few_overlaps",
+                                 message=f"Maar {connective} onderbrekingen en backchannels in ~{minutes:.1f} min "
+                                         f"(richtlijn: minstens {min_connective}). Een script dat zo overlap-arm is "
+                                         "klinkt als twee monologen naast elkaar, hoe goed de audio ook wordt gemixt.",
+                                 suggestion="Voeg meer korte reacties ('ja precies', een korte onderbreking) toe tussen de hosts."))
     target = script.target_minutes
     if minutes < target * 0.8 or minutes > target * 1.25:
         issues.append(AuditIssue(check="lint", severity="warning", rule="duration",
