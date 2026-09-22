@@ -190,14 +190,22 @@ def doctor():
     typer.echo("profile:")
     for k, v in settings.profile().items():
         typer.echo(f"  {k}: {v}")
+    from pipeline.config import apple_silicon
+
     typer.echo("packages:")
-    for name in ("torch", "chatterbox", "perth", "piper", "faster_whisper", "whisperx", "mlx_whisper", "soxr", "pyloudnorm"):
+    # faster-whisper/whisperx (CUDA tier) and mlx_whisper (Apple Silicon tier) are mutually
+    # exclusive by design; only check the pair that's actually meant to be installed here, so a
+    # correctly-absent package on the other platform isn't reported as if something were missing.
+    on_mac = apple_silicon()
+    common = ("torch", "chatterbox", "perth", "piper", "soxr", "pyloudnorm")
+    tier_specific = ("mlx_whisper",) if on_mac else ("faster_whisper", "whisperx")
+    for name in common + tier_specific:
         try:
             mod = importlib.import_module(name)
             version = getattr(mod, "__version__", "")
             typer.echo(f"  {name}: ok {version}")
         except Exception as exc:  # noqa: BLE001
-            typer.echo(f"  {name}: missing ({type(exc).__name__})")
+            typer.echo(f"  {name}: missing ({type(exc).__name__}: {exc})")
     try:
         import perth  # type: ignore
 
