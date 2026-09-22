@@ -2,6 +2,14 @@
 # tic_markers zijn letterlijke zinsdelen die alleen deze host mag gebruiken; de linter
 # blokkeert een script waarin een andere spreker ze gebruikt.
 # voice_ref wijst naar een bevroren referentieclip (30-60 s schoon Nederlands, mono).
+#
+# Tempo (Chatterbox heeft geen eigen spreeksnelheid-parameter):
+#   cfg_weight: 0.0-1.0, standaard 0.5. Chatterbox' eigen genereer-parameter; lager
+#     werkt vaak rustiger/trager af, is een neveneffect, geen directe knop.
+#   speech_rate: post-render time-stretch met behoud van toonhoogte, 1.0 = uit,
+#     0.85 = 15% trager. Werkt altijd, ongeacht wat het model doet.
+#   Test beide met: studiepodcast audition paragraaf.txt --ref naam=pad.wav
+#     --cfg-weights 0.3,0.4,0.5 --speech-rates 0.85,0.9,1.0
 hosts:
   - id: tessa
     name: Tessa

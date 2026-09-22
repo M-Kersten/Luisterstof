@@ -87,6 +87,19 @@ studiepodcast audition paragraaf.txt --ref tessa=cast/refs/tessa.wav --ref joris
 
 It renders three exaggeration levels per voice into `data/auditions/` and prints the WER of a faster-whisper transcript per take. If Dutch quality is unacceptable here, the tier strategy inverts and ElevenLabs becomes the backbone. Once you are happy, freeze the reference files: re-cloning drifts the voice and the cast stops being the cast.
 
+If the voice sounds right but talks too fast, Chatterbox has no direct speed parameter, pacing is an emergent property of the model, not a dial. Two levers, in the order worth trying them:
+
+1. `cfg_weight` (Chatterbox's own generation-side parameter, default 0.5): lowering it tends to slow delivery, as a side effect of what it's actually for. Sweep it the same way as exaggeration:
+   ```bash
+   studiepodcast audition paragraaf.txt --ref tessa=cast/refs/tessa.wav --cfg-weights 0.3,0.4,0.5
+   ```
+2. `speech_rate` (a deterministic post-render time-stretch that preserves pitch, default 1.0, 0.85 means 15% slower): the fallback that always gets to the requested pace regardless of what the model does.
+   ```bash
+   studiepodcast audition paragraaf.txt --ref tessa=cast/refs/tessa.wav --speech-rates 0.85,0.9,1.0
+   ```
+
+Both are per-host settings in `cast/hosts.yaml` (and per-guest in `guests.yaml`) once you've picked values, alongside `exaggeration`. Different hosts can want different values, Tessa's excitable delivery might stay brisk while Joris's deadpan reads better slower.
+
 **M1 Ingest.**
 
 ```bash

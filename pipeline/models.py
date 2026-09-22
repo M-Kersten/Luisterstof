@@ -418,6 +418,8 @@ class Host(Contract):
     humour: str = ""
     opinions: list[str] = Field(default_factory=list)
     exaggeration: float = 0.5  # Chatterbox base value
+    cfg_weight: float = 0.5  # Chatterbox classifier-free-guidance weight; lowering it tends to slow delivery
+    speech_rate: float = 1.0  # post-render pitch-preserving time-stretch; <1.0 slower, >1.0 faster, 1.0 = off
     chars_per_second: float | None = None
 
 
@@ -432,6 +434,8 @@ class Guest(Contract):
     tics: list[str] = Field(default_factory=list)
     tic_markers: list[str] = Field(default_factory=list)
     exaggeration: float = 0.4
+    cfg_weight: float = 0.5
+    speech_rate: float = 1.0
     chars_per_second: float | None = None
 
 

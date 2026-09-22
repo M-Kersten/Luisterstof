@@ -70,3 +70,19 @@ def test_broken_transcriber_degrades_to_unverified_not_a_crash(tmp_path):
     assert broken.calls == 1  # never retried after the first failure
     assert len(result.takes) == 2 and all(t.wer is None and t.accepted for t in result.takes)
     assert not result.flagged
+
+
+def test_tuning_cfg_weight_or_speech_rate_does_not_reuse_stale_cache(tmp_path):
+    """Retuning pacing must produce fresh takes, not silently replay audio rendered under the old settings."""
+    cache = RenderCache(tmp_path / "cache")
+    baseline = VoiceSpec(speaker_id="tessa", cfg_weight=0.5, speech_rate=1.0)
+    other_cfg = VoiceSpec(speaker_id="tessa", cfg_weight=0.3, speech_rate=1.0)
+    other_rate = VoiceSpec(speaker_id="tessa", cfg_weight=0.5, speech_rate=0.85)
+
+    r1 = render_with_takes(TEXT, baseline, NullSynth(), cache, transcriber=None, exaggeration=0.5, n_takes=1, seed_base=9000)
+    r2 = render_with_takes(TEXT, other_cfg, NullSynth(), cache, transcriber=None, exaggeration=0.5, n_takes=1, seed_base=9000)
+    r3 = render_with_takes(TEXT, other_rate, NullSynth(), cache, transcriber=None, exaggeration=0.5, n_takes=1, seed_base=9000)
+    r1_again = render_with_takes(TEXT, baseline, NullSynth(), cache, transcriber=None, exaggeration=0.5, n_takes=1, seed_base=9000)
+
+    assert len({r1.take_key, r2.take_key, r3.take_key}) == 3  # three distinct cache entries
+    assert r1_again.from_cache and r1_again.take_key == r1.take_key  # the unchanged baseline still hits cache

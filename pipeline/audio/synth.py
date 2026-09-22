@@ -93,6 +93,8 @@ class VoiceSpec:
     draft_voice: str | None = None
     eleven_voice_id: str | None = None
     base_exaggeration: float = 0.5
+    cfg_weight: float = 0.5
+    speech_rate: float = 1.0
     chars_per_second: float | None = None
     _ref_hash: str | None = None
 
@@ -115,6 +117,8 @@ def voice_spec_for(speaker: Host | Guest, cast_dir: Path | str) -> VoiceSpec:
         draft_voice=speaker.voice_id_draft or None,
         eleven_voice_id=speaker.voice_id_final or None,
         base_exaggeration=speaker.exaggeration,
+        cfg_weight=speaker.cfg_weight,
+        speech_rate=speaker.speech_rate,
         chars_per_second=speaker.chars_per_second,
     )
 
@@ -248,14 +252,31 @@ def resolve_torch_device(requested: str) -> str:
     return device
 
 
+def apply_speech_rate(clip: AudioClip, rate: float) -> AudioClip:
+    """Pitch-preserving time-stretch (phase vocoder via librosa).
+
+    Chatterbox has no speed/rate parameter of its own; pacing is an emergent
+    property of the model. cfg_weight (below) is the generation-side lever
+    that tends to influence it, but it is a side effect, not a dial - this is
+    the deterministic fallback that always gets to the requested pace.
+    rate < 1.0 slows down, > 1.0 speeds up, 1.0 is a no-op (same convention
+    librosa itself uses, passed straight through).
+    """
+    if abs(rate - 1.0) < 1e-6 or len(clip.samples) == 0:
+        return clip
+    import librosa  # lazy: only the chatterbox tier needs this, already a transitive dependency there
+
+    stretched = librosa.effects.time_stretch(clip.samples, rate=rate)
+    return AudioClip(np.asarray(stretched, dtype=np.float32), clip.sr, meta=dict(clip.meta))
+
+
 class ChatterboxSynth:
     name = "chatterbox"
     deterministic = False
 
-    def __init__(self, settings: Settings, language_id: str = "nl", cfg_weight: float = 0.5):
+    def __init__(self, settings: Settings, language_id: str = "nl"):
         self.settings = settings
         self.language_id = language_id
-        self.cfg_weight = cfg_weight
         self._model = None
         self.sample_rate = 24000
         self.device = settings.device
@@ -285,11 +306,12 @@ class ChatterboxSynth:
             language_id=self.language_id,
             audio_prompt_path=str(voice.ref_path),
             exaggeration=float(exaggeration),
-            cfg_weight=self.cfg_weight,
+            cfg_weight=float(voice.cfg_weight),
         )
         samples = wav.squeeze(0).detach().cpu().numpy().astype(np.float32)
-        return AudioClip(samples, self.sample_rate, meta={"text": text, "seed": seed, "exaggeration": exaggeration,
+        clip = AudioClip(samples, self.sample_rate, meta={"text": text, "seed": seed, "exaggeration": exaggeration,
                                                           "speaker": voice.speaker_id})
+        return apply_speech_rate(clip, voice.speech_rate)
 
 
 # ---------------------------------------------------------------------------

@@ -151,8 +151,15 @@ def status(book_id: Annotated[str | None, typer.Argument()] = None):
 @app.command()
 def audition(text_file: Path,
              ref: Annotated[list[str], typer.Option(help="name=path.wav, repeatable, e.g. --ref tessa=cast/refs/tessa.wav")],
-             out_dir: Path = Path("data/auditions"), exaggerations: str = "0.3,0.5,0.7", verify: bool = True):
-    """M0: render one real paragraph with each reference voice (name=path.wav) before building anything."""
+             out_dir: Path = Path("data/auditions"), exaggerations: str = "0.3,0.5,0.7",
+             cfg_weights: Annotated[str, typer.Option(help="Comma-separated. Chatterbox's own pacing lever, lower tends to slow delivery.")] = "0.5",
+             speech_rates: Annotated[str, typer.Option(help="Comma-separated. Post-render time-stretch, <1.0 slower, 1.0=off. The lever that always works.")] = "1.0",
+             verify: bool = True):
+    """M0: render one real paragraph with each reference voice (name=path.wav) before building anything.
+
+    Sweeps every combination of the three axes. Start with exaggerations alone; if delivery is too fast,
+    add --cfg-weights 0.3,0.4,0.5 next; if that alone isn't enough, add --speech-rates 0.85,0.9,1.0.
+    """
     from pipeline.audio.asr import make_transcriber
     from pipeline.audio.audition import audition as run_audition
     from pipeline.audio.synth import make_synth
@@ -165,7 +172,10 @@ def audition(text_file: Path,
     synth = make_synth("null" if state["fake_audio"] else "final", settings, pool=False)
     transcriber = make_transcriber(settings, fake=state["fake_audio"]) if verify else None
     rows = run_audition(text_file.read_text(encoding="utf-8"), refs, out_dir, synth,
-                        exaggerations=tuple(float(x) for x in exaggerations.split(",")), transcriber=transcriber)
+                        exaggerations=tuple(float(x) for x in exaggerations.split(",")),
+                        cfg_weights=tuple(float(x) for x in cfg_weights.split(",")),
+                        speech_rates=tuple(float(x) for x in speech_rates.split(",")),
+                        transcriber=transcriber)
     for row in rows:
         typer.echo(json.dumps(row, ensure_ascii=False))
 
