@@ -78,6 +78,7 @@ def render_with_takes(
     keys: list[str] = []
 
     def attempt(seed: int, exag: float) -> None:
+        nonlocal verify
         exag = max(0.1, min(0.95, exag))
         key = cache.take_key(text, voice.ref_hash, exag, seed, synth.name)
         hit = cache.get(key)
@@ -89,9 +90,18 @@ def render_with_takes(
             transcript = None
             cache.put(key, clip, {"text": text, "speaker": voice.speaker_id, "seed": seed, "exaggeration": exag, "synth": synth.name})
         if verify and transcript is None:
-            transcript = transcriber.transcribe(clip)  # type: ignore[union-attr]
-            extra = {"asr_words": clip.meta["asr_words"]} if clip.meta.get("asr_words") else {}
-            cache.update_meta(key, transcript=transcript, **extra)
+            # A transcriber that raises (rather than returning None on a known failure, as
+            # FasterWhisperTranscriber/MlxWhisperTranscriber now do) must still not take the
+            # whole render down: fall back to unverified for the rest of this turn.
+            try:
+                transcript = transcriber.transcribe(clip)  # type: ignore[union-attr]
+            except Exception as exc:  # noqa: BLE001
+                log.error("transcriber raised (%s: %s); verification disabled for this turn", type(exc).__name__, exc)
+                verify = False
+                transcript = None
+            else:
+                extra = {"asr_words": clip.meta["asr_words"]} if clip.meta.get("asr_words") else {}
+                cache.update_meta(key, transcript=transcript, **extra)
         rate = word_error_rate(text, transcript, glossary) if verify and transcript is not None else None
         accepted = True if rate is None else rate <= wer_threshold
         record = TakeRecord(seed=seed, exaggeration=exag, path=str(cache.path(key)), duration_s=clip.duration_s,

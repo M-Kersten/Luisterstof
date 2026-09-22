@@ -49,3 +49,24 @@ def test_no_transcriber_skips_verification(tmp_path):
     cache = RenderCache(tmp_path / "cache")
     result = render_with_takes(TEXT, VoiceSpec(speaker_id="joris"), NullSynth(), cache, transcriber=None, exaggeration=0.4, n_takes=2)
     assert len(result.takes) == 2 and all(t.wer is None for t in result.takes)
+
+
+class _RaisingTranscriber:
+    """Simulates a broken faster-whisper: every call fails, e.g. a missing cuDNN DLL."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def transcribe(self, clip, language="nl"):
+        self.calls += 1
+        raise RuntimeError("Could not locate cudnn_ops_infer64_8.dll")
+
+
+def test_broken_transcriber_degrades_to_unverified_not_a_crash(tmp_path):
+    cache = RenderCache(tmp_path / "cache")
+    broken = _RaisingTranscriber()
+    result = render_with_takes(TEXT, VoiceSpec(speaker_id="joris"), NullSynth(), cache, transcriber=broken,
+                               exaggeration=0.4, n_takes=2, seed_base=5000)
+    assert broken.calls == 1  # never retried after the first failure
+    assert len(result.takes) == 2 and all(t.wer is None and t.accepted for t in result.takes)
+    assert not result.flagged

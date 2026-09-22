@@ -39,7 +39,7 @@ class WordTiming:
 
 
 class Transcriber(Protocol):
-    def transcribe(self, clip: AudioClip, language: str = "nl") -> str: ...
+    def transcribe(self, clip: AudioClip, language: str = "nl") -> str | None: ...
 
 
 class Aligner(Protocol):
@@ -55,9 +55,18 @@ def to_16k(clip: AudioClip) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class FasterWhisperTranscriber:
+    """faster-whisper is a separate C++ engine (CTranslate2) with its own runtime
+    requirements (a matching CUDA/cuDNN pair, findable DLLs on Windows). A broken
+    environment there must not take the whole render down: the take-selection
+    loop already treats a missing transcript as "unverified, accept the take"
+    (see render_with_takes), so this degrades to unverified takes with a single
+    loud log line instead of crashing, and stops retrying a load that already
+    failed once."""
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self._model = None
+        self._broken: str | None = None
 
     def _load(self):
         if self._model is None:
@@ -67,11 +76,24 @@ class FasterWhisperTranscriber:
             self._model = WhisperModel(self.settings.whisper_model, device=device, compute_type=self.settings.whisper_compute_type)
         return self._model
 
-    def transcribe(self, clip: AudioClip, language: str = "nl") -> str:
-        model = self._load()
-        segments, _info = model.transcribe(to_16k(clip), language=language, beam_size=5, vad_filter=False,
-                                           condition_on_previous_text=False)
-        return " ".join(seg.text.strip() for seg in segments).strip()
+    def transcribe(self, clip: AudioClip, language: str = "nl") -> str | None:
+        if self._broken:
+            return None
+        try:
+            model = self._load()
+            segments, _info = model.transcribe(to_16k(clip), language=language, beam_size=5, vad_filter=False,
+                                               condition_on_previous_text=False)
+            return " ".join(seg.text.strip() for seg in segments).strip()
+        except Exception as exc:  # noqa: BLE001
+            self._broken = f"{type(exc).__name__}: {exc}"
+            log.error(
+                "faster-whisper is unavailable (%s). Verification is disabled for the rest of this render; "
+                "takes will be accepted without a WER check. A missing cudnn_ops*_8.dll or cudnn*_9.dll "
+                "usually means ctranslate2's cuDNN version doesn't match what's on PATH, try "
+                "'pip install --upgrade ctranslate2' to move it onto the cuDNN 9 your current torch ships.",
+                self._broken,
+            )
+            return None
 
 
 class WhisperXAligner:
@@ -130,13 +152,29 @@ def asr_words_from_meta(raw: object) -> list[WordTiming] | None:
 
 
 class MlxWhisperTranscriber:
-    """Whisper on the Apple GPU via MLX. Word timestamps ride along in ``clip.meta['asr_words']``."""
+    """Whisper on the Apple GPU via MLX. Word timestamps ride along in ``clip.meta['asr_words']``.
+
+    Same failure policy as FasterWhisperTranscriber: once transcription fails,
+    stop retrying and return None so the take-selection loop degrades to
+    unverified takes instead of crashing the render."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self.model = settings.mlx_whisper_model
+        self._broken: str | None = None
 
-    def transcribe(self, clip: AudioClip, language: str = "nl") -> str:
+    def transcribe(self, clip: AudioClip, language: str = "nl") -> str | None:
+        if self._broken:
+            return None
+        try:
+            return self._transcribe(clip, language)
+        except Exception as exc:  # noqa: BLE001
+            self._broken = f"{type(exc).__name__}: {exc}"
+            log.error("mlx-whisper is unavailable (%s). Verification is disabled for the rest of this render; "
+                     "takes will be accepted without a WER check.", self._broken)
+            return None
+
+    def _transcribe(self, clip: AudioClip, language: str) -> str:
         import mlx_whisper  # type: ignore
 
         result = mlx_whisper.transcribe(
