@@ -160,7 +160,7 @@ def status(book_id: Annotated[str | None, typer.Argument()] = None):
 @app.command()
 def inspect(book_id: str, chapter: str, tier: str = "final",
            only_suspect: Annotated[bool, typer.Option(help="Only turns that are flagged, unverified, or fallback-aligned.")] = False):
-    """Per-turn audit: WER, acceptance, alignment method and the audio file for every rendered turn.
+    """Per-turn audit: WER, acceptance, the exaggeration actually used, alignment method and the audio file for every rendered turn.
 
     Answers "waar hoor ik precies wat er mis is": every take the take-selection loop chose, with
     enough to go straight to the file and listen, instead of only the fully-flagged turns.
@@ -188,6 +188,7 @@ def inspect(book_id: str, chapter: str, tier: str = "final",
         if only_suspect and not (t.flagged or t.aligned_with_fallback or (take and take.wer is None)):
             continue
         wer = "onbekend" if take is None or take.wer is None else f"{take.wer:.3f}"
+        exag = "-" if take is None else f"{take.exaggeration:.2f}"
         marks = []
         if t.flagged:
             marks.append("GEVLAGD: " + (t.flag_reason or ""))
@@ -197,7 +198,7 @@ def inspect(book_id: str, chapter: str, tier: str = "final",
             marks.append("niet geverifieerd")
         mark_text = f"  <- {', '.join(marks)}" if marks else ""
         path = take.path if take else "-"
-        typer.echo(f"  {t.turn_id:>6} {t.speaker:<10} wer={wer:<8} {path}{mark_text}")
+        typer.echo(f"  {t.turn_id:>6} {t.speaker:<10} wer={wer:<8} exag={exag:<5} {path}{mark_text}")
         typer.echo(f"         {t.text_spoken[:110]}")
 
 
