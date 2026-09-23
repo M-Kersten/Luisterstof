@@ -43,6 +43,15 @@ hosts:
       - "vindt formele notatie onnodig ingewikkeld gemaakt"
       - "vindt dat elk begrip een tekening verdient"
     exaggeration: 0.55
+    # Prototype-performancelaag: labels uit het script -> getallen. Alleen afwijkingen van de
+    # standaardtabel in pipeline/performance.py hoeven hier; rate is een factor op speech_rate.
+    performance:
+      delivery:
+        explain: {rate: 0.95, exaggeration: -0.03}
+        excite: {rate: 1.10, exaggeration: 0.18}
+        punchline: {rate: 1.08, exaggeration: 0.15}
+      mood:
+        amused: 0.12
   - id: joris
     name: Joris
     role: skeptic
@@ -63,3 +72,10 @@ hosts:
     opinions:
       - "vindt dat elk vakgebied jargon verzint om buitenstaanders buiten te houden"
     exaggeration: 0.35
+    performance:
+      delivery:
+        explain: {rate: 0.92, exaggeration: -0.08}
+        excite: {rate: 1.05, exaggeration: 0.12}
+        disagree: {rate: 1.07, exaggeration: 0.05}
+      mood:
+        challenged: 0.03

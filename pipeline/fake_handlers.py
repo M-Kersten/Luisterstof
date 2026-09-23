@@ -168,6 +168,39 @@ def fake_script_segment(req: LLMRequest) -> dict:
     return {"lines": lines}
 
 
+def fake_script_scene(req: LLMRequest) -> dict:
+    """A prototype scene that exercises every performance moment the coverage check asks for."""
+    user = _text_of(req.user)
+    speakers_m = re.search(r"Toegestane sprekers: (.+?)\.", user)
+    speakers = [s.strip() for s in speakers_m.group(1).split(",")] if speakers_m else ["tessa", "joris"]
+    t, j = speakers[0], speakers[1] if len(speakers) > 1 else speakers[0]
+    lines: list[dict] = []
+
+    def line(speaker, text, delivery="", mood="", timing="", overlap="none", phrases=None, reaction="", tags=None):
+        lines.append({"speaker": speaker, "text": text, "tags": tags or [], "covers": [], "overlap": overlap,
+                      "pause_after_ms": 0, "delivery": delivery, "mood": mood, "timing": timing,
+                      "phrases": phrases or [], "reaction": reaction})
+
+    line(t, "Kijk, een kans is gewoon een getal tussen nul en een.", "explain", "confident")
+    line(j, "Nee, dat is te makkelijk. Een getal waarvan dan?", "disagree", "challenged", "immediate", tags=["skeptical"])
+    line(t, "Van hoe vaak iets gebeurt, als je het maar vaak genoeg herhaalt, dan kruipt het naar één vaste—", "explain",
+         "confident", "hesitate", phrases=[
+             {"text": "Van hoe vaak iets gebeurt,", "delivery": "explain", "pause_after": "short"},
+             {"text": "als je het maar vaak genoeg herhaalt, dan kruipt het naar één vaste—", "delivery": "excite",
+              "pause_after": "none"}])
+    line(j, "Wacht even, kruipt?", "interrupt", "challenged", overlap="interrupt")
+    line(t, "Hm, ja. Het komt steeds dichter bij de kans zelf.", "think", "thoughtful", "search")
+    line(j, "Ja.", reaction="ja", overlap="backchannel")
+    line(j, "Oh. Dus het is geen belofte over één keer gooien.", "realize", "surprised", "deliberate", phrases=[
+        {"text": "Oh.", "delivery": "realize", "pause_after": "beat"},
+        {"text": "Dus het is geen belofte over één keer gooien.", "delivery": "realize", "pause_after": "none"}])
+    line(t, "Precies. En daarom wint het casino altijd, ook als jij die ene avond geluk hebt.", "setup", "amused",
+         "immediate")
+    line(j, "(lacht)", reaction="laugh", overlap="backchannel")
+    line(j, "Dan ga ik voortaan gewoon één keer.", "punchline", "amused", "immediate", tags=["deadpan"])
+    return {"lines": lines}
+
+
 def fake_support(req: LLMRequest) -> dict:
     ids = re.findall(r"### Regel (l\d+)", _text_of(req.user))
     return {"verdicts": [{"line_id": i, "supported": True, "problem": None} for i in ids]}
@@ -193,6 +226,7 @@ def default_fake_llm() -> FakeLLM:
         "plan": fake_plan,
         "lexicon": fake_lexicon,
         "script_segment": fake_script_segment,
+        "script_scene": fake_script_scene,
         "support": fake_support,
         "lint": fake_lint,
         "continuity": fake_continuity,

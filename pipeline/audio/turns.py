@@ -7,6 +7,7 @@ so pauses and segment gaps can be inserted between renders.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from pipeline.models import Glossary, Line, Script, SegmentType
@@ -64,7 +65,9 @@ def spoken_text(line: Line, glossary: Glossary | None) -> str:
     return apply_lexicon(text, glossary) if glossary else text
 
 
-def group_turns(script: Script, glossary: Glossary | None = None) -> list[Turn]:
+def group_turns(script: Script, glossary: Glossary | None = None,
+                split_between: Callable[[Line, Line], bool] | None = None) -> list[Turn]:
+    """``split_between(prev, line)`` can force a new turn at a line boundary (performance prototype)."""
     turns: list[Turn] = []
     counter = 0
     for si, seg in enumerate(script.segments):
@@ -76,6 +79,7 @@ def group_turns(script: Script, glossary: Glossary | None = None) -> list[Turn]:
                 or line.overlap.mode != "none"
                 or current.last.pause_after_ms > 0
                 or current.last.overlap.mode != "none"
+                or (split_between is not None and split_between(current.last, line))
             )
             if starts_new:
                 counter += 1

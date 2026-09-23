@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import random
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from pipeline.audio.asr import WordTiming
@@ -128,7 +129,11 @@ def assemble(
     sr: int,
     seed: int = 7,
     max_unwritten_gap: float = 1.2,
+    timing_gap: Callable[[Turn], float | None] | None = None,
 ) -> Timeline:
+    """``timing_gap`` (performance prototype) returns the response gap a line's timing label asks
+    for, or None; it replaces the sampled gap on normal transitions only. Interrupts, backchannels
+    and segment boundaries keep their own rules."""
     rng = random.Random(seed)
     tl = Timeline(sr=sr)
     cursor = 0.0
@@ -160,7 +165,8 @@ def assemble(
             continue
 
         if mode == "backchannel" and target_ok and prev_any is not None:
-            point_share = LAUGH_POINT if any(t in ("laughs", "laughing") for t in turn.tags) else BACKCHANNEL_POINT
+            laugh = any(t in ("laughs", "laughing") for t in turn.tags) or turn.first.reaction in ("laugh", "chuckle")
+            point_share = LAUGH_POINT if laugh else BACKCHANNEL_POINT
             point = prev_any.start + prev_any.clip.duration_s * point_share
             start = _word_boundary_after(prev_any, point)
             placement = Placement(turn, clip, start, [w.shifted(start) for w in rel_words], gain_db=BACKCHANNEL_GAIN_DB, advances=False)
@@ -180,10 +186,14 @@ def assemble(
             and prev_advancing.turn.speaker != turn.speaker
             and is_quick_handoff(prev_advancing.turn.last)
         )
+        labelled = timing_gap(turn) if (timing_gap and prev_advancing is not None and not segment_change) else None
         if prev_advancing is None:
             gap = 0.0
         elif segment_change:
             gap = rng.uniform(*SEGMENT_GAP_RANGE)
+        elif labelled is not None:
+            gap = labelled
+            quick = gap < 0
         elif quick:
             gap = rng.uniform(*QUICK_GAP_RANGE)
         else:
@@ -198,7 +208,8 @@ def assemble(
             prev_advancing.duck_db = QUICK_DUCK_DB
             prev_advancing.duck_fade = QUICK_DUCK_FADE
         if prev_advancing is not None:
-            prev_advancing.deliberate_gap_after = pending_gap + (gap - pending_gap if segment_change else 0.0)
+            written = segment_change or labelled is not None  # a timing label is a written beat, not an accident
+            prev_advancing.deliberate_gap_after = pending_gap + (gap - pending_gap if written else 0.0)
         tl.placements.append(placement)
         cursor = placement.end
         prev_advancing = placement

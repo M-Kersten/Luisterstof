@@ -253,6 +253,24 @@ class Overlap(Contract):
     cut_word: str | None = None  # for interrupt: word in the target line where this line starts
 
 
+# Performance labels (opt-in prototype layer). The writer picks labels; cast/hosts.yaml maps them to numbers.
+Delivery = Literal["explain", "think", "excite", "react", "interrupt", "realize", "disagree", "setup", "punchline"]
+Mood = Literal["confident", "challenged", "surprised", "amused", "thoughtful", "calm"]
+Timing = Literal["immediate", "hesitate", "search", "deliberate"]
+PhrasePause = Literal["none", "short", "beat"]
+Reaction = Literal["laugh", "chuckle", "sigh", "hm", "ja", "oh", "wacht", "precies"]
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+class Phrase(Contract):
+    text: str
+    delivery: Delivery | None = None
+    pause_after: PhrasePause = "none"
+
+
 class Line(Contract):
     id: str
     speaker: str
@@ -261,6 +279,11 @@ class Line(Contract):
     covers: list[str] = Field(default_factory=list)
     overlap: Overlap = Field(default_factory=Overlap)
     pause_after_ms: int = 0  # deliberate beat after this line (quiz pauses)
+    delivery: Delivery | None = None
+    mood: Mood | None = None  # the speaker's persistent state while saying this
+    timing: Timing | None = None  # response timing before this line (normal transitions only)
+    phrases: list[Phrase] = Field(default_factory=list)  # optional split of text; joins back to text exactly
+    reaction: Reaction | None = None  # audio comes from the reaction bank instead of synthesis
 
     @field_validator("text")
     @classmethod
@@ -268,6 +291,15 @@ class Line(Contract):
         if not v.strip():
             raise ValueError("line text is empty")
         return v.strip()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _phrases_must_rebuild_text(cls, data):
+        if isinstance(data, dict) and data.get("phrases"):
+            parts = [p.get("text", "") if isinstance(p, dict) else getattr(p, "text", "") for p in data["phrases"]]
+            if _squash(" ".join(parts)) != _squash(str(data.get("text", ""))):
+                data = {**data, "phrases": []}
+        return data
 
     @property
     def ends_with_fragment(self) -> bool:
@@ -403,6 +435,12 @@ class AuditResult(Contract):
 # Cast and continuity
 # ---------------------------------------------------------------------------
 
+class EqBand(Contract):
+    freq_hz: float
+    gain_db: float
+    q: float = 1.0
+
+
 class Host(Contract):
     id: str
     name: str
@@ -422,6 +460,8 @@ class Host(Contract):
     speech_rate: float = 1.0  # post-render pitch-preserving time-stretch; <1.0 slower, >1.0 faster, 1.0 = off
     temperature: float = 0.8  # Chatterbox sampling temperature; higher gives more delivery variation, less consistency
     chars_per_second: float | None = None
+    performance: dict = Field(default_factory=dict)  # label -> numbers overrides, merged over pipeline.performance defaults
+    eq: list[EqBand] = Field(default_factory=list)  # manual EQ on top of the automatic shared-chain correction
 
 
 class Guest(Contract):
@@ -439,6 +479,8 @@ class Guest(Contract):
     speech_rate: float = 1.0
     temperature: float = 0.8
     chars_per_second: float | None = None
+    performance: dict = Field(default_factory=dict)
+    eq: list[EqBand] = Field(default_factory=list)
 
 
 class Cast(Contract):
@@ -515,6 +557,7 @@ class TurnRender(Contract):
     flagged: bool = False
     flag_reason: str | None = None
     aligned_with_fallback: bool = False  # true when real forced alignment failed and word timing was estimated
+    performance: dict = Field(default_factory=dict)  # prototype only: labels, rates, pauses, reaction source
 
     @property
     def chosen_take(self) -> TakeRecord | None:
@@ -529,6 +572,7 @@ class RenderManifest(Contract):
     synth: str
     turns: list[TurnRender] = Field(default_factory=list)
     block_overrides: dict[str, str] = Field(default_factory=dict)  # block id -> audio path (accent tier)
+    acoustics: dict[str, dict[str, float]] = Field(default_factory=dict)  # prototype: per-speaker EQ correction applied
     created_at: str = Field(default_factory=now_iso)
 
     def flagged_turns(self) -> list[TurnRender]:
@@ -538,7 +582,7 @@ class RenderManifest(Contract):
         """(verified, total) among turns with a chosen take. Meaningless for a deterministic
         synth (Piper draft), which never runs WER verification by design regardless of whether
         a transcriber is configured."""
-        with_take = [t for t in self.turns if t.chosen_take is not None]
+        with_take = [t for t in self.turns if t.chosen_take is not None and t.chosen_take.reason != "reaction bank"]
         verified = sum(1 for t in with_take if t.chosen_take.wer is not None)
         return verified, len(with_take)
 

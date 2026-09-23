@@ -1,0 +1,12 @@
+# Gedeelde opnameketen (performance-prototype). Voor iedere spreker hetzelfde; alleen
+# de automatische EQ-correctie verschilt per stem, en die trekt de klankkleuren niet gelijk,
+# hij haalt alleen verschillen in "opnameketen" weg (dof/scherp, boemerig, kantelend).
+match:
+  strength: 0.5   # 0 = geen correctie, 1 = volledig naar het gedeelde gemiddelde
+  max_db: 6       # nooit meer dan dit per octaafband
+profile:          # dezelfde "microfoon" voor iedereen
+  highpass_hz: 80
+  presence: {freq_hz: 4000, gain_db: 1.5, q: 0.8}
+bus:              # op de opgetelde dialoog: dezelfde compressor en dezelfde kamer
+  compressor: {threshold_db: -20, ratio: 2.5, attack_ms: 10, release_ms: 120}
+  room: {room_size: 0.12, damping: 0.6, wet_level: 0.06, dry_level: 1.0, width: 0.0}

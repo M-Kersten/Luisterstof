@@ -189,6 +189,49 @@ Overlap and gap timing make the *rhythm* of a conversation; a script where the h
 
 Together these are what let `exaggeration` and `temperature` (see below) run higher for a genuinely lively episode without every scene reading as one host performing next to a mannequin.
 
+### Performance prototype (opt-in, not yet in the main pipeline)
+
+A layer that makes delivery follow the conversation instead of every line sounding the same. It is built as a prototype that renders one scene in labelled variants. The normal `script`/`render` path is untouched until listening shows it clearly helps.
+
+```bash
+studiepodcast doctor                                   # alignment must be real: phrasing is skipped on estimated timing
+studiepodcast reactions generate --speaker joris --label laugh --n 12   # candidates to curate, per speaker and label
+studiepodcast reactions list
+studiepodcast prototype-scene <book> <chapter>
+```
+
+`prototype-scene` has the writer produce one ~75 s scene with performance labels per line, and checks that it contains:
+
+- an explanation
+- a disagreement
+- an interruption
+- a realization
+- a laugh
+- a backchannel
+- a quick overlapping handoff
+- three or more different speaking rates
+
+If any are missing, the writer gets one retry. The scene is saved, then rendered five ways into `data/books/<book>/prototype/<chapter>/`:
+
+| file | what's on |
+|---|---|
+| `scene_current.mp3` | today's pipeline, labels ignored |
+| `scene_timing.mp3` | response timing from labels + reaction bank |
+| `scene_phrasing.mp3` | delivery/mood → exaggeration and rate, phrase-level re-timing |
+| `scene_acoustics.mp3` | today's pipeline + shared recording chain only |
+| `scene_full.mp3` | everything |
+
+`report.md` next to them lists per turn the labels, exaggeration, per-phrase rate and pauses, where each reaction came from, whether alignment was real, and why phrasing was skipped where it was.
+
+How the parts work:
+
+- **Labels, not numbers.** The writer picks `delivery` (explain, think, excite, react, interrupt, realize, disagree, setup, punchline), `mood` (persistent speaker state), `timing` (immediate, hesitate, search, deliberate) and optional `phrases` inside a line. The numbers live per host under `performance:` in `cast/hosts.yaml`, merged over the defaults in `pipeline/performance.py`. Inside a range, the exact value comes from a seed, so reruns are identical.
+- **Hybrid phrasing.** Chatterbox has no context between calls, so a separately generated fragment ends on sentence-final intonation. Each turn is therefore still rendered in one pass, then cut between aligned words and re-timed per phrase, with pauses inserted. On estimated word timing that cut would land mid-word, so the turn is left alone and the report says so.
+- **Reaction bank.** Chatterbox Multilingual has no `[laugh]` tags, and one-word generations are unreliable. Laughs, sighs and short reactions come from `cast/reactions/<speaker>/<label>/*.wav`. Generate candidates, keep the good ones, or drop in real recordings. A label with an empty bank folder falls back to synthesis and the report says so.
+- **Shared acoustics** (`cast/acoustics.yaml`). A partial per-speaker EQ correction toward the shared average spectrum removes chain differences without matching the timbres. Manual `eq:` bands per host go on top, e.g. `eq: [{freq_hz: 300, gain_db: -2, q: 1.0}]`. Then the same high-pass and presence profile for everyone, one compressor and one small room on the dialogue bus.
+
+Alignment cache: an alignment that was estimated is no longer reused from cache. It is retried on the next render, so after fixing WhisperX/MLX Whisper those turns get real word timing without clearing anything.
+
 ### Locating and verifying voice quality problems
 
 Every rendered turn is judged twice and both judgements are recorded in the render manifest: faster-whisper (or MLX Whisper) re-transcribes the chosen take and scores it against the script text (WER), and a forced aligner places every word in time for the timeline logic to cut on. Neither step crashes the render when it fails, an unreachable transcriber or a broken CUDA/cuDNN install degrades to "accept unverified" or "estimate word positions evenly", by design, so a bad machine still finishes a render. That also means a render can complete and sound wrong without ever raising an error. Three ways to see what actually happened, from least to most detail:

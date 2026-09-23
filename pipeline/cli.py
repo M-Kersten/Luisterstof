@@ -318,6 +318,65 @@ def doctor():
     typer.echo(f"stings: {', '.join(stings) or 'none'}")
 
 
+@app.command("prototype-scene")
+def prototype_scene(book_id: str, chapter: str):
+    """Performance prototype: write one ~75 s labelled scene and render it as labelled variants.
+
+    Output in data/books/<book>/prototype/<chapter>/: scene_current, scene_timing, scene_phrasing,
+    scene_acoustics, scene_full (.mp3), scene.script.json and report.md.
+    """
+    from pipeline.prototype import run_prototype
+
+    result = run_prototype(_pipeline(), book_id, chapter)
+    missing = [k for k, ok in result.coverage.items() if not ok]
+    typer.echo(f"  scene: {len(list(result.scene.lines()))} regels"
+               + (f", ontbreekt: {', '.join(missing)}" if missing else ", alle momenten aanwezig"))
+    for name, path in result.files.items():
+        m = result.manifests[name]
+        typer.echo(f"  {name:<10} {path}  (geschatte uitlijning: {m.alignment_fallback_count()})")
+    typer.echo(f"  rapport: {result.report}")
+    if any(m.alignment_fallback_count() for m in result.manifests.values()):
+        typer.echo("  [!!] een deel van de beurten heeft geschatte woordtiming; daar is phrasing overgeslagen. "
+                   "Draai `studiepodcast doctor`.")
+
+
+reactions_app = typer.Typer(help="Reaction bank: curated laughs, sighs and short reactions per speaker.", no_args_is_help=True)
+app.add_typer(reactions_app, name="reactions")
+
+
+@reactions_app.command("generate")
+def reactions_generate(speaker: Annotated[str, typer.Option(help="Speaker id, e.g. tessa")],
+                       label: Annotated[str, typer.Option(help="laugh, chuckle, sigh, hm, ja, oh, wacht, precies")],
+                       n: int = 12):
+    """Render candidates into cast/reactions/_candidates/<speaker>/<label>/; move the good ones into
+    cast/reactions/<speaker>/<label>/ (real recorded clips can go there directly too)."""
+    from pipeline.audio.reactions import ReactionBank, generate_candidates
+    from pipeline.audio.synth import make_synth, voice_spec_for
+    from pipeline.script.cast import load_cast
+
+    settings = state["settings"]
+    cast = load_cast(settings.cast_dir)
+    voice = voice_spec_for(cast.speaker(speaker), settings.cast_dir)
+    synth = make_synth("null" if state["fake_audio"] else "final", settings, pool=False)
+    out_dir = ReactionBank(settings.cast_dir).candidates_dir(speaker, label)
+    for path in generate_candidates(synth, voice, label, out_dir, n=n):
+        typer.echo(f"  {path}")
+    typer.echo(f"  beluister ze en verplaats de goede naar {ReactionBank(settings.cast_dir).root / speaker / label}")
+
+
+@reactions_app.command("list")
+def reactions_list():
+    """How many curated clips each speaker has per reaction label."""
+    from pipeline.audio.reactions import ReactionBank
+    from pipeline.script.cast import load_cast
+
+    settings = state["settings"]
+    cast = load_cast(settings.cast_dir)
+    speakers = [s.id for s in list(cast.hosts) + list(cast.guests)]
+    for speaker, labels in ReactionBank(settings.cast_dir).coverage(speakers).items():
+        typer.echo(f"  {speaker:<14} " + "  ".join(f"{k}={v}" for k, v in labels.items()))
+
+
 @app.command()
 def continuity(last: int = 10):
     """Print the continuity log the writer will see."""

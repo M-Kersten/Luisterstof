@@ -269,6 +269,34 @@ class SegmentOut(BaseModel):
     lines: list[LineOut]
 
 
+class PhraseOut(BaseModel):
+    text: str = Field(description="Een stuk van de regel, letterlijk. Alle stukken samen vormen precies de tekst van de regel.")
+    delivery: str = Field(description="Voordracht van dit stuk, zelfde labels als bij de regel, of leeg.")
+    pause_after: str = Field(description="Stilte na dit stuk: none, short of beat.")
+
+
+class PerformanceLineOut(LineOut):
+    delivery: str = Field(description="Hoe de regel gebracht wordt: explain, think, excite, react, interrupt, realize, disagree, setup, punchline.")
+    mood: str = Field(description="Toestand van de spreker nu: confident, challenged, surprised, amused, thoughtful, calm.")
+    timing: str = Field(description="Hoe snel deze regel volgt op de vorige: immediate, hesitate, search, deliberate. Leeg bij overlap.")
+    phrases: list[PhraseOut] = Field(description="Alleen bij langere regels met een omslag erin: de regel opgeknipt in stukken. Anders leeg.")
+    reaction: str = Field(description="Alleen voor een kale reactie: laugh, chuckle, sigh, hm, ja, oh, wacht, precies. Anders leeg.")
+
+
+class PerformanceSegmentOut(BaseModel):
+    lines: list[PerformanceLineOut]
+
+
+PERFORMANCE_RULES = """
+## Voordracht (performance-labels)
+Elke regel krijgt labels die bepalen hoe hij klinkt. Kies ze op basis van wat er in het gesprek gebeurt, nooit om variatie te maken.
+- delivery: explain (uitleg, rustiger), think (hardop denken, trager), excite (enthousiast, sneller), react (reactie op de ander), interrupt (kort en snel ertussen), realize (het kwartje valt), disagree (tegenspreken, snel), setup (aanloop naar een grap), punchline (de grap zelf, snel na de aanloop).
+- mood: de toestand van de spreker (confident, challenged, surprised, amused, thoughtful, calm). Een toestand blijft staan tot er iets gebeurt dat hem verandert. Een uitdaging maakt iemand challenged, een onverwacht punt surprised, een grap amused.
+- timing: hoe snel deze regel volgt. immediate bij tegenspreken en snelle wisselingen, hesitate als iemand even moet nadenken, search als iemand naar woorden zoekt, deliberate vóór een realisatie of een belangrijk punt. Leeg bij interrupt en backchannel.
+- phrases: knip een regel alleen op als er binnen de regel een omslag zit, bijvoorbeeld "Ik snap wat je bedoelt..." (react) + "maar wacht even—" (interrupt, pause_after none) + "dat kan toch helemaal niet?" (disagree). Na een realisatie een beat, dan trager verder. De stukken samen zijn letterlijk de regeltekst.
+- reaction: kleine reacties (hm, ja, oh, wacht, precies, een lach, een zucht) zijn eigen korte regels met reaction gezet, meestal als backchannel onder de ander door. Iemand reageert zonder het woord over te nemen.
+"""
+
 WRITER_RULES = """Je schrijft het script van een Nederlandse studiepodcast met een vaste cast. Eén aflevering per hoofdstuk van een studieboek. Alles in het Nederlands.
 
 ## De twee motoren
@@ -347,21 +375,28 @@ def _lines_text(script: Script, limit_chars: int = 30000) -> str:
         for line in seg.lines:
             tag = f" ({', '.join(line.tags)})" if line.tags else ""
             ov = f" [{line.overlap.mode}]" if line.overlap.mode != "none" else ""
-            rows.append(f"[{line.id}] {line.speaker}{tag}{ov}: {line.text}")
+            perf = [f"{k}={v}" for k, v in (("delivery", line.delivery), ("mood", line.mood), ("timing", line.timing),
+                                            ("reaction", line.reaction)) if v]
+            perf_text = f" {{{', '.join(perf)}}}" if perf else ""
+            rows.append(f"[{line.id}] {line.speaker}{tag}{ov}{perf_text}: {line.text}")
     text = "\n".join(rows)
     return text[-limit_chars:] if len(text) > limit_chars else text
 
 
 class Writer:
-    def __init__(self, llm: LLM, cast: Cast, settings: Settings, continuity: list[ContinuityEntry] | None = None):
+    def __init__(self, llm: LLM, cast: Cast, settings: Settings, continuity: list[ContinuityEntry] | None = None,
+                 *, performance: bool = False):
         self.llm = llm
         self.cast = cast
         self.settings = settings
         self.continuity = continuity or []
+        self.performance = performance
 
     # System prefix: identical for every segment call of one episode.
     def _system(self, plan: ContentPlan, glossary: Glossary | None, guest: Guest | None, briefs: list[SegmentBrief]) -> list[dict]:
         rules = WRITER_RULES.format(tags=", ".join(known_tags()), cps=int(self.settings.chars_per_second))
+        if self.performance:
+            rules += PERFORMANCE_RULES
         outline = "## Opbouw van deze aflevering\n" + "\n".join(
             f"{i + 1}. {b.title} ({b.type}, ~{b.target_chars} tekens, dekt {', '.join(b.covers) or 'niets'})"
             for i, b in enumerate(briefs)
@@ -419,6 +454,7 @@ class Writer:
                 tags=[t for t in raw.tags if t in known_tags()][:2],
                 covers=[c.strip() for c in raw.covers if c.strip()],
                 pause_after_ms=max(0, int(raw.pause_after_ms or 0)),
+                **(_performance_fields(raw, text) if isinstance(raw, PerformanceLineOut) else {}),
             )
             mode = raw.overlap if raw.overlap in ("interrupt", "backchannel") else "none"
             if mode != "none" and prev is not None and prev.speaker != speaker:
@@ -465,6 +501,22 @@ class Writer:
             assert isinstance(out, SegmentOut)
             script.segments.append(self._materialise(out, brief, script))
             log.info("segment %s: %d lines", brief.title, len(script.segments[-1].lines))
+        return script
+
+    def write_scene(self, plan: ContentPlan, glossary: Glossary | None, brief: SegmentBrief, *,
+                    fix: str | None = None, episode_id: str | None = None) -> Script:
+        """One stand-alone segment with performance labels (the prototype scene)."""
+        script = Script(episode_id=episode_id or plan.chapter_id, target_minutes=2, title=brief.title)
+        request = LLMRequest(
+            task="script_scene",
+            system=self._system(plan, glossary, None, [brief]),
+            user=self._user(brief, script, 2, fix=fix),
+            schema=PerformanceSegmentOut if self.performance else SegmentOut,
+            effort="high",
+            metadata={"segment": brief.type},
+        )
+        out = self.llm.generate(request)
+        script.segments.append(self._materialise(out, brief, script))  # type: ignore[arg-type]
         return script
 
     def _interrupt_budget(self, target_minutes: int) -> int:
@@ -530,6 +582,27 @@ class Writer:
         if seg.type == "guest":
             ids += [g.id for g in self.cast.guests]
         return ids
+
+
+def _label(value: str | None, allowed: tuple[str, ...]) -> str | None:
+    value = (value or "").strip().casefold()
+    return value if value in allowed else None
+
+
+def _performance_fields(raw: PerformanceLineOut, text: str) -> dict:
+    """Keep only labels from the known vocabularies; phrases that don't rebuild the text are dropped by Line itself."""
+    from pipeline.performance import DELIVERIES, MOODS, PHRASE_PAUSES, REACTIONS, TIMINGS
+
+    phrases = [{"text": p.text.strip(), "delivery": _label(p.delivery, DELIVERIES),
+                "pause_after": _label(p.pause_after, PHRASE_PAUSES) or "none"}
+               for p in raw.phrases if p.text.strip()]
+    return {
+        "delivery": _label(raw.delivery, DELIVERIES),
+        "mood": _label(raw.mood, MOODS),
+        "timing": _label(raw.timing, TIMINGS),
+        "reaction": _label(raw.reaction, REACTIONS),
+        "phrases": phrases if len(phrases) > 1 else [],
+    }
 
 
 def _bump(line_id: str) -> str:

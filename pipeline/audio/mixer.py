@@ -82,9 +82,11 @@ def room_tone(n: int, sr: int, level_db: float = -60.0, seed: int = 1) -> np.nda
     return out * (db_to_gain(level_db) / rms)
 
 
-def _prepare(placement: Placement, sr: int, line_lufs: float) -> np.ndarray:
+def _prepare(placement: Placement, sr: int, line_lufs: float, acoustics=None) -> np.ndarray:
     clip = placement.clip
     samples = resample(clip.samples, clip.sr, sr) if clip.sr != sr else clip.samples
+    if acoustics is not None:
+        samples = acoustics.process_speaker(placement.turn.speaker, samples, sr)  # before loudness, so levels stay even
     samples = normalise_loudness(samples, sr, line_lufs)
     samples = samples * db_to_gain(placement.gain_db)
     if placement.duck_at is not None:
@@ -107,8 +109,13 @@ def mix(
     room_tone_db: float | None = -60.0,
     tail_s: float = 1.0,
     head_s: float = 0.3,
+    acoustics=None,
 ) -> tuple[AudioClip, float]:
-    """Returns the mixed episode and the offset (seconds) the dialogue was shifted by."""
+    """Returns the mixed episode and the offset (seconds) the dialogue was shifted by.
+
+    ``acoustics`` (pipeline.audio.acoustics.Acoustics, performance prototype) adds per-speaker
+    EQ + the shared recording profile per line, and a shared compressor and room on the dialogue bus.
+    """
     offset = head_s
     intro_samples = None
     if intro is not None:
@@ -125,8 +132,14 @@ def mix(
 
     if intro_samples is not None:
         _add(buffer, fade(intro_samples, sr, 0.01, 0.5), int(head_s * sr))
-    for placement in timeline.placements:
-        _add(buffer, _prepare(placement, sr, line_lufs), int((placement.start + offset) * sr))
+    if acoustics is None:
+        for placement in timeline.placements:
+            _add(buffer, _prepare(placement, sr, line_lufs), int((placement.start + offset) * sr))
+    else:
+        dialogue = np.zeros_like(buffer)
+        for placement in timeline.placements:
+            _add(dialogue, _prepare(placement, sr, line_lufs, acoustics), int((placement.start + offset) * sr))
+        buffer += acoustics.process_bus(dialogue, sr)
     if outro_samples is not None:
         _add(buffer, fade(outro_samples, sr, 0.3, 0.5), int((offset + timeline.duration + 0.4) * sr))
     if room_tone_db is not None:

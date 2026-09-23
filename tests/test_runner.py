@@ -83,10 +83,17 @@ def test_render_manifest_tracks_alignment_fallback_per_turn(ingested):
     verified, verifiable = manifest.verification_coverage()
     assert verified == verifiable == len(with_take)  # EchoTranscriber always matches exactly
 
-    calls_before = aligner.calls
-    _, _, manifest2 = p.render("demo", "ch01", aligner=aligner, force=True)
-    assert aligner.calls == calls_before  # cache hit: the saved fallback flag is reused, not recomputed
-    assert [t.aligned_with_fallback for t in manifest2.turns] == [t.aligned_with_fallback for t in manifest.turns]
+    class FixedAligner(AlternatingAligner):
+        def align(self, clip, text, language="nl"):
+            words = super().align(clip, text, language)
+            self.last_used_fallback = False  # the aligner works now
+            return words
+
+    fixed = FixedAligner()
+    _, _, manifest2 = p.render("demo", "ch01", aligner=fixed, force=True)
+    # real alignments come from cache; only the estimated ones are retried, and a working aligner heals them
+    assert 0 < fixed.calls <= manifest.alignment_fallback_count()
+    assert manifest2.alignment_fallback_count() == 0
 
 
 def test_eleven_blocks_spliced(ingested):

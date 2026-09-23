@@ -11,12 +11,21 @@ from pipeline.audio.asr import Aligner, Transcriber, UniformAligner, WordTiming
 from pipeline.audio.cache import RenderCache
 from pipeline.audio.chunker import chunk_script
 from pipeline.audio.mixer import build_transcript, export_blocks, load_sting, mix
+from pipeline.audio.performance_render import (
+    PerformanceOptions,
+    Tables,
+    edit_phrases,
+    phrase_plan,
+    split_hook,
+    turn_exaggeration_delta,
+    turn_timing_gap,
+)
 from pipeline.audio.synth import AudioClip, Synth, VoiceSpec, voice_spec_for
 from pipeline.audio.takes import render_with_takes
 from pipeline.audio.timeline import assemble
 from pipeline.audio.turns import Turn, group_turns
 from pipeline.config import Settings
-from pipeline.models import Cast, Glossary, RenderManifest, Script, TurnRender
+from pipeline.models import Cast, Glossary, RenderManifest, Script, TakeRecord, TurnRender
 from pipeline.paths import BookPaths
 from pipeline.tags import exaggeration_for
 
@@ -54,11 +63,20 @@ def render_episode(
     on_event: EventFn | None = None,
     only_lines: set[str] | None = None,
     seed: int = 7,
+    performance: PerformanceOptions | None = None,
 ) -> tuple[Path, Path, RenderManifest]:
+    """``performance`` is the opt-in prototype layer; None renders exactly as before."""
     cache = RenderCache(paths.cache_dir)
     voices = _voices(cast, settings)
-    turns = group_turns(script, glossary)
+    tables = Tables(cast) if performance else None
+    split = split_hook(tables, performance) if performance and tables else None
+    turns = group_turns(script, glossary, split_between=split)
     aligner = aligner or UniformAligner()
+    bank = None
+    if performance and performance.reactions:
+        from pipeline.audio.reactions import ReactionBank
+
+        bank = ReactionBank(settings.cast_dir)
     manifest = RenderManifest(episode_id=script.episode_id, tier=tier, synth=synth.name)  # type: ignore[arg-type]
     previous_manifest = RenderManifest.load_or_none(paths.manifest(script.episode_id, tier))
     if previous_manifest is not None:
@@ -75,7 +93,22 @@ def render_episode(
             manifest.turns.append(TurnRender(turn_id=turn.turn_id, speaker=turn.speaker, line_ids=turn.line_ids,
                                              text_spoken=turn.text, flagged=True, flag_reason="onbekende spreker"))
             continue
+        if bank is not None and len(turn.lines) == 1 and turn.first.reaction:
+            reaction_path = bank.pick(turn.speaker, turn.first.reaction, seed, turn.first.id)
+            if reaction_path is not None:
+                clip = _bank_clip(reaction_path, synth.sample_rate)
+                take = TakeRecord(seed=0, exaggeration=0.0, path=str(reaction_path), duration_s=clip.duration_s,
+                                  accepted=True, reason="reaction bank")
+                manifest.turns.append(TurnRender(turn_id=turn.turn_id, speaker=turn.speaker, line_ids=turn.line_ids,
+                                                 text_spoken=turn.text, takes=[take], chosen=0,
+                                                 performance={"reaction": turn.first.reaction, "source": "bank"}))
+                rendered[turn.turn_id] = (clip, UniformAligner().align(clip, turn.text))
+                _emit(on_event, "turn", index=i + 1, total=len(turns), turn=turn.turn_id, speaker=turn.speaker,
+                      cached=True, flagged=False)
+                continue
         target = exaggeration_for(turn.tags, voice.base_exaggeration)
+        if performance and performance.delivery and tables is not None:
+            target = max(0.15, min(0.95, target + turn_exaggeration_delta(tables, turn)))
         carried = state.get(turn.speaker, target)
         exaggeration = EMOTION_CARRY * carried + (1 - EMOTION_CARRY) * target
         if last_speaker is not None and last_speaker != turn.speaker and last_exaggeration is not None:
@@ -97,7 +130,7 @@ def render_episode(
         manifest.turns.append(tr)
         if result.clip is not None:
             cached = load_alignment(cache, result.take_key) if result.take_key else None
-            if cached is not None:
+            if cached is not None and not cached[1]:  # estimated timing is retried, so a fixed aligner heals the cache
                 words, used_fallback = cached
             else:
                 words = aligner.align(result.clip, turn.text)
@@ -105,16 +138,29 @@ def render_episode(
                 if result.take_key:
                     save_alignment(cache, result.take_key, words, fallback=used_fallback)
             tr.aligned_with_fallback = used_fallback
-            rendered[turn.turn_id] = (result.clip, words)
+            clip = result.clip
+            if performance:
+                tr.performance = _performance_record(turn, exaggeration)
+                if bank is not None and turn.first.reaction:
+                    tr.performance.update(reaction=turn.first.reaction, source="synth (bank empty for this label)")
+            if performance and performance.phrasing and tables is not None:
+                clip, words = _apply_phrasing(turn, clip, words, used_fallback, tables, glossary, seed, tr)
+            rendered[turn.turn_id] = (clip, words)
         _emit(on_event, "turn", index=i + 1, total=len(turns), turn=turn.turn_id, speaker=turn.speaker,
               cached=result.from_cache, flagged=result.flagged)
 
-    timeline = assemble(turns, rendered, sr=synth.sample_rate, seed=seed, max_unwritten_gap=settings.max_unwritten_gap_s)
+    timing = turn_timing_gap(tables, seed) if performance and performance.timing and tables is not None else None
+    timeline = assemble(turns, rendered, sr=synth.sample_rate, seed=seed, max_unwritten_gap=settings.max_unwritten_gap_s,
+                        timing_gap=timing)
     _apply_block_overrides(timeline, turns, manifest, cache)
     sr = settings.sample_rate if tier == "final" else synth.sample_rate
     intro = load_sting(settings.cast_dir / "stings" / "intro.wav")
     outro = load_sting(settings.cast_dir / "stings" / "outro.wav")
-    mixed, offset = mix(timeline, sr=sr, target_lufs=settings.target_lufs, line_lufs=settings.line_lufs, intro=intro, outro=outro)
+    acoustics = _fit_acoustics(timeline, cast, settings, sr) if performance and performance.acoustics else None
+    if acoustics is not None:
+        manifest.acoustics = acoustics.report()
+    mixed, offset = mix(timeline, sr=sr, target_lufs=settings.target_lufs, line_lufs=settings.line_lufs, intro=intro, outro=outro,
+                        acoustics=acoustics)
 
     audio_path = paths.out_audio(script.episode_id, tier)
     mixed.write(audio_path)
@@ -141,6 +187,50 @@ def render_episode(
                        "interrupt cut points and backchannel placement on those turns are approximate and can "
                        "land mid-word.", fallback_count, len(manifest.turns))
     return audio_path, transcript_path, manifest
+
+
+def _fit_acoustics(timeline, cast: Cast, settings: Settings, sr: int):
+    from pipeline.audio.acoustics import Acoustics, AcousticsConfig
+    from pipeline.audio.synth import resample
+
+    speech: dict[str, list] = {}
+    for p in timeline.placements:
+        if p.advances and not p.turn.first.reaction:  # full lines only: backchannels and laughs would skew the spectrum
+            speech.setdefault(p.turn.speaker, []).append(resample(p.clip.samples, p.clip.sr, sr))
+    return Acoustics.fit(speech, sr, cast, AcousticsConfig.load(settings.cast_dir))
+
+
+def _bank_clip(path: Path, sr: int) -> AudioClip:
+    from pipeline.audio.synth import resample
+
+    clip = AudioClip.read(path)
+    return AudioClip(resample(clip.samples, clip.sr, sr), sr, meta={"reaction_bank": str(path)})
+
+
+def _performance_record(turn: Turn, exaggeration: float) -> dict:
+    return {
+        "lines": [{"id": line.id, "delivery": line.delivery, "mood": line.mood, "timing": line.timing,
+                   "reaction": line.reaction, "phrases": len(line.phrases)} for line in turn.lines],
+        "exaggeration": exaggeration,
+    }
+
+
+def _apply_phrasing(turn: Turn, clip: AudioClip, words: list[WordTiming], used_fallback: bool, tables: Tables,
+                    glossary: Glossary | None, seed: int, tr: TurnRender) -> tuple[AudioClip, list[WordTiming]]:
+    segs = phrase_plan(turn, tables, glossary, seed)
+    if used_fallback:
+        tr.performance["phrasing"] = "skipped: estimated word timing, a cut would land mid-word"
+        return clip, words
+    try:
+        edited, new_words, applied = edit_phrases(clip, words, segs)
+    except ValueError as exc:
+        tr.performance["phrasing"] = f"skipped: {exc}"
+        return clip, words
+    tr.performance["phrasing"] = [{"words": s.words, "delivery": s.delivery, "rate": r, "pause_after_s": round(s.pause_after_s, 3)}
+                                  for s, r in zip(segs, applied, strict=True)]
+    if any(abs(r - s.rate) > 1e-6 for s, r in zip(segs, applied, strict=True)):
+        tr.performance["phrasing_note"] = "rates not applied: librosa missing"
+    return edited, new_words
 
 
 def _apply_block_overrides(timeline, turns: list[Turn], manifest: RenderManifest, cache: RenderCache) -> None:
