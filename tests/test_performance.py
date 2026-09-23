@@ -206,3 +206,19 @@ def test_prototype_scene_command_writes_every_variant_and_a_report(tmp_path, sam
     assert any(line.reaction == "laugh" for line in scene.lines()) and "(lacht)" not in report
     result = runner.invoke(cli.app, [*common, "reactions", "list"])
     assert result.exit_code == 0 and "laugh=0" in result.output
+
+
+def test_reactions_generate_all_labels_for_both_hosts(tmp_path, cast_dir):
+    from pipeline import cli
+
+    cli.state.clear()
+    common = ["--data-dir", str(tmp_path / "data"), "--cast-dir", str(cast_dir), "--fake-audio"]
+    result = CliRunner().invoke(cli.app, [*common, "reactions", "generate", "--n", "2"])
+    assert result.exit_code == 0, result.output
+    from pipeline.performance import REACTIONS
+
+    for speaker in ("tessa", "joris"):
+        for label in REACTIONS:
+            assert len(list((cast_dir / "reactions" / "_candidates" / speaker / label).glob("*.wav"))) == 2
+    bad = CliRunner().invoke(cli.app, [*common, "reactions", "generate", "--label", "giggle"])
+    assert bad.exit_code != 0

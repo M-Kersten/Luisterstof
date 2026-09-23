@@ -195,7 +195,7 @@ A layer that makes delivery follow the conversation instead of every line soundi
 
 ```bash
 studiepodcast doctor                                   # alignment must be real: phrasing is skipped on estimated timing
-studiepodcast reactions generate --speaker joris --label laugh --n 12   # candidates to curate, per speaker and label
+studiepodcast reactions generate                     # candidates for every label, both hosts (or --speaker joris --label laugh,sigh)
 studiepodcast reactions list
 studiepodcast prototype-scene <book> <chapter>
 ```

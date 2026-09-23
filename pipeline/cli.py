@@ -345,26 +345,40 @@ app.add_typer(reactions_app, name="reactions")
 
 
 @reactions_app.command("generate")
-def reactions_generate(speaker: Annotated[str, typer.Option(help="Speaker id, e.g. tessa")],
-                       label: Annotated[str, typer.Option(help="laugh, chuckle, sigh, hm, ja, oh, wacht, precies")],
-                       n: int = 12):
+def reactions_generate(speaker: Annotated[str, typer.Option(help="Speaker id (e.g. tessa), comma-separated, or 'all' (hosts).")] = "all",
+                       label: Annotated[str, typer.Option(help="laugh, chuckle, sigh, hm, ja, oh, wacht, precies; comma-separated or 'all'.")] = "all",
+                       n: Annotated[int, typer.Option(help="Candidates per speaker per label.")] = 12):
     """Render candidates into cast/reactions/_candidates/<speaker>/<label>/; move the good ones into
-    cast/reactions/<speaker>/<label>/ (real recorded clips can go there directly too)."""
+    cast/reactions/<speaker>/<label>/ (real recorded clips can go there directly too).
+
+    Without options: every label for both hosts, the model loaded once.
+    """
     from pipeline.audio.reactions import ReactionBank, generate_candidates
     from pipeline.audio.synth import make_synth, voice_spec_for
+    from pipeline.performance import REACTIONS
     from pipeline.script.cast import load_cast
 
     settings = state["settings"]
     cast = load_cast(settings.cast_dir)
-    voice = voice_spec_for(cast.speaker(speaker), settings.cast_dir)
+    speakers = [h.id for h in cast.hosts] if speaker == "all" else [s.strip() for s in speaker.split(",") if s.strip()]
+    labels = list(REACTIONS) if label == "all" else [x.strip() for x in label.split(",") if x.strip()]
+    unknown = [x for x in labels if x not in REACTIONS]
+    if unknown:
+        raise typer.BadParameter(f"unknown label(s) {', '.join(unknown)}; choose from {', '.join(REACTIONS)} or all")
+    voices = {s: voice_spec_for(cast.speaker(s), settings.cast_dir) for s in speakers}  # KeyError on a typo, before any GPU work
+    bank = ReactionBank(settings.cast_dir)
     synth = make_synth("null" if state["fake_audio"] else "final", settings, pool=False)
-    out_dir = ReactionBank(settings.cast_dir).candidates_dir(speaker, label)
-    paths, failures = generate_candidates(synth, voice, label, out_dir, n=n)
-    for path in paths:
-        typer.echo(f"  {path}")
-    for failure in failures:
-        typer.echo(f"  [overgeslagen] {failure}")
-    typer.echo(f"  beluister ze en verplaats de goede naar {ReactionBank(settings.cast_dir).root / speaker / label}")
+    total, skipped = 0, 0
+    for s in speakers:
+        for lab in labels:
+            paths, failures = generate_candidates(synth, voices[s], lab, bank.candidates_dir(s, lab), n=n)
+            total += len(paths)
+            skipped += len(failures)
+            typer.echo(f"  {s:<10} {lab:<8} {len(paths)} kandidaten -> {bank.candidates_dir(s, lab)}")
+            for failure in failures:
+                typer.echo(f"    [overgeslagen] {failure}")
+    typer.echo(f"  klaar: {total} kandidaten, {skipped} overgeslagen. Beluister ze en verplaats de goede naar "
+               f"{bank.root / '<speaker>' / '<label>'}")
 
 
 @reactions_app.command("list")
