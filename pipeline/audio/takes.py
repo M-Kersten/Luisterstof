@@ -61,7 +61,7 @@ def render_with_takes(
     if synth.deterministic:
         n_takes = 1
     params = (f"n={n_takes};wer={wer_threshold};cps={cps:.1f};verify={verify};"
-              f"cfg={voice.cfg_weight:.3f};rate={voice.speech_rate:.3f}")
+              f"cfg={voice.cfg_weight:.3f};rate={voice.speech_rate:.3f};temp={voice.temperature:.3f}")
     sel_key = cache.selection_key(text, voice.ref_hash, exaggeration, synth.name, params)
     cached = cache.get_selection(sel_key)
     if cached:
@@ -82,7 +82,7 @@ def render_with_takes(
         nonlocal verify
         exag = max(0.1, min(0.95, exag))
         key = cache.take_key(text, voice.ref_hash, exag, seed, synth.name,
-                            extra=f"cfg={voice.cfg_weight:.3f};rate={voice.speech_rate:.3f}")
+                            extra=f"cfg={voice.cfg_weight:.3f};rate={voice.speech_rate:.3f};temp={voice.temperature:.3f}")
         hit = cache.get(key)
         if hit:
             clip, meta = hit

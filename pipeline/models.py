@@ -420,6 +420,7 @@ class Host(Contract):
     exaggeration: float = 0.5  # Chatterbox base value
     cfg_weight: float = 0.5  # Chatterbox classifier-free-guidance weight; lowering it tends to slow delivery
     speech_rate: float = 1.0  # post-render pitch-preserving time-stretch; <1.0 slower, >1.0 faster, 1.0 = off
+    temperature: float = 0.8  # Chatterbox sampling temperature; higher gives more delivery variation, less consistency
     chars_per_second: float | None = None
 
 
@@ -436,6 +437,7 @@ class Guest(Contract):
     exaggeration: float = 0.4
     cfg_weight: float = 0.5
     speech_rate: float = 1.0
+    temperature: float = 0.8
     chars_per_second: float | None = None
 
 

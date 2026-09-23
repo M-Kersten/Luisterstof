@@ -95,6 +95,7 @@ class VoiceSpec:
     base_exaggeration: float = 0.5
     cfg_weight: float = 0.5
     speech_rate: float = 1.0
+    temperature: float = 0.8
     chars_per_second: float | None = None
     _ref_hash: str | None = None
 
@@ -119,6 +120,7 @@ def voice_spec_for(speaker: Host | Guest, cast_dir: Path | str) -> VoiceSpec:
         base_exaggeration=speaker.exaggeration,
         cfg_weight=speaker.cfg_weight,
         speech_rate=speaker.speech_rate,
+        temperature=speaker.temperature,
         chars_per_second=speaker.chars_per_second,
     )
 
@@ -307,6 +309,7 @@ class ChatterboxSynth:
             audio_prompt_path=str(voice.ref_path),
             exaggeration=float(exaggeration),
             cfg_weight=float(voice.cfg_weight),
+            temperature=float(voice.temperature),
         )
         samples = wav.squeeze(0).detach().cpu().numpy().astype(np.float32)
         clip = AudioClip(samples, self.sample_rate, meta={"text": text, "seed": seed, "exaggeration": exaggeration,

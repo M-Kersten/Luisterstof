@@ -304,6 +304,7 @@ De rollen zijn tegelijk de leermotor en de comedymotor. De explainer legt uit me
 - Spreektaal: korte zinnen, contracties, halve zinnen mogen. Wissel zinslengte sterk af.
 - Schrijf getallen, formules en afkortingen zoals de bron ze schrijft; de uitspraak wordt later automatisch opgelost. Notatiezware stof beschrijf je in vorm en betekenis in plaats van symbolen voor te lezen.
 - Geen regieaanwijzingen in de tekst; emotie gaat via tags. Toegestane tags: {tags}.
+- Chatterbox leest hoofdletters als nadruk (harder, trager op dat woord) en gebruikt komma's en punten om adempauzes te plaatsen. Zet een enkel woord in KAPITALEN wanneer een host het écht benadrukt, niet elke zin, en varieer leestekens: een kort zinnetje met een punt klinkt anders dan een lange komma-zin.
 - Houd de streefduur aan: ongeveer {cps} tekens per seconde spreektijd.
 """
 
