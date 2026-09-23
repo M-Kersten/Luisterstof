@@ -180,6 +180,25 @@ The timeline tightening above is a mixing-level fix and applies on the *next* `r
 2. **Check the script has enough connective tissue.** `studiepodcast audit` now warns (`too_few_overlaps`, non-blocking) when a script has fewer interrupt/backchannel moments than `min_connective_per_10min` (default 2 per 10 minutes) calls for. No amount of mixing fixes a script that never has the hosts react to each other; if this warning fires, the fix is in the script, not the audio, edit in a few more short reactions and re-audit.
 3. **Push take quality further.** This is the one actually worth an overnight run: raise `STUDIEPODCAST_TAKES` (default 3) to 6-8 and re-render. Since take count is part of the cache key, this forces fresh Chatterbox generation for every turn, giving the take-selection loop a better shot at picking a delivery that already sounds natural at the source, on top of the timeline fix.
 
+### Locating and verifying voice quality problems
+
+Every rendered turn is judged twice and both judgements are recorded in the render manifest: faster-whisper (or MLX Whisper) re-transcribes the chosen take and scores it against the script text (WER), and a forced aligner places every word in time for the timeline logic to cut on. Neither step crashes the render when it fails, an unreachable transcriber or a broken CUDA/cuDNN install degrades to "accept unverified" or "estimate word positions evenly", by design, so a bad machine still finishes a render. That also means a render can complete and sound wrong without ever raising an error. Three ways to see what actually happened, from least to most detail:
+
+```bash
+studiepodcast render <book> <chapter>          # prints a verification/alignment summary after rendering
+studiepodcast inspect <book> <chapter>          # every turn: WER, take path, flags, alignment method
+studiepodcast inspect <book> <chapter> --only-suspect   # only the turns worth listening to first
+studiepodcast doctor                            # is whisperx/faster-whisper/mlx_whisper actually importing?
+```
+
+The web UI shows the same summary (verified turns, alignment fallback count) in the Audio tab, and `GET /api/books/{id}/chapters/{ch}` returns it as `manifest_quality`.
+
+**Abrupt cutoffs mid-sentence.** This is very likely `inspect` reporting turns with "geschatte uitlijning" (estimated alignment). When the real forced aligner (WhisperX on CUDA, MLX Whisper on Apple Silicon) is not actually working, every interrupt cut-point and backchannel insertion falls back to word positions spaced evenly across the clip's duration, not where the words were actually spoken. A cut that lands mid-word sounds exactly like a clipped sentence. Run `doctor` first, on the machine with the cuDNN/ctranslate2 mismatch this is the same root cause as the missing `cudnn_ops_infer64_8.dll` error above: `pip install --upgrade ctranslate2`, then re-render and check `inspect` again for the fallback count to drop to zero.
+
+**Background noise, rustling ("gerritsel").** Chatterbox clones the reference clip, including its recording conditions; this is a named pitfall in `PLAN.md`, not a synthesis bug, so no render setting fixes it. Listen to `cast/refs/*.wav` directly. Any rustling, room tone, or mic handling noise there gets reproduced, often exaggerated, in every line cloned from it. Re-record 30 to 60 seconds in a quiet room, close to the mic, no fabric or paper handling, then re-run the M0 audition (`studiepodcast audition ...`) before trusting the new clip. There is no automated way to guarantee a clip is clean; audition and listen before freezing it.
+
+**Insufficient intonation and expression.** Two separate levers, both per-host in `cast/hosts.yaml`: `exaggeration` controls how much emotional range Chatterbox reaches for, and `cfg_weight` trades pace for adherence to the reference. If deliveries sound flat, sweep exaggeration upward first (`studiepodcast audition ... --exaggerations 0.4,0.6,0.8`) and listen to the results in `data/auditions/` rather than guessing at a value. The reference clip itself sets a ceiling here too, a flat, monotone reference clones as a flat, monotone voice, so if sweeping exaggeration doesn't help, the fix is a more expressive reference recording, not a higher number.
+
 ## Environment variables
 
 | Variable | Default | Purpose |

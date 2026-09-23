@@ -165,6 +165,11 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
             from pipeline.audio.chunker import chunk_script
 
             blocks = [b.__dict__ for b in chunk_script(script)]
+        manifest_quality = None
+        if manifest is not None:
+            verified, verifiable = manifest.verification_coverage()
+            manifest_quality = {"verified_turns": verified, "verifiable_turns": verifiable,
+                                "alignment_fallback_turns": manifest.alignment_fallback_count()}
         return {
             "book_id": book_id,
             "chapter_id": chapter_id,
@@ -174,6 +179,7 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
             "approval": approval.model_dump() if approval else None,
             "approved": reader.is_approved(book_id, chapter_id),
             "manifest": manifest.model_dump() if manifest else None,
+            "manifest_quality": manifest_quality,
             "draft": {"audio": _rel(paths, paths.out_audio(chapter_id, "draft")), "transcript": draft_tr.model_dump() if draft_tr else None},
             "final": {"audio": _rel(paths, paths.out_audio(chapter_id, "final")), "transcript": final_tr.model_dump() if final_tr else None},
             "blocks": blocks,

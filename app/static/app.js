@@ -168,6 +168,18 @@ function renderAudio(data) {
   const player = (url) => url ? `<audio controls src="${url}"></audio> <a href="${url}" download>download</a>` : '<span class="muted">nog niet gerenderd</span>';
   $("#draft-audio").innerHTML = player(data.draft.audio);
   $("#final-audio").innerHTML = player(data.final.audio);
+  const q = data.manifest_quality;
+  const qualityEl = $("#audio-quality");
+  if (qualityEl) {
+    if (q && q.verifiable_turns) {
+      const verOk = q.verified_turns === q.verifiable_turns;
+      const bits = [`<span class="badge ${verOk ? "ok" : "bad"}">verificatie ${q.verified_turns}/${q.verifiable_turns}</span>`];
+      if (q.alignment_fallback_turns) bits.push(`<span class="badge warn">${q.alignment_fallback_turns} geschatte uitlijning</span>`);
+      qualityEl.innerHTML = bits.join(" ") + (verOk ? "" : ' <span class="muted">niet elke beurt kon worden geverifieerd, zie `studiepodcast doctor`</span>');
+    } else {
+      qualityEl.innerHTML = "";
+    }
+  }
   const flagged = data.manifest ? data.manifest.turns.filter(t => t.flagged) : [];
   $("#flagged").innerHTML = flagged.length ? `<h3>Gevlagde beurten</h3>${flagged.map(t => `<div class="issue">${t.turn_id} ${t.speaker}: ${escapeHtml(t.flag_reason || "")}<br><span class="muted">${escapeHtml(t.text_spoken)}</span></div>`).join("")}` : "";
   const root = $("#blocks");

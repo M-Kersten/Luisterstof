@@ -109,7 +109,16 @@ def render(book_id: str, chapter: str, force: bool = False):
     """Chatterbox render with take selection, alignment, timeline assembly and mix."""
     audio, transcript, manifest = _pipeline().render(book_id, chapter, force=force)
     flagged = manifest.flagged_turns()
+    verified, verifiable = manifest.verification_coverage()
+    fallback = manifest.alignment_fallback_count()
     typer.echo(f"  {audio}\n  {transcript}\n  flagged turns: {len(flagged)}")
+    if verifiable:
+        mark = "OK" if verified == verifiable else "!!"
+        typer.echo(f"  [{mark}] WER verification: {verified}/{verifiable} turns. "
+                  f"{'run `studiepodcast doctor`, fix the transcriber, then re-render' if verified < verifiable else ''}")
+    if fallback:
+        typer.echo(f"  [!!] alignment: {fallback}/{len(manifest.turns)} turns used estimated (uniform) word "
+                  f"timing, not real forced alignment. Interrupt/backchannel placement on those turns is approximate.")
     for t in flagged:
         typer.echo(f"    {t.turn_id} {t.speaker}: {t.flag_reason} :: {t.text_spoken[:80]}")
 
@@ -146,6 +155,50 @@ def status(book_id: Annotated[str | None, typer.Argument()] = None):
             flags = " ".join(k for k in ("plan", "script", "audit", "draft", "approved", "final") if ch[k])
             aud = "" if ch["audit_passed"] is None else (" audit=ok" if ch["audit_passed"] else f" audit={ch['audit_blocking']} blocking")
             typer.echo(f"  {ch['id']} {ch['title'][:40]:<40} {flags}{aud}")
+
+
+@app.command()
+def inspect(book_id: str, chapter: str, tier: str = "final",
+           only_suspect: Annotated[bool, typer.Option(help="Only turns that are flagged, unverified, or fallback-aligned.")] = False):
+    """Per-turn audit: WER, acceptance, alignment method and the audio file for every rendered turn.
+
+    Answers "waar hoor ik precies wat er mis is": every take the take-selection loop chose, with
+    enough to go straight to the file and listen, instead of only the fully-flagged turns.
+    """
+    p = _pipeline()
+    from pipeline.models import RenderManifest
+
+    manifest_path = p.paths(book_id).manifest(chapter, tier)
+    manifest = RenderManifest.load_or_none(manifest_path)
+    if manifest is None:
+        typer.echo(f"  geen manifest gevonden op {manifest_path}; eerst renderen.")
+        raise typer.Exit(1)
+
+    verified, verifiable = manifest.verification_coverage()
+    fallback = manifest.alignment_fallback_count()
+    typer.echo(f"  {book_id}/{chapter} ({tier}): {len(manifest.turns)} beurten, "
+              f"verificatie {verified}/{verifiable}, {fallback} met geschatte uitlijning, "
+              f"{len(manifest.flagged_turns())} gevlagd.")
+    if verifiable and verified < verifiable:
+        typer.echo("  [!!] niet elke beurt kon worden geverifieerd; zie `studiepodcast doctor`.")
+    typer.echo("")
+
+    for t in manifest.turns:
+        take = t.chosen_take
+        if only_suspect and not (t.flagged or t.aligned_with_fallback or (take and take.wer is None)):
+            continue
+        wer = "onbekend" if take is None or take.wer is None else f"{take.wer:.3f}"
+        marks = []
+        if t.flagged:
+            marks.append("GEVLAGD: " + (t.flag_reason or ""))
+        if t.aligned_with_fallback:
+            marks.append("geschatte uitlijning")
+        if take is not None and take.wer is None:
+            marks.append("niet geverifieerd")
+        mark_text = f"  <- {', '.join(marks)}" if marks else ""
+        path = take.path if take else "-"
+        typer.echo(f"  {t.turn_id:>6} {t.speaker:<10} wer={wer:<8} {path}{mark_text}")
+        typer.echo(f"         {t.text_spoken[:110]}")
 
 
 @app.command()

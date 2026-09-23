@@ -85,11 +85,15 @@ def render_episode(
                         flag_reason=result.flag_reason)
         manifest.turns.append(tr)
         if result.clip is not None:
-            words = load_alignment(cache, result.take_key) if result.take_key else None
-            if words is None:
+            cached = load_alignment(cache, result.take_key) if result.take_key else None
+            if cached is not None:
+                words, used_fallback = cached
+            else:
                 words = aligner.align(result.clip, turn.text)
+                used_fallback = bool(getattr(aligner, "last_used_fallback", False))
                 if result.take_key:
-                    save_alignment(cache, result.take_key, words)
+                    save_alignment(cache, result.take_key, words, fallback=used_fallback)
+            tr.aligned_with_fallback = used_fallback
             rendered[turn.turn_id] = (result.clip, words)
         _emit(on_event, "turn", index=i + 1, total=len(turns), turn=turn.turn_id, speaker=turn.speaker,
               cached=result.from_cache, flagged=result.flagged)
@@ -110,8 +114,21 @@ def render_episode(
     transcript_path = paths.transcript(script.episode_id, tier)
     transcript.save(transcript_path)
     manifest.save(paths.manifest(script.episode_id, tier))
+    verified, verifiable = manifest.verification_coverage()
+    fallback_count = manifest.alignment_fallback_count()
     _emit(on_event, "render_done", tier=tier, audio=str(audio_path), duration_s=round(mixed.duration_s, 1),
-          flagged=len(manifest.flagged_turns()), qa=list(timeline.qa))
+          flagged=len(manifest.flagged_turns()), qa=list(timeline.qa),
+          verified_turns=verified, verifiable_turns=verifiable, alignment_fallback_turns=fallback_count)
+    if tier == "final" and not synth.deterministic:
+        if verifiable and verified < verifiable:
+            log.warning("WER verification ran for only %d/%d turns; the rest were accepted unverified "
+                       "(a broken transcriber degrades this way rather than crashing - see the transcribe() "
+                       "log line above for the cause). Fix it and re-render before trusting a clean flagged-turns count.",
+                       verified, verifiable)
+        if fallback_count:
+            log.warning("%d/%d turns used estimated (uniform) word timing instead of real forced alignment; "
+                       "interrupt cut points and backchannel placement on those turns are approximate and can "
+                       "land mid-word.", fallback_count, len(manifest.turns))
     return audio_path, transcript_path, manifest
 
 

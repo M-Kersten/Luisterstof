@@ -51,6 +51,44 @@ def test_approval_gate(ingested):
     assert all(t.from_cache for t in manifest2.turns)
 
 
+def test_render_manifest_tracks_alignment_fallback_per_turn(ingested):
+    """End-to-end: a flaky aligner's per-call fallback flag ends up correctly attributed to
+    each turn in the saved manifest, and survives an all-cached re-render without re-aligning."""
+    p = ingested
+    p.run_chapter("demo", "ch01", upto="draft")
+    p.approve("demo", "ch01")
+
+    class AlternatingAligner:
+        def __init__(self):
+            self.calls = 0
+            self.last_used_fallback = False
+
+        def align(self, clip, text, language="nl"):
+            from pipeline.audio.asr import WordTiming, tokenize
+
+            self.last_used_fallback = self.calls % 2 == 1
+            self.calls += 1
+            return [WordTiming(w, i * 0.3, i * 0.3 + 0.2) for i, w in enumerate(tokenize(text))]
+
+    aligner = AlternatingAligner()
+    _, _, manifest = p.render("demo", "ch01", aligner=aligner)
+
+    with_take = [t for t in manifest.turns if t.chosen_take is not None]
+    assert len(with_take) >= 2, "need at least 2 rendered turns to exercise the alternation"
+    # duplicate turn text (e.g. short backchannels) can reuse a prior turn's cached alignment
+    # instead of calling align() again, so this only checks both values actually occur, not strict order
+    fallback_flags = {t.aligned_with_fallback for t in with_take}
+    assert fallback_flags == {True, False}, "expected both real and estimated alignment to appear across turns"
+    assert manifest.alignment_fallback_count() == sum(1 for t in with_take if t.aligned_with_fallback)
+    verified, verifiable = manifest.verification_coverage()
+    assert verified == verifiable == len(with_take)  # EchoTranscriber always matches exactly
+
+    calls_before = aligner.calls
+    _, _, manifest2 = p.render("demo", "ch01", aligner=aligner, force=True)
+    assert aligner.calls == calls_before  # cache hit: the saved fallback flag is reused, not recomputed
+    assert [t.aligned_with_fallback for t in manifest2.turns] == [t.aligned_with_fallback for t in manifest.turns]
+
+
 def test_eleven_blocks_spliced(ingested):
     import numpy as np
 

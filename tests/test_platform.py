@@ -90,3 +90,46 @@ def test_mlx_aligner_reads_meta_and_take_loop_persists_it(tmp_path):
     # a clip without meta and without mlx installed falls back to uniform spacing
     bare = AudioClip(np.zeros(24000, dtype=np.float32), 24000)
     assert len(MlxWhisperAligner(Settings(whisper_backend="mlx")).align(bare, "een twee drie")) == 3
+
+
+def test_last_used_fallback_is_tracked_per_call():
+    """The render loop reads this flag right after align() to report real-vs-estimated timing on the manifest."""
+    assert UniformAligner.last_used_fallback is True  # by definition: always an estimate
+
+    mlx_aligner = MlxWhisperAligner(Settings(whisper_backend="mlx"))
+    with_meta = AudioClip(np.zeros(24000, dtype=np.float32), 24000, meta={"asr_words": [["hallo", 0.1, 0.4]]})
+    mlx_aligner.align(with_meta, "hallo")
+    assert mlx_aligner.last_used_fallback is False
+    without_meta = AudioClip(np.zeros(24000, dtype=np.float32), 24000)  # no mlx installed -> falls back
+    mlx_aligner.align(without_meta, "hallo")
+    assert mlx_aligner.last_used_fallback is True
+
+    whisperx_aligner = WhisperXAligner(Settings(device="cpu"))  # whisperx not installed here -> falls back
+    whisperx_aligner.align(with_meta, "hallo")
+    assert whisperx_aligner.last_used_fallback is True
+
+
+def test_aligner_cache_round_trips_fallback_flag_and_reads_old_format(tmp_path):
+    from pipeline.audio.aligner_cache import _path, load_alignment, save_alignment
+
+    cache = RenderCache(tmp_path / "cache")
+    words = [WordTiming("hallo", 0.0, 0.3), WordTiming("wereld", 0.3, 0.7)]
+
+    save_alignment(cache, "keyA", words, fallback=True)
+    loaded_words, loaded_fallback = load_alignment(cache, "keyA")
+    assert loaded_fallback is True
+    assert [(w.word, w.start, w.end) for w in loaded_words] == [(w.word, w.start, w.end) for w in words]
+
+    save_alignment(cache, "keyB", words, fallback=False)
+    assert load_alignment(cache, "keyB")[1] is False
+
+    # a cache entry written before fallback tracking existed (a bare list) still loads, as non-fallback
+    import json
+
+    p = _path(cache, "keyOld")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"word": "oud", "start": 0.0, "end": 0.2}]))
+    old_words, old_fallback = load_alignment(cache, "keyOld")
+    assert old_fallback is False and old_words[0].word == "oud"
+
+    assert load_alignment(cache, "keyMissing") is None

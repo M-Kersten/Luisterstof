@@ -512,6 +512,7 @@ class TurnRender(Contract):
     from_cache: bool = False
     flagged: bool = False
     flag_reason: str | None = None
+    aligned_with_fallback: bool = False  # true when real forced alignment failed and word timing was estimated
 
     @property
     def chosen_take(self) -> TakeRecord | None:
@@ -530,6 +531,17 @@ class RenderManifest(Contract):
 
     def flagged_turns(self) -> list[TurnRender]:
         return [t for t in self.turns if t.flagged]
+
+    def verification_coverage(self) -> tuple[int, int]:
+        """(verified, total) among turns with a chosen take. Meaningless for a deterministic
+        synth (Piper draft), which never runs WER verification by design regardless of whether
+        a transcriber is configured."""
+        with_take = [t for t in self.turns if t.chosen_take is not None]
+        verified = sum(1 for t in with_take if t.chosen_take.wer is not None)
+        return verified, len(with_take)
+
+    def alignment_fallback_count(self) -> int:
+        return sum(1 for t in self.turns if t.aligned_with_fallback)
 
 
 class TranscriptWord(Contract):

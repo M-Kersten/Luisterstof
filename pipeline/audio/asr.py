@@ -102,6 +102,7 @@ class WhisperXAligner:
         self._model = None
         self._metadata = None
         self.fallback = fallback or UniformAligner()
+        self.last_used_fallback = False  # set on every align() call; check it right after calling
 
     @property
     def device(self) -> str:
@@ -116,6 +117,7 @@ class WhisperXAligner:
         return self._model, self._metadata
 
     def align(self, clip: AudioClip, text: str, language: str = "nl") -> list[WordTiming]:
+        self.last_used_fallback = False
         try:
             import whisperx  # type: ignore
 
@@ -131,6 +133,7 @@ class WhisperXAligner:
                 return match_words_to_text(tokenize(text), words, clip.duration_s)
         except Exception as exc:
             log.warning("whisperx alignment failed, using uniform fallback: %s", exc)
+        self.last_used_fallback = True
         return self.fallback.align(clip, text, language)
 
 
@@ -202,8 +205,10 @@ class MlxWhisperAligner:
         self.settings = settings
         self.fallback = fallback or UniformAligner()
         self._transcriber: MlxWhisperTranscriber | None = None
+        self.last_used_fallback = False  # set on every align() call; check it right after calling
 
     def align(self, clip: AudioClip, text: str, language: str = "nl") -> list[WordTiming]:
+        self.last_used_fallback = False
         words = asr_words_from_meta(clip.meta.get("asr_words"))
         if words is None:
             try:
@@ -213,6 +218,7 @@ class MlxWhisperAligner:
             except Exception as exc:
                 log.warning("mlx alignment failed, using uniform fallback: %s", exc)
         if not words:
+            self.last_used_fallback = True
             return self.fallback.align(clip, text, language)
         return match_words_to_text(tokenize(text), words, clip.duration_s)
 
@@ -298,6 +304,8 @@ def speech_bounds(clip: AudioClip, threshold_db: float = -45.0, frame_s: float =
 
 class UniformAligner:
     """Spreads words evenly over the voiced part of the clip, weighted by word length."""
+
+    last_used_fallback = True  # always estimated timing, by definition; read via getattr like the other aligners
 
     def align(self, clip: AudioClip, text: str, language: str = "nl") -> list[WordTiming]:
         tokens = tokenize(text)
