@@ -88,3 +88,34 @@ def test_tuning_cfg_weight_or_speech_rate_does_not_reuse_stale_cache(tmp_path):
 
     assert len({r1.take_key, r2.take_key, r3.take_key, r4.take_key}) == 4  # four distinct cache entries
     assert r1_again.from_cache and r1_again.take_key == r1.take_key  # the unchanged baseline still hits cache
+
+
+def test_synth_crash_loses_the_take_not_the_render(tmp_path):
+    """Chatterbox raises IndexError on very short texts; that turn is flagged, the render goes on."""
+
+    class ShortTextCrash(NullSynth):
+        def render(self, text, voice, *, exaggeration, seed):
+            if len(text) < 6:
+                raise IndexError("max(): Expected reduction dim 1 to have non-zero size.")
+            return super().render(text, voice, exaggeration=exaggeration, seed=seed)
+
+    cache = RenderCache(tmp_path / "cache")
+    voice = VoiceSpec(speaker_id="joris")
+    crashed = render_with_takes("Ja.", voice, ShortTextCrash(), cache, transcriber=None, exaggeration=0.5, n_takes=3)
+    assert crashed.clip is None and crashed.flagged and "IndexError" in crashed.flag_reason
+    fine = render_with_takes(TEXT, voice, ShortTextCrash(), cache, transcriber=None, exaggeration=0.5, n_takes=1)
+    assert fine.clip is not None and not fine.flagged
+
+
+def test_reaction_candidates_skip_failures(tmp_path):
+    from pipeline.audio.reactions import CANDIDATE_TEXTS, generate_candidates
+
+    class Flaky(NullSynth):
+        def render(self, text, voice, *, exaggeration, seed):
+            if seed % 2:
+                raise IndexError("boom")
+            return super().render(text, voice, exaggeration=exaggeration, seed=seed)
+
+    paths, failures = generate_candidates(Flaky(), VoiceSpec(speaker_id="joris"), "laugh", tmp_path, n=6)
+    assert len(paths) == 3 and len(failures) == 3 and all(p.is_file() for p in paths)
+    assert all(len(t) >= 10 for texts in CANDIDATE_TEXTS.values() for t in texts)

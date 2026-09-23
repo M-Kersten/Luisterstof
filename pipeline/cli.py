@@ -359,8 +359,11 @@ def reactions_generate(speaker: Annotated[str, typer.Option(help="Speaker id, e.
     voice = voice_spec_for(cast.speaker(speaker), settings.cast_dir)
     synth = make_synth("null" if state["fake_audio"] else "final", settings, pool=False)
     out_dir = ReactionBank(settings.cast_dir).candidates_dir(speaker, label)
-    for path in generate_candidates(synth, voice, label, out_dir, n=n):
+    paths, failures = generate_candidates(synth, voice, label, out_dir, n=n)
+    for path in paths:
         typer.echo(f"  {path}")
+    for failure in failures:
+        typer.echo(f"  [overgeslagen] {failure}")
     typer.echo(f"  beluister ze en verplaats de goede naar {ReactionBank(settings.cast_dir).root / speaker / label}")
 
 

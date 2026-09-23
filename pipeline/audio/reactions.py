@@ -17,15 +17,17 @@ from pipeline.performance import REACTIONS, seeded_fraction
 
 SPOKEN = {"laugh": "Haha.", "chuckle": "Hehe.", "sigh": "Pff.", "hm": "Hm.", "ja": "Ja.", "oh": "Oh.",
           "wacht": "Wacht.", "precies": "Precies."}
+# Chatterbox Multilingual crashes on texts of about five tokens or fewer (its alignment analyzer
+# slices off the last five text positions), so every candidate is long enough to be safe.
 CANDIDATE_TEXTS = {
-    "laugh": ["Haha.", "Hahaha!", "Ha!"],
-    "chuckle": ["Hehe.", "Hm-hm."],
-    "sigh": ["Pff.", "Haah."],
-    "hm": ["Hm.", "Hmm.", "Hm?"],
-    "ja": ["Ja.", "Ja ja.", "Jaa."],
-    "oh": ["Oh.", "Oh!", "Ooh."],
-    "wacht": ["Wacht.", "Wacht even."],
-    "precies": ["Precies.", "Precies!"],
+    "laugh": ["Hahaha, haha!", "Haha, ha ha ha.", "Hahahaha, nee."],
+    "chuckle": ["Hehe, hehe.", "Hm-hm, hehe."],
+    "sigh": ["Pfff... nou ja.", "Haaah, oké dan."],
+    "hm": ["Hmm, hmm hmm.", "Hmm... tja, hm."],
+    "ja": ["Ja, ja ja.", "Jaa, dat klopt."],
+    "oh": ["Oh! Oh, oké.", "Ooh, oh ja."],
+    "wacht": ["Wacht even.", "Wacht, wacht even."],
+    "precies": ["Precies, ja!", "Ja, precies dat."],
 }
 CANDIDATE_EXAGGERATIONS = (0.4, 0.55, 0.7)
 
@@ -59,18 +61,23 @@ class ReactionBank:
         return self.root / "_candidates" / speaker / label
 
 
-def generate_candidates(synth: Synth, voice: VoiceSpec, label: str, out_dir: Path, n: int = 12) -> list[Path]:
+def generate_candidates(synth: Synth, voice: VoiceSpec, label: str, out_dir: Path, n: int = 12) -> tuple[list[Path], list[str]]:
     """Render ``n`` candidates over text variants x exaggerations x seeds for you to listen to and curate."""
     if label not in CANDIDATE_TEXTS:
         raise ValueError(f"unknown reaction {label}; choose from {', '.join(REACTIONS)}")
     out_dir.mkdir(parents=True, exist_ok=True)
     texts = CANDIDATE_TEXTS[label]
     paths: list[Path] = []
+    failures: list[str] = []
     for i in range(n):
         text = texts[i % len(texts)]
         exag = CANDIDATE_EXAGGERATIONS[(i // len(texts)) % len(CANDIDATE_EXAGGERATIONS)]
-        clip: AudioClip = synth.render(text, voice, exaggeration=exag, seed=100 + i)
+        try:
+            clip: AudioClip = synth.render(text, voice, exaggeration=exag, seed=100 + i)
+        except Exception as exc:  # noqa: BLE001 - one bad candidate must not end the batch
+            failures.append(f"{text!r} (seed {100 + i}): {type(exc).__name__}: {exc}")
+            continue
         path = out_dir / f"{voice.speaker_id}_{label}_{i:02d}_exag{exag:.2f}.wav"
         clip.write(path)
         paths.append(path)
-    return paths
+    return paths, failures

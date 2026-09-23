@@ -77,6 +77,7 @@ def render_with_takes(
     takes: list[TakeRecord] = []
     clips: list[AudioClip] = []
     keys: list[str] = []
+    failures: list[str] = []
 
     def attempt(seed: int, exag: float) -> None:
         nonlocal verify
@@ -88,7 +89,13 @@ def render_with_takes(
             clip, meta = hit
             transcript = meta.get("transcript")
         else:
-            clip = synth.render(text, voice, exaggeration=exag, seed=seed)
+            try:
+                clip = synth.render(text, voice, exaggeration=exag, seed=seed)
+            except Exception as exc:  # noqa: BLE001
+                # e.g. Chatterbox's alignment analyzer crashes on very short texts; lose this take, not the render
+                log.error("synth failed on %r (%s: %s)", text[:60], type(exc).__name__, exc)
+                failures.append(f"{type(exc).__name__}: {exc}")
+                return
             transcript = None
             cache.put(key, clip, {"text": text, "speaker": voice.speaker_id, "seed": seed, "exaggeration": exag, "synth": synth.name})
         if verify and transcript is None:
@@ -130,6 +137,10 @@ def render_with_takes(
     if chosen is None and not synth.deterministic:
         attempt(seed_base + 100, exaggeration - RETRY_EXAGGERATION_DROP)
         chosen = pick()
+    if not takes:
+        reason = "synthese mislukt: " + (failures[-1] if failures else "onbekend")
+        log.warning("turn flagged (%s): %s", reason, text[:60])
+        return TakeResult(None, [], None, False, True, reason, None)
     if chosen is None:
         flagged = True
         reason = "alle takes afgekeurd op WER"
