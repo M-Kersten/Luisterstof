@@ -125,8 +125,14 @@ def lint_rules(script: Script, cast: Cast, banned: BannedRules, glossary: Glossa
     prev = None
     interrupts = 0
     backchannels = 0
+    reaction_opportunities = 0
+    reactions = 0
     for seg in script.segments:
         for line in seg.lines:
+            if prev is not None and prev.speaker != line.speaker and prev.tags:
+                reaction_opportunities += 1
+                if line.tags:
+                    reactions += 1
             text = norm(line.text)
             for phrase in banned.phrases:
                 if re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", text):
@@ -185,6 +191,17 @@ def lint_rules(script: Script, cast: Cast, banned: BannedRules, glossary: Glossa
                                          f"(richtlijn: minstens {min_connective}). Een script dat zo overlap-arm is "
                                          "klinkt als twee monologen naast elkaar, hoe goed de audio ook wordt gemixt.",
                                  suggestion="Voeg meer korte reacties ('ja precies', een korte onderbreking) toe tussen de hosts."))
+    if reaction_opportunities >= 4:
+        reaction_rate = reactions / reaction_opportunities
+        if reaction_rate < settings.min_emotional_reaction_rate:
+            issues.append(AuditIssue(check="lint", severity="warning", rule="flat_emotional_reaction",
+                                     message=f"De ene host draagt {reaction_opportunities}x een emotie-tag terwijl de "
+                                             f"ander aan het woord komt; die reageert daar zelf maar {reactions}x "
+                                             f"({reaction_rate:.0%}) met een eigen tag op (richtlijn: minstens "
+                                             f"{settings.min_emotional_reaction_rate:.0%}). Emotie die genegeerd wordt "
+                                             "door de ander klinkt als twee monologen, ook als de tekst inhoudelijk klopt.",
+                                     suggestion="Laat de andere host meebewegen (ook enthousiaster of kalmer worden) of "
+                                                "bewust tegenwicht bieden, met een eigen tag, in plaats van neutraal door te praten."))
     target = script.target_minutes
     if minutes < target * 0.8 or minutes > target * 1.25:
         issues.append(AuditIssue(check="lint", severity="warning", rule="duration",

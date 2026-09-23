@@ -306,6 +306,12 @@ De rollen zijn tegelijk de leermotor en de comedymotor. De explainer legt uit me
 - Geen regieaanwijzingen in de tekst; emotie gaat via tags. Toegestane tags: {tags}.
 - Chatterbox leest hoofdletters als nadruk (harder, trager op dat woord) en gebruikt komma's en punten om adempauzes te plaatsen. Zet een enkel woord in KAPITALEN wanneer een host het écht benadrukt, niet elke zin, en varieer leestekens: een kort zinnetje met een punt klinkt anders dan een lange komma-zin.
 - Houd de streefduur aan: ongeveer {cps} tekens per seconde spreektijd.
+
+## Emotionele continuïteit
+- Een tag op de vorige regel is niet gebonden aan één spreker. Als de vorige regel excited, surprised of serious draagt, negeer dat niet zomaar in de eerstvolgende regel van de andere host, dat leest als twee monologen naast elkaar.
+- Twee geldige reacties, kies wat bij het onderwerp past: meebewegen (de ander wordt ook enthousiaster of juist serieuzer, met een eigen tag) of tegenwicht bieden (de ander blijft kalm, remt af, brengt het terug naar de feiten, ook met een eigen tag die dat laat horen, bijvoorbeeld deadpan of skeptical).
+- Dit hoeft niet op elke regel, maar een opbouw naar een hoogtepunt (een analogie die steeds enthousiaster wordt tot hij breekt) of een afkoeling na een moeilijk punt moet voelbaar zijn over een paar regels, niet alleen op de ene regel waar het toevallig gebeurt.
+- Tessa jaagt van nature vaker op, Joris remt vaker af, maar dat mag omdraaien als de stof erom vraagt: ook Joris mag meegesleept raken, ook Tessa mag ergens serieus van worden.
 """
 
 

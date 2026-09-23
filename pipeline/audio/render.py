@@ -24,7 +24,11 @@ log = logging.getLogger(__name__)
 
 EventFn = Callable[[str, dict], None]
 
-EMOTION_CARRY = 0.6  # share of the previous turn's exaggeration carried into the next (same speaker)
+EMOTION_CARRY = 0.6  # share of the previous turn's exaggeration carried into the next turn by the same speaker
+CROSS_SPEAKER_CARRY = 0.2  # share of the other host's immediately preceding turn that bleeds into this one, a
+                           # synthesis-level safety net for reacting to the other host's mood on top of whatever
+                           # the script itself does with tags; keeps a scripted emotional beat from resetting to
+                           # baseline the instant the other host starts talking
 
 
 def _emit(on_event: EventFn | None, kind: str, **data) -> None:
@@ -62,6 +66,8 @@ def render_episode(
 
     rendered: dict[str, tuple[AudioClip, list[WordTiming]]] = {}
     state: dict[str, float] = {}
+    last_speaker: str | None = None
+    last_exaggeration: float | None = None
     _emit(on_event, "render_start", tier=tier, turns=len(turns))
     for i, turn in enumerate(turns):
         voice = voices.get(turn.speaker)
@@ -71,8 +77,13 @@ def render_episode(
             continue
         target = exaggeration_for(turn.tags, voice.base_exaggeration)
         carried = state.get(turn.speaker, target)
-        exaggeration = round(EMOTION_CARRY * carried + (1 - EMOTION_CARRY) * target, 3)
+        exaggeration = EMOTION_CARRY * carried + (1 - EMOTION_CARRY) * target
+        if last_speaker is not None and last_speaker != turn.speaker and last_exaggeration is not None:
+            # the other host's mood bleeds through even on a turn the script itself didn't tag as a reaction
+            exaggeration = (1 - CROSS_SPEAKER_CARRY) * exaggeration + CROSS_SPEAKER_CARRY * last_exaggeration
+        exaggeration = round(exaggeration, 3)
         state[turn.speaker] = exaggeration
+        last_speaker, last_exaggeration = turn.speaker, exaggeration
         result = render_with_takes(
             turn.text, voice, synth, cache,
             transcriber=transcriber, exaggeration=exaggeration, n_takes=1 if tier == "draft" else settings.takes_per_line,

@@ -76,6 +76,42 @@ def test_too_few_overlaps_not_raised_when_threshold_met(cast, banned, settings):
     assert not any(i.rule == "too_few_overlaps" for i in issues)
 
 
+def test_flat_emotional_reaction_warns_when_the_other_host_never_picks_up_the_mood(cast, banned, settings):
+    # tessa tags every one of her lines; joris, replying each time, never carries a tag of his own
+    lines = []
+    for i in range(1, 9):
+        speaker = "tessa" if i % 2 else "joris"
+        tags = ["excited"] if speaker == "tessa" else []
+        lines.append(Line(id=f"l{i:03d}", speaker=speaker, text=f"Dit is regel {i} met genoeg tekst om te tellen.", tags=tags))
+    s = _script(lines)
+    issues = lint_rules(s, cast, banned, None, settings)
+    hit = next((i for i in issues if i.rule == "flat_emotional_reaction"), None)
+    assert hit is not None and hit.severity == "warning" and hit.line_id is None
+
+
+def test_flat_emotional_reaction_not_raised_when_the_other_host_reacts(cast, banned, settings):
+    # alternating speakers, every line tagged: 5 reaction opportunities, all of them picked up
+    s = _script([
+        Line(id="l001", speaker="tessa", text="Dit vind ik echt een geweldig punt over de stof.", tags=["excited"]),
+        Line(id="l002", speaker="joris", text="Oké dat is inderdaad best bijzonder.", tags=["surprised"]),
+        Line(id="l003", speaker="tessa", text="Precies, en dat verandert alles.", tags=["excited"]),
+        Line(id="l004", speaker="joris", text="Nu volg ik het weer.", tags=["deadpan"]),
+        Line(id="l005", speaker="tessa", text="Mooi, dan kunnen we verder.", tags=["warm"]),
+        Line(id="l006", speaker="joris", text="Eindelijk een punt waar ik het mee eens ben.", tags=["deadpan"]),
+    ])
+    issues = lint_rules(s, cast, banned, None, settings)
+    assert not any(i.rule == "flat_emotional_reaction" for i in issues)
+
+
+def test_flat_emotional_reaction_not_raised_below_the_opportunity_floor(cast, banned, settings):
+    s = _script([
+        Line(id="l001", speaker="tessa", text="Dit vind ik echt een geweldig punt.", tags=["excited"]),
+        Line(id="l002", speaker="joris", text="Oké, dat is inderdaad wel iets."),
+    ])
+    issues = lint_rules(s, cast, banned, None, settings)
+    assert not any(i.rule == "flat_emotional_reaction" for i in issues)  # only 1 opportunity, below the floor of 4
+
+
 def test_structure_checks(cast):
     s = _script([
         Line(id="l001", speaker="piet", text="Wie ben ik?"),
