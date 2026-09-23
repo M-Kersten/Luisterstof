@@ -12,11 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from pipeline.audio.synth import AudioClip, Synth, VoiceSpec
+from pipeline.cues import speakable
 from pipeline.models import Line
 from pipeline.performance import REACTIONS, seeded_fraction
 
-SPOKEN = {"laugh": "Haha.", "chuckle": "Hehe.", "sigh": "Pff.", "hm": "Hm.", "ja": "Ja.", "oh": "Oh.",
-          "wacht": "Wacht.", "precies": "Precies."}
 # Chatterbox Multilingual crashes on texts of about five tokens or fewer (its alignment analyzer
 # slices off the last five text positions), so every candidate is long enough to be safe.
 CANDIDATE_TEXTS = {
@@ -33,11 +32,8 @@ CANDIDATE_EXAGGERATIONS = (0.4, 0.55, 0.7)
 
 
 def speakable_text(line: Line) -> str:
-    """A reaction written as a stage cue ("(lacht)", "[zucht]") becomes something a voice can say."""
-    text = line.text.strip()
-    if line.reaction and text[:1] in "([*":
-        return SPOKEN[line.reaction]
-    return text
+    """A reaction written as a stage cue ("(lacht)", "chuckle") becomes something a voice can say."""
+    return speakable(line.text, line.reaction)
 
 
 class ReactionBank:

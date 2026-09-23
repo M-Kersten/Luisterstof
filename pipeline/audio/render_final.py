@@ -15,6 +15,7 @@ from pipeline.audio.chunker import chunk_script, eleven_inputs
 from pipeline.audio.render import EventFn, render_episode
 from pipeline.audio.synth import ElevenLabsDialogue, Synth, make_synth
 from pipeline.config import Settings
+from pipeline.cues import speakable
 from pipeline.models import Cast, Glossary, RenderManifest, Script
 from pipeline.paths import BookPaths
 from pipeline.plan.glossary import apply_lexicon
@@ -77,7 +78,8 @@ def render_eleven_blocks(
         spoken = []
         for line in lines:
             copy = line.model_copy()
-            copy.text = apply_lexicon(line.text, glossary) if glossary else line.text
+            text = speakable(line.text, line.reaction)
+            copy.text = apply_lexicon(text, glossary) if glossary else text
             spoken.append(copy)
         inputs = eleven_inputs(spoken, voice_ids)
         total = sum(len(i["text"]) for i in inputs)

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
 from pipeline.config import Settings
+from pipeline.cues import cue_reaction, speakable, strip_cues
 from pipeline.llm import LLM, LLMRequest, text_block
 from pipeline.models import (
     AuditResult,
@@ -295,6 +296,7 @@ Elke regel krijgt labels die bepalen hoe hij klinkt. Kies ze op basis van wat er
 - timing: hoe snel deze regel volgt. immediate bij tegenspreken en snelle wisselingen, hesitate als iemand even moet nadenken, search als iemand naar woorden zoekt, deliberate vóór een realisatie of een belangrijk punt. Leeg bij interrupt en backchannel.
 - phrases: knip een regel alleen op als er binnen de regel een omslag zit, bijvoorbeeld "Ik snap wat je bedoelt..." (react) + "maar wacht even—" (interrupt, pause_after none) + "dat kan toch helemaal niet?" (disagree). Na een realisatie een beat, dan trager verder. De stukken samen zijn letterlijk de regeltekst.
 - reaction: kleine reacties (hm, ja, oh, wacht, precies, een lach, een zucht) zijn eigen korte regels met reaction gezet, meestal als backchannel onder de ander door. Iemand reageert zonder het woord over te nemen.
+- De tekst wordt letterlijk uitgesproken. Schrijf daarom het geluid zelf ("Haha.", "Hehe.", "Pff.", "Hm."), nooit een beschrijving als "(lacht)", "[chuckle]", "*zucht*" of "grinnikt". Ook niet midden in een zin.
 """
 
 WRITER_RULES = """Je schrijft het script van een Nederlandse studiepodcast met een vaste cast. Eén aflevering per hoofdstuk van een studieboek. Alles in het Nederlands.
@@ -331,7 +333,7 @@ De rollen zijn tegelijk de leermotor en de comedymotor. De explainer legt uit me
 ## Vorm
 - Spreektaal: korte zinnen, contracties, halve zinnen mogen. Wissel zinslengte sterk af.
 - Schrijf getallen, formules en afkortingen zoals de bron ze schrijft; de uitspraak wordt later automatisch opgelost. Notatiezware stof beschrijf je in vorm en betekenis in plaats van symbolen voor te lezen.
-- Geen regieaanwijzingen in de tekst; emotie gaat via tags. Toegestane tags: {tags}.
+- Geen regieaanwijzingen in de tekst, ook niet tussen haakjes: de tekst wordt letterlijk uitgesproken. Emotie gaat via tags. Toegestane tags: {tags}.
 - Chatterbox leest hoofdletters als nadruk (harder, trager op dat woord) en gebruikt komma's en punten om adempauzes te plaatsen. Zet een enkel woord in KAPITALEN wanneer een host het écht benadrukt, niet elke zin, en varieer leestekens: een kort zinnetje met een punt klinkt anders dan een lange komma-zin.
 - Houd de streefduur aan: ongeveer {cps} tekens per seconde spreektijd.
 
@@ -442,6 +444,8 @@ class Writer:
             text = raw.text.strip()
             if not text:
                 continue
+            cue = cue_reaction(text)
+            text = speakable(text) if cue else (strip_cues(text) or text)  # a TTS voice reads stage cues aloud
             speaker = self._speaker_id(raw.speaker, brief.speakers)
             if speaker is None:
                 speaker = brief.speakers[0]
@@ -456,6 +460,8 @@ class Writer:
                 pause_after_ms=max(0, int(raw.pause_after_ms or 0)),
                 **(_performance_fields(raw, text) if isinstance(raw, PerformanceLineOut) else {}),
             )
+            if cue and self.performance and line.reaction is None:
+                line.reaction = cue
             mode = raw.overlap if raw.overlap in ("interrupt", "backchannel") else "none"
             if mode != "none" and prev is not None and prev.speaker != speaker:
                 cut = None
@@ -593,9 +599,9 @@ def _performance_fields(raw: PerformanceLineOut, text: str) -> dict:
     """Keep only labels from the known vocabularies; phrases that don't rebuild the text are dropped by Line itself."""
     from pipeline.performance import DELIVERIES, MOODS, PHRASE_PAUSES, REACTIONS, TIMINGS
 
-    phrases = [{"text": p.text.strip(), "delivery": _label(p.delivery, DELIVERIES),
+    phrases = [{"text": strip_cues(p.text), "delivery": _label(p.delivery, DELIVERIES),
                 "pause_after": _label(p.pause_after, PHRASE_PAUSES) or "none"}
-               for p in raw.phrases if p.text.strip()]
+               for p in raw.phrases if strip_cues(p.text)]
     return {
         "delivery": _label(raw.delivery, DELIVERIES),
         "mood": _label(raw.mood, MOODS),

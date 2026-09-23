@@ -25,6 +25,7 @@ from pipeline.audio.takes import render_with_takes
 from pipeline.audio.timeline import assemble
 from pipeline.audio.turns import Turn, group_turns
 from pipeline.config import Settings
+from pipeline.cues import reaction_of
 from pipeline.models import Cast, Glossary, RenderManifest, Script, TakeRecord, TurnRender
 from pipeline.paths import BookPaths
 from pipeline.tags import exaggeration_for
@@ -93,15 +94,16 @@ def render_episode(
             manifest.turns.append(TurnRender(turn_id=turn.turn_id, speaker=turn.speaker, line_ids=turn.line_ids,
                                              text_spoken=turn.text, flagged=True, flag_reason="onbekende spreker"))
             continue
-        if bank is not None and len(turn.lines) == 1 and turn.first.reaction:
-            reaction_path = bank.pick(turn.speaker, turn.first.reaction, seed, turn.first.id)
+        reaction = reaction_of(turn.first) if len(turn.lines) == 1 else None
+        if bank is not None and reaction:
+            reaction_path = bank.pick(turn.speaker, reaction, seed, turn.first.id)
             if reaction_path is not None:
                 clip = _bank_clip(reaction_path, synth.sample_rate)
                 take = TakeRecord(seed=0, exaggeration=0.0, path=str(reaction_path), duration_s=clip.duration_s,
                                   accepted=True, reason="reaction bank")
                 manifest.turns.append(TurnRender(turn_id=turn.turn_id, speaker=turn.speaker, line_ids=turn.line_ids,
                                                  text_spoken=turn.text, takes=[take], chosen=0,
-                                                 performance={"reaction": turn.first.reaction, "source": "bank"}))
+                                                 performance={"reaction": reaction, "source": "bank"}))
                 rendered[turn.turn_id] = (clip, UniformAligner().align(clip, turn.text))
                 _emit(on_event, "turn", index=i + 1, total=len(turns), turn=turn.turn_id, speaker=turn.speaker,
                       cached=True, flagged=False)
@@ -141,8 +143,8 @@ def render_episode(
             clip = result.clip
             if performance:
                 tr.performance = _performance_record(turn, exaggeration)
-                if bank is not None and turn.first.reaction:
-                    tr.performance.update(reaction=turn.first.reaction, source="synth (bank empty for this label)")
+                if bank is not None and reaction:
+                    tr.performance.update(reaction=reaction, source="synth (bank empty for this label)")
             if performance and performance.phrasing and tables is not None:
                 clip, words = _apply_phrasing(turn, clip, words, used_fallback, tables, glossary, seed, tr)
             rendered[turn.turn_id] = (clip, words)

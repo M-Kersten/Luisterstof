@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from pipeline.cues import speakable
 from pipeline.models import Glossary, Line, Script, SegmentType
 from pipeline.plan.glossary import apply_lexicon
 
@@ -57,11 +58,11 @@ class Turn:
 
 
 def spoken_text(line: Line, glossary: Glossary | None) -> str:
-    text = line.text.strip()
+    source = speakable(line.text, line.reaction)  # stage cues like "(lacht)" or "chuckle" are never read aloud
     # A trailing fragment marker is meant to be buried under the interruption, never spoken as a dash.
-    text = text.rstrip("—…- ").strip()
+    text = source.rstrip("—…- ").strip()
     if not text:
-        text = line.text.strip()
+        text = source
     return apply_lexicon(text, glossary) if glossary else text
 
 
