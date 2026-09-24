@@ -48,6 +48,13 @@ def _env_float(name: str, default: float) -> float:
     return float(value) if value is not None else default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = _env_str(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in ("1", "true", "yes", "on", "ja")
+
+
 def apple_silicon() -> bool:
     """True on an M-series Mac: Metal for Chatterbox, MLX for Whisper, one worker."""
     return platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64")
@@ -62,11 +69,28 @@ class Settings:
     data_dir: Path = Path("data")
     cast_dir: Path = Path("cast")
 
-    # Script side: frontier API.
+    # Script side: "anthropic" (Claude API) or "local" (a model server on your own network).
+    llm_backend: str = "anthropic"
     llm_model: str = "claude-opus-5"
     llm_effort: str = "high"
     llm_max_tokens: int = 32000
     anthropic_api_key: str | None = None
+
+    # Local LLM. api=ollama uses Ollama's native /api/chat, which lets every request set the
+    # context window (Ollama's OpenAI endpoint can't, and silently truncates long prompts);
+    # api=openai speaks /v1/chat/completions for llama.cpp, vLLM, LM Studio and the like.
+    local_llm_url: str = "http://localhost:11434"
+    local_llm_api: str = "ollama"
+    local_llm_model: str = "gemma3:27b"
+    local_llm_context: int = 32768
+    local_llm_max_tokens: int = 8192
+    local_llm_timeout_s: float = 1800.0
+    local_llm_vision: bool = True  # False: figure captions are skipped instead of sent to a model that can't see
+    local_llm_api_key: str | None = None  # only for servers started with a key (vLLM --api-key, ...)
+
+    # Nothing leaves the local network: Claude API and ElevenLabs refuse to start, the local LLM
+    # must resolve to a private address, Hugging Face libraries run from their cache only.
+    offline: bool = False
 
     # Accent tier.
     elevenlabs_api_key: str | None = None
@@ -100,7 +124,18 @@ class Settings:
     def from_env(cls, dotenv: Path | str | None = ".env", **overrides) -> Settings:
         if dotenv is not None:
             load_dotenv(dotenv)
+        offline = _env_bool("STUDIEPODCAST_OFFLINE", False)
         base = cls(
+            offline=offline,
+            llm_backend=_env_str("STUDIEPODCAST_LLM_BACKEND", "local" if offline else "anthropic").strip().casefold(),
+            local_llm_url=_env_str("LOCAL_LLM_URL", "http://localhost:11434"),
+            local_llm_api=_env_str("LOCAL_LLM_API", "ollama").strip().casefold(),
+            local_llm_model=_env_str("LOCAL_LLM_MODEL", "gemma3:27b"),
+            local_llm_context=_env_int("LOCAL_LLM_CONTEXT", 32768),
+            local_llm_max_tokens=_env_int("LOCAL_LLM_MAX_TOKENS", 8192),
+            local_llm_timeout_s=_env_float("LOCAL_LLM_TIMEOUT", 1800.0),
+            local_llm_vision=_env_bool("LOCAL_LLM_VISION", True),
+            local_llm_api_key=_env_str("LOCAL_LLM_API_KEY"),
             data_dir=Path(_env_str("STUDIEPODCAST_DATA_DIR", "data")),
             cast_dir=Path(_env_str("STUDIEPODCAST_CAST_DIR", "cast")),
             llm_model=_env_str("STUDIEPODCAST_LLM_MODEL", "claude-opus-5"),
@@ -137,5 +172,7 @@ class Settings:
             "whisper_model": self.mlx_whisper_model if self.whisper_backend == "mlx" else self.whisper_model,
             "takes_per_line": self.takes_per_line,
             "wer_threshold": self.wer_threshold,
-            "llm_model": self.llm_model,
+            "llm_backend": self.llm_backend,
+            "llm_model": self.local_llm_model if self.llm_backend == "local" else self.llm_model,
+            "offline": self.offline,
         }

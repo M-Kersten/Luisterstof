@@ -6,6 +6,9 @@ schema, so the stages never see raw text. Two implementations:
 * ``AnthropicLLM`` calls the Claude API with structured outputs, adaptive
   thinking, prompt caching on the stable system prefix and server-side
   refusal fallbacks.
+* ``LocalLLM`` (pipeline/local_llm.py) talks to a model server on your own
+  machine or network (Ollama, llama.cpp, vLLM, LM Studio), for books whose
+  content must not leave it.
 * ``FakeLLM`` answers from canned handlers and records every request. Tests
   and the CLI ``--fake-llm`` flag use it.
 """
@@ -116,6 +119,9 @@ class AnthropicLLM:
     FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
     def __init__(self, settings: Settings, client: Any | None = None, *, fallbacks: bool | None = None):
+        from pipeline.offline import block_if_offline
+
+        block_if_offline(settings, "the Claude API")
         self.settings = settings
         self.usage = Usage()
         if client is None:
@@ -222,4 +228,13 @@ def make_llm(settings: Settings, fake: bool = False) -> LLM:
         from pipeline.fake_handlers import default_fake_llm
 
         return default_fake_llm()
+    if settings.llm_backend == "local":
+        from pipeline.local_llm import LocalLLM
+
+        return LocalLLM(settings)
+    if settings.llm_backend != "anthropic":
+        raise ValueError(f"STUDIEPODCAST_LLM_BACKEND must be 'anthropic' or 'local', not {settings.llm_backend!r}")
+    from pipeline.offline import block_if_offline
+
+    block_if_offline(settings, "the Claude API (STUDIEPODCAST_LLM_BACKEND=anthropic)")
     return AnthropicLLM(settings)

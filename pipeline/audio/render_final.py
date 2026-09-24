@@ -64,6 +64,10 @@ def render_eleven_blocks(
     voice_ids = {s.id: (s.voice_id_final or "") for s in list(cast.hosts) + list(cast.guests)}
     blocks = {b.id: b for b in chunk_script(script)}
     lines_by_id = {line.id: line for line in script.lines()}
+    if render_fn is None:
+        from pipeline.offline import block_if_offline
+
+        block_if_offline(settings, "ElevenLabs")
     renderer = render_fn or (client or ElevenLabsDialogue(settings)).render_dialogue
     out_dir = paths.blocks_dir(script.episode_id) / "elevenlabs"
     out_dir.mkdir(parents=True, exist_ok=True)

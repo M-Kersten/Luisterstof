@@ -138,6 +138,7 @@ def run_prototype(pipeline, book_id: str, chapter_id: str, *, synth=None, transc
                   missing=[k for k, ok in coverage.items() if not ok])
 
     fake = pipeline.fake_audio
+    pipeline.release_llm()
     synth = synth or make_synth("null" if fake else "final", settings)
     transcriber = transcriber or make_transcriber(settings, fake=fake)
     aligner = aligner or make_aligner(settings, fake=fake)

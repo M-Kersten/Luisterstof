@@ -61,7 +61,9 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
     manager = JobManager(store, factory)
     reader = Pipeline(settings, fake_llm=fake_llm, fake_audio=fake_audio, cast=cast)  # read-only helper, no LLM calls
 
-    app = FastAPI(title="Studiepodcast", version="0.1.0")
+    # The interactive API docs load their JavaScript from a CDN; offline mode serves none of it.
+    app = FastAPI(title="Studiepodcast", version="0.1.0",
+                  docs_url=None if settings.offline else "/docs", redoc_url=None if settings.offline else "/redoc")
     app.state.settings = settings
     app.state.manager = manager
     app.state.store = store
@@ -78,7 +80,9 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
     # ------------------------------------------------------------------ books
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "fake_llm": fake_llm, "fake_audio": fake_audio, "model": settings.llm_model}
+        model = settings.local_llm_model if settings.llm_backend == "local" else settings.llm_model
+        return {"ok": True, "fake_llm": fake_llm, "fake_audio": fake_audio, "model": model,
+                "llm_backend": settings.llm_backend, "offline": settings.offline}
 
     @app.get("/api/books")
     def list_books() -> list[dict[str, Any]]:

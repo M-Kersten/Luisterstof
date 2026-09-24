@@ -44,6 +44,9 @@ def main(
     if cast_dir is not None:
         overrides["cast_dir"] = cast_dir
     state["settings"] = Settings.from_env(**overrides)
+    from pipeline.offline import apply_env
+
+    apply_env(state["settings"])  # before chatterbox/whisper import huggingface_hub, which reads it once
     state["fake_llm"] = fake_llm
     state["fake_audio"] = fake_audio
 
@@ -313,9 +316,49 @@ def doctor():
             typer.echo(f"  ref {sp.id}: {'ok' if ref and ref.is_file() else 'missing'} ({ref})")
     except Exception as exc:  # noqa: BLE001
         typer.echo(f"cast: {exc}")
-    typer.echo(f"keys: anthropic={'set' if settings.anthropic_api_key else 'missing'} elevenlabs={'set' if settings.elevenlabs_api_key else 'missing'}")
+    typer.echo(f"keys: anthropic={'set' if settings.anthropic_api_key else 'missing'} elevenlabs={'set' if settings.elevenlabs_api_key else 'missing'}"
+               + ("  (both blocked: offline)" if settings.offline else ""))
+    _doctor_llm(settings)
     stings = [p.name for p in (settings.cast_dir / "stings").glob("*.wav")] if (settings.cast_dir / "stings").exists() else []
     typer.echo(f"stings: {', '.join(stings) or 'none'}")
+
+
+def _doctor_llm(settings: Settings) -> None:
+    """Where script-side data goes, and whether the local model server is ready."""
+    import os
+
+    from pipeline.offline import resolve_local
+
+    if settings.llm_backend == "local":
+        from urllib.parse import urlparse
+
+        typer.echo(f"llm: local ({settings.local_llm_api}) {settings.local_llm_url} model={settings.local_llm_model} "
+                   f"context={settings.local_llm_context} vision={'on' if settings.local_llm_vision else 'off'}")
+        local, addresses = resolve_local(urlparse(settings.local_llm_url).hostname or "")
+        typer.echo(f"  address: {', '.join(addresses) or 'does not resolve'} -> "
+                   + ("local network" if local else "NOT the local network: book text would leave it"))
+        try:
+            from pipeline.local_llm import LocalLLM
+
+            ok, detail = LocalLLM(settings).check()
+            typer.echo(f"  server: {'ok' if ok else '!!'} {detail}")
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"  server: !! {type(exc).__name__}: {exc}")
+    else:
+        typer.echo(f"llm: Claude API ({settings.llm_model}): book text, plans and scripts are sent to Anthropic"
+                   + ("  [!! blocked: offline mode needs STUDIEPODCAST_LLM_BACKEND=local]" if settings.offline else ""))
+    if settings.offline:
+        typer.echo("offline: on. Claude API and ElevenLabs refuse to start; Hugging Face runs from its cache "
+                   f"(HF_HUB_OFFLINE={os.environ.get('HF_HUB_OFFLINE', 'unset')})")
+    else:
+        typer.echo("offline: off. Set STUDIEPODCAST_OFFLINE=1 to enforce that nothing leaves the local network")
+    try:
+        from huggingface_hub import scan_cache_dir  # type: ignore
+
+        repos = sorted(r.repo_id for r in scan_cache_dir().repos)
+        typer.echo(f"  models in the Hugging Face cache (all offline mode can load): {', '.join(repos) or 'none'}")
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"  Hugging Face cache: not readable ({type(exc).__name__})")
 
 
 @app.command("prototype-scene")

@@ -51,6 +51,9 @@ class Pipeline:
         cast: Cast | None = None,
         on_event: EventFn | None = None,
     ):
+        from pipeline.offline import apply_env
+
+        apply_env(settings)  # before anything imports huggingface_hub/transformers
         self.settings = settings
         self.fake_llm = fake_llm
         self.fake_audio = fake_audio
@@ -66,6 +69,12 @@ class Pipeline:
         if self._llm is None:
             self._llm = make_llm(self.settings, fake=self._llm_fake_requested)
         return self._llm
+
+    def release_llm(self) -> None:
+        """Hand the GPU back before rendering: a local model server would otherwise sit on its memory."""
+        release = getattr(self._llm, "release", None)
+        if callable(release):
+            release()
 
     def emit(self, stage: str, status: str, **data: Any) -> None:
         log.info("%s %s %s", stage, status, data if data else "")
@@ -113,6 +122,10 @@ class Pipeline:
         if src.resolve() != paths.source_pdf.resolve():
             shutil.copyfile(src, paths.source_pdf)
         self.emit("ingest", "start", book_id=book_id, pdf=str(src))
+        if captions and not getattr(self.llm, "supports_images", True):
+            self.emit("ingest", "note", book_id=book_id,
+                      message="figure captions skipped: the local model has no vision (LOCAL_LLM_VISION=0)")
+            captions = False
         captioner = LLMCaptioner(self.llm) if captions else None
         book = ingest_book(paths.source_pdf, book_id, llm=self.llm, captioner=captioner, figures_dir=paths.figures_dir,
                            method=method, title=title)
@@ -242,6 +255,7 @@ class Pipeline:
             raise StageError("script is not approved for this revision; listen to the draft and approve first")
         script = self.load_script(book_id, chapter_id)
         glossary = self.load_glossary(book_id)
+        self.release_llm()
         self.emit("render", "start", book_id=book_id, chapter=chapter_id, fake=self.fake_audio)
         result = render_final(script, glossary, self.cast, self.settings, self.paths(book_id), synth=synth,
                               transcriber=transcriber, aligner=aligner, fake=self.fake_audio,

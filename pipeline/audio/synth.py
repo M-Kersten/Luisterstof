@@ -371,6 +371,9 @@ class ElevenLabsDialogue:
     MAX_CHARS = 3000
 
     def __init__(self, settings: Settings, output_format: str = "mp3_44100_128"):
+        from pipeline.offline import block_if_offline
+
+        block_if_offline(settings, "ElevenLabs")
         if not settings.elevenlabs_api_key:
             raise RuntimeError("ELEVENLABS_API_KEY is not set")
         self.settings = settings

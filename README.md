@@ -75,6 +75,41 @@ studiepodcast --fake-llm --fake-audio run demo --pdf data/sample_book.pdf --upto
 studiepodcast status demo
 ```
 
+## Keeping book content on your own network
+
+By default the text side (plan, lexicon, script, audit, continuity, figure captions) runs on the Claude API, which means book text leaves your network. The audio side (Chatterbox, Whisper, Piper) is always local. For confidential material, run the text side on a model server you control and turn on offline mode:
+
+```powershell
+winget install Ollama.Ollama          # or the installer from ollama.com
+ollama pull gemma3:27b
+```
+
+In `.env`:
+
+```
+STUDIEPODCAST_OFFLINE=1
+LOCAL_LLM_MODEL=gemma3:27b
+```
+
+Then check with `studiepodcast doctor`. It shows which backend is in use, whether the model server's address is on your local network, whether the model is pulled, and which models are in the Hugging Face cache.
+
+What offline mode enforces:
+
+- **The Claude API and ElevenLabs refuse to start.** `eleven` fails with an explanation instead of sending text.
+- **The model server has to be local.** `LOCAL_LLM_URL` must resolve to localhost or a private address (10.x, 172.16–31.x, 192.168.x). Anything else is refused before a request goes out. Traffic to it never goes through an `HTTP(S)_PROXY` from the environment.
+- **Hugging Face runs from its local cache**, with telemetry off. Chatterbox, Whisper and WhisperX weights you've already downloaded keep working; `doctor` lists them. To fetch a new one, turn offline mode off for that one run. Downloading weights sends no book content.
+- **The web app serves no CDN-loaded pages.** The `/docs` API explorer is switched off.
+
+Details:
+
+- **Model.** `gemma3:27b` is the default: multilingual including Dutch, reads images (so figure captions still work) and fits a 48 GB card with room for a long context. For a text-only model, set `LOCAL_LLM_VISION=0`; figure captions are then skipped instead of sent to a model that can't see. Any model that follows a JSON schema works. Compare one chapter before committing to one.
+- **Context window.** `LOCAL_LLM_CONTEXT` (default 32768 tokens) is set on every request. The plan stage sends a whole chapter, so a long chapter needs 65536. When a prompt doesn't fit, the stage stops and names the value to set. Otherwise Ollama would silently drop the start of the prompt.
+- **Server on another machine.** Set `LOCAL_LLM_URL=http://192.168.1.20:11434` and start Ollama there with `OLLAMA_HOST=0.0.0.0` so it listens beyond localhost.
+- **Other servers.** llama.cpp's `llama-server`, vLLM or LM Studio: set `LOCAL_LLM_API=openai` and the server's URL, and start the server with at least `LOCAL_LLM_CONTEXT` tokens of context.
+- **GPU memory.** Before `render` and `prototype-scene`, the model is unloaded from Ollama so Chatterbox gets the card.
+- **Robustness.** Every answer is validated against its schema, and an invalid answer goes back to the model once with the error. A model that gets stuck repeating itself gets one retry, then an error that says so, rather than "raise the limit".
+- **Quality.** The audit's support check, which catches lines the source doesn't back up, runs on the same local model. A weaker model means a weaker safety net as well as weaker writing. Read the audit output for the first chapters more carefully than you would with Claude.
+
 ## Milestones, in order
 
 The brief says not to build around a voice you have not heard, and not to build the UI before the script is good. The CLI follows that order.
@@ -255,10 +290,15 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `STUDIEPODCAST_OFFLINE` | `0` | `1`: nothing leaves the local network (see above) |
+| `STUDIEPODCAST_LLM_BACKEND` | `anthropic`, `local` when offline | Which LLM writes the text side |
 | `ANTHROPIC_API_KEY` | | Frontier model for plan, lexicon, script, audit, continuity |
 | `STUDIEPODCAST_LLM_MODEL` | `claude-opus-5` | Model id |
 | `STUDIEPODCAST_LLM_EFFORT` | `high` | `low` to `max` |
 | `ELEVENLABS_API_KEY` | | Accent tier |
+| `LOCAL_LLM_API`, `LOCAL_LLM_URL`, `LOCAL_LLM_MODEL` | `ollama`, `http://localhost:11434`, `gemma3:27b` | Local model server |
+| `LOCAL_LLM_CONTEXT`, `LOCAL_LLM_MAX_TOKENS`, `LOCAL_LLM_TIMEOUT` | `32768`, `8192`, `1800` | Context window, answer length, seconds per request |
+| `LOCAL_LLM_VISION`, `LOCAL_LLM_API_KEY` | `1`, | Image input for figure captions; key for servers started with one |
 | `PIPER_BIN`, `PIPER_VOICES_DIR` | `piper`, `~/.local/share/piper/voices` | Draft tier |
 | `STUDIEPODCAST_DEVICE` | `cuda`, `mps` on Apple Silicon | Chatterbox device |
 | `CHATTERBOX_WORKERS` | `3`, `1` on Apple Silicon | Parallel model instances (a few GB each) |
