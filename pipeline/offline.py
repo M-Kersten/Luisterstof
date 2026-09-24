@@ -54,6 +54,23 @@ def resolve_local(host: str) -> tuple[bool, list[str]]:
     return bool(addresses) and all(_is_local(a) for a in addresses), addresses
 
 
+def _addresses(host: str) -> set[str]:
+    try:
+        return {info[4][0].split("%", 1)[0] for info in socket.getaddrinfo(host, None)}
+    except OSError:
+        return set()
+
+
+def on_this_machine(url: str) -> bool:
+    """True when the URL's host is this computer (loopback or one of its own addresses), not another one."""
+    host = urlparse(url).hostname
+    if not host:
+        return False
+    addresses = _addresses(host)
+    own = _addresses(socket.gethostname())
+    return bool(addresses) and all(ipaddress.ip_address(a).is_loopback or a in own for a in addresses)
+
+
 def check_local_url(url: str) -> list[str]:
     """Raise unless the URL points at this machine or the private network. Returns its addresses."""
     host = urlparse(url).hostname

@@ -55,3 +55,26 @@ def test_writer_cleans_cues_and_labels_the_reaction(cast, settings):
     assert (lines[1].text, lines[1].reaction) == ("Hehe.", "chuckle")
     plain = Writer(default_fake_llm(), cast, settings)
     assert "letterlijk uitgesproken" in plain._system(ContentPlan(chapter_id="c"), None, None, [])[0]["text"]
+
+
+def test_a_labelled_full_sentence_is_not_a_reaction(cast, settings):
+    """A weaker model puts reaction labels on whole sentences; those must keep their words."""
+    from pipeline.cues import pure_reaction
+
+    assert pure_reaction(Line(id="l001", speaker="joris", text="Haha, dat is goed gevonden!", reaction="laugh")) is None
+    assert pure_reaction(Line(id="l002", speaker="joris", text="Hm-hm, ja.", reaction="hm")) == "hm"
+
+    def handler(req):
+        return {"lines": [
+            {"speaker": "tessa", "text": "Dat is nergens waar je naar op zoek moet zijn.", "tags": [], "covers": [],
+             "overlap": "none", "pause_after_ms": 0, "delivery": "explain", "mood": "", "timing": "", "phrases": [],
+             "reaction": "chuckle"},
+            {"speaker": "joris", "text": "Haha.", "tags": [], "covers": [], "overlap": "backchannel", "pause_after_ms": 0,
+             "delivery": "", "mood": "", "timing": "", "phrases": [], "reaction": "laugh"},
+        ]}
+
+    writer = Writer(FakeLLM({"script_scene": handler}), cast, settings, performance=True)
+    brief = SegmentBrief(type="body", title="t", covers=[], target_chars=300, instructions="x", speakers=["tessa", "joris"])
+    first, second = writer.write_scene(ContentPlan(chapter_id="ch01"), None, brief).lines()
+    assert first.reaction is None and first.text.startswith("Dat is nergens")
+    assert second.reaction == "laugh"

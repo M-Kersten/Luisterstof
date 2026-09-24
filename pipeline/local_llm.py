@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from pipeline.config import Settings
 from pipeline.llm import LLMError, LLMRequest, LLMTruncated, Usage, _as_blocks, parse_json_into
-from pipeline.offline import check_local_url
+from pipeline.offline import check_local_url, on_this_machine
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +108,25 @@ def _with_nudge(content):
     return [{**first, "text": first.get("text", "") + LOOP_NUDGE}, *rest]
 
 
+_THINK_ON = {"on", "true", "1", "yes", "ja"}
+_THINK_OFF = {"off", "false", "0", "no", "nee"}
+_THINK_LEVELS = {"low", "medium", "high"}
+
+
+def think_value(raw: str) -> bool | str | None:
+    """LOCAL_LLM_THINK -> what to send: None = leave it to the model, True/False, or a level."""
+    raw = (raw or "").strip().casefold()
+    if not raw:
+        return None
+    if raw in _THINK_ON:
+        return True
+    if raw in _THINK_OFF:
+        return False
+    if raw in _THINK_LEVELS:
+        return raw
+    raise ValueError(f"LOCAL_LLM_THINK must be on, off, low, medium or high, not {raw!r}")
+
+
 class LocalLLM:
     """Same contract as AnthropicLLM: a request with a pydantic schema in, a validated instance out."""
 
@@ -123,11 +142,34 @@ class LocalLLM:
         self.api = settings.local_llm_api
         self.model = settings.local_llm_model
         self.base_url = settings.local_llm_url.rstrip("/")
-        self.supports_images = settings.local_llm_vision
+        self.think = think_value(settings.local_llm_think)
+        self._capabilities: set[str] | None | bool = False  # False = not looked up yet
         headers = {"Authorization": f"Bearer {settings.local_llm_api_key}"} if settings.local_llm_api_key else {}
         # trust_env=False: traffic for a local server never goes through an HTTP(S)_PROXY from the environment.
         self.client = httpx.Client(base_url=self.base_url, headers=headers, transport=transport, trust_env=False,
                                    timeout=httpx.Timeout(settings.local_llm_timeout_s, connect=10.0))
+
+    # ------------------------------------------------------------------ model facts
+    def capabilities(self) -> set[str] | None:
+        """What Ollama says the model can do ("vision", "thinking", ...); None when unknown."""
+        if self._capabilities is False:
+            self._capabilities = None
+            if self.api == "ollama":
+                try:
+                    response = self.client.post("/api/show", json={"model": self.model}, timeout=15.0)
+                    data = response.json() if response.status_code == 200 else {}
+                    if isinstance(data.get("capabilities"), list):
+                        self._capabilities = set(data["capabilities"])
+                except (httpx.HTTPError, ValueError):
+                    pass
+        return self._capabilities  # type: ignore[return-value]
+
+    @property
+    def supports_images(self) -> bool:
+        if not self.settings.local_llm_vision:
+            return False
+        caps = self.capabilities()
+        return caps is None or "vision" in caps
 
     # ------------------------------------------------------------------ request
     def _messages(self, request: LLMRequest, schema: dict) -> tuple[list[dict], int]:
@@ -163,15 +205,23 @@ class LocalLLM:
     def _body(self, request: LLMRequest, messages: list[dict], schema: dict, max_tokens: int, attempt: int) -> dict:
         temperature = 0.8 if request.task in WRITING_TASKS else 0.2 + 0.2 * attempt
         if self.api == "ollama":
-            return {"model": self.model, "messages": messages, "stream": False, "format": schema, "keep_alive": "10m",
+            body = {"model": self.model, "messages": messages, "stream": False, "format": schema, "keep_alive": "10m",
                     "options": {"num_ctx": self.settings.local_llm_context, "num_predict": max_tokens,
                                 "temperature": temperature, "seed": 1000 + attempt}}
-        return {"model": self.model, "messages": messages, "stream": False, "max_tokens": max_tokens,
+            if self.think is not None:
+                body["think"] = self.think
+            return body
+        body = {"model": self.model, "messages": messages, "stream": False, "max_tokens": max_tokens,
                 "temperature": temperature, "seed": 1000 + attempt,
                 "response_format": {"type": "json_schema",
                                     "json_schema": {"name": request.schema.__name__, "schema": schema}}}
+        if isinstance(self.think, bool):
+            body["chat_template_kwargs"] = {"enable_thinking": self.think}  # llama.cpp, vLLM (Qwen-style templates)
+        elif self.think:
+            body["reasoning_effort"] = self.think
+        return body
 
-    def _post(self, body: dict) -> tuple[str, str | None, SimpleNamespace]:
+    def _post(self, body: dict) -> tuple[str, str | None, SimpleNamespace, int]:
         path = "/api/chat" if self.api == "ollama" else "/v1/chat/completions"
         try:
             response = self.client.post(path, json=body)
@@ -179,16 +229,21 @@ class LocalLLM:
             raise LLMError(f"local LLM at {self.base_url} not reachable ({type(exc).__name__}: {exc}). "
                            "Is the server running? `studiepodcast doctor` checks it.") from exc
         if response.status_code >= 400:
+            if "does not support thinking" in response.text:
+                raise LLMError(f"{self.model} can't reason step by step, but LOCAL_LLM_THINK={self.settings.local_llm_think} "
+                               "asks for it: unset LOCAL_LLM_THINK or set it to off")
             raise LLMError(f"local LLM at {self.base_url} answered {response.status_code}: {response.text[:500]}")
         data = response.json()
         if self.api == "ollama":
-            content = (data.get("message") or {}).get("content") or ""
+            message = data.get("message") or {}
             usage = SimpleNamespace(input_tokens=data.get("prompt_eval_count", 0), output_tokens=data.get("eval_count", 0))
-            return content, data.get("done_reason"), usage
+            return message.get("content") or "", data.get("done_reason"), usage, len(message.get("thinking") or "")
         choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
         u = data.get("usage") or {}
         usage = SimpleNamespace(input_tokens=u.get("prompt_tokens", 0), output_tokens=u.get("completion_tokens", 0))
-        return (choice.get("message") or {}).get("content") or "", choice.get("finish_reason"), usage
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        return message.get("content") or "", choice.get("finish_reason"), usage, len(reasoning)
 
     def generate(self, request: LLMRequest) -> BaseModel:
         schema = inline_schema(request.schema.model_json_schema())
@@ -198,9 +253,14 @@ class LocalLLM:
             max_tokens = self._output_budget(request, messages, n_images)
             started = time.monotonic()
             log.info("llm %s task=%s model=%s attempt=%d", self.name, request.task, self.model, attempt + 1)
-            content, finish, usage = self._post(self._body(request, messages, schema, max_tokens, attempt))
+            content, finish, usage, thought = self._post(self._body(request, messages, schema, max_tokens, attempt))
             self.usage.add(usage, time.monotonic() - started)
             if finish == "length":
+                if thought and not clean_answer(content):
+                    raise LLMTruncated(
+                        f"task {request.task}: {self.model} spent the whole {max_tokens}-token budget reasoning before "
+                        "it wrote an answer. Raise LOCAL_LLM_MAX_TOKENS (and LOCAL_LLM_CONTEXT to make room), or set "
+                        "LOCAL_LLM_THINK=off for faster, shorter answers.")
                 stuck = looping(content)
                 if stuck and attempt < RETRIES:
                     log.warning("local model repeated itself on %s until the limit; retrying once", request.task)
@@ -228,8 +288,9 @@ class LocalLLM:
 
     # ------------------------------------------------------------------ housekeeping
     def release(self) -> None:
-        """Free the model's GPU memory before rendering (Ollama). Other servers manage their own memory."""
-        if self.api != "ollama":
+        """Free the GPU before rendering, when the model runs on this machine. A server on another laptop keeps
+        its model loaded: it may be writing the next chapter for someone else, and reloading costs minutes."""
+        if self.api != "ollama" or not on_this_machine(self.base_url):
             return
         try:
             self.client.post("/api/generate", json={"model": self.model, "keep_alive": 0}, timeout=30.0)

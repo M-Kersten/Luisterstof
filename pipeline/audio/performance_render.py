@@ -16,7 +16,7 @@ import numpy as np
 from pipeline.audio.asr import WordTiming, tokenize
 from pipeline.audio.synth import AudioClip, apply_speech_rate
 from pipeline.audio.turns import Turn, spoken_text
-from pipeline.cues import reaction_of
+from pipeline.cues import pure_reaction
 from pipeline.models import Cast, Glossary, Line
 from pipeline.performance import exaggeration_delta, merged_table, phrase_values, phrases_of, timing_gap
 
@@ -54,7 +54,7 @@ class Tables:
 
 def split_hook(tables: Tables, options: PerformanceOptions):
     def split(prev: Line, line: Line) -> bool:
-        if options.reactions and (reaction_of(prev) or reaction_of(line)):
+        if options.reactions and (pure_reaction(prev) or pure_reaction(line)):
             return True
         if options.timing and line.timing:
             return True  # a response timing is a gap before this line, so it needs a turn boundary

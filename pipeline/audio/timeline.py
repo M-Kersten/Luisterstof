@@ -30,7 +30,7 @@ from pipeline.audio.asr import WordTiming
 from pipeline.audio.synth import AudioClip
 from pipeline.audio.turns import Turn
 from pipeline.audio.wer import normalise
-from pipeline.cues import reaction_of
+from pipeline.cues import pure_reaction
 from pipeline.models import Line
 
 GAP_RANGE = (0.18, 0.42)
@@ -166,7 +166,7 @@ def assemble(
             continue
 
         if mode == "backchannel" and target_ok and prev_any is not None:
-            laugh = any(t in ("laughs", "laughing") for t in turn.tags) or reaction_of(turn.first) in ("laugh", "chuckle")
+            laugh = any(t in ("laughs", "laughing") for t in turn.tags) or pure_reaction(turn.first) in ("laugh", "chuckle")
             point_share = LAUGH_POINT if laugh else BACKCHANNEL_POINT
             point = prev_any.start + prev_any.clip.duration_s * point_share
             start = _word_boundary_after(prev_any, point)

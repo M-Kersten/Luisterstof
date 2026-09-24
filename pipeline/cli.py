@@ -338,10 +338,22 @@ def _doctor_llm(settings: Settings) -> None:
         typer.echo(f"  address: {', '.join(addresses) or 'does not resolve'} -> "
                    + ("local network" if local else "NOT the local network: book text would leave it"))
         try:
-            from pipeline.local_llm import LocalLLM
+            from pipeline.local_llm import LocalLLM, think_value
 
-            ok, detail = LocalLLM(settings).check()
+            llm = LocalLLM(settings)
+            ok, detail = llm.check()
             typer.echo(f"  server: {'ok' if ok else '!!'} {detail}")
+            caps = llm.capabilities() if ok else None
+            if caps is not None:
+                typer.echo(f"  capabilities: {', '.join(sorted(caps)) or 'none reported'}")
+                if settings.local_llm_vision and "vision" not in caps:
+                    typer.echo("  note: this model can't read images, so figure captions are skipped")
+                think = think_value(settings.local_llm_think)
+                if "thinking" in caps and think is None:
+                    typer.echo("  note: this model reasons before it answers (slower, usually more careful); "
+                               "LOCAL_LLM_THINK=off makes it answer directly")
+                if think and "thinking" not in caps:
+                    typer.echo(f"  !! LOCAL_LLM_THINK={settings.local_llm_think}, but this model can't reason step by step: unset it")
         except Exception as exc:  # noqa: BLE001
             typer.echo(f"  server: !! {type(exc).__name__}: {exc}")
     else:

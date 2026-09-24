@@ -222,3 +222,15 @@ def test_reactions_generate_all_labels_for_both_hosts(tmp_path, cast_dir):
             assert len(list((cast_dir / "reactions" / "_candidates" / speaker / label).glob("*.wav"))) == 2
     bad = CliRunner().invoke(cli.app, [*common, "reactions", "generate", "--label", "giggle"])
     assert bad.exit_code != 0
+
+
+def test_reaction_bank_never_replaces_a_labelled_sentence(settings, cast):
+    folder = settings.cast_dir / "reactions" / "tessa" / "chuckle"
+    folder.mkdir(parents=True)
+    AudioClip(np.full(4800, 0.1, dtype=np.float32), 24000).write(folder / "hehe.wav")
+    lines = [Line(id="l001", speaker="tessa", text="Dat is nergens waar je naar op zoek moet zijn.", reaction="chuckle")]
+    paths = BookPaths(settings.data_dir, "demo").ensure()
+    _, _, manifest = render_episode(_scene(lines), None, cast, settings, paths, tier="draft", synth=NullSynth(),
+                                    transcriber=None, aligner=None, performance=PerformanceOptions(reactions=True))
+    take = manifest.turns[0].chosen_take
+    assert take.reason != "reaction bank" and manifest.turns[0].text_spoken.startswith("Dat is nergens")

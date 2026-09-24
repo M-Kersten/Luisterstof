@@ -69,6 +69,24 @@ def speakable(text: str, reaction: str | None = None) -> str:
     return cleaned or text.strip()
 
 
-def reaction_of(line) -> str | None:
-    """A line's reaction label, falling back to what its stage-cue text says."""
-    return getattr(line, "reaction", None) or cue_reaction(line.text)
+# Words a pure reaction consists of: laughs, hums and one-word acknowledgements.
+_REACTION_WORD = re.compile(
+    r"^(h?a(ha)+h?|he(he)+|ha+|he|h+m+|m+h?m+|ja+|jawel|o+h*|oké|ok|okay|wacht|even|precies|pf+|zucht|nou|tja|a+h+|hè|hé)$")
+
+
+def pure_reaction(line) -> str | None:
+    """The reaction a line is, when it is nothing but a reaction sound ("Haha.", "Hm-hm, ja.", "(lacht)").
+
+    Only such a line may be swapped for a reaction-bank clip. A full sentence that carries a reaction
+    label ("Haha, dat is goed gevonden!") keeps its words: the label is ignored for it.
+    """
+    cue = cue_reaction(line.text)
+    if cue:
+        return cue
+    label = getattr(line, "reaction", None)
+    if not label:
+        return None
+    words = [w.casefold() for w in _WORD.findall(strip_cues(line.text))]
+    if 0 < len(words) <= 4 and all(_REACTION_WORD.match(w) for w in words):
+        return label
+    return None

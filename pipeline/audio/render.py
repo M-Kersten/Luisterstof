@@ -25,7 +25,7 @@ from pipeline.audio.takes import render_with_takes
 from pipeline.audio.timeline import assemble
 from pipeline.audio.turns import Turn, group_turns
 from pipeline.config import Settings
-from pipeline.cues import reaction_of
+from pipeline.cues import pure_reaction
 from pipeline.models import Cast, Glossary, RenderManifest, Script, TakeRecord, TurnRender
 from pipeline.paths import BookPaths
 from pipeline.tags import exaggeration_for
@@ -94,7 +94,7 @@ def render_episode(
             manifest.turns.append(TurnRender(turn_id=turn.turn_id, speaker=turn.speaker, line_ids=turn.line_ids,
                                              text_spoken=turn.text, flagged=True, flag_reason="onbekende spreker"))
             continue
-        reaction = reaction_of(turn.first) if len(turn.lines) == 1 else None
+        reaction = pure_reaction(turn.first) if len(turn.lines) == 1 else None
         if bank is not None and reaction:
             reaction_path = bank.pick(turn.speaker, reaction, seed, turn.first.id)
             if reaction_path is not None:

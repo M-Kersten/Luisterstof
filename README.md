@@ -81,14 +81,14 @@ By default the text side (plan, lexicon, script, audit, continuity, figure capti
 
 ```powershell
 winget install Ollama.Ollama          # or the installer from ollama.com
-ollama pull gemma3:27b
+ollama pull gemma4:31b
 ```
 
 In `.env`:
 
 ```
 STUDIEPODCAST_OFFLINE=1
-LOCAL_LLM_MODEL=gemma3:27b
+LOCAL_LLM_MODEL=gemma4:31b
 ```
 
 Then check with `studiepodcast doctor`. It shows which backend is in use, whether the model server's address is on your local network, whether the model is pulled, and which models are in the Hugging Face cache.
@@ -102,11 +102,22 @@ What offline mode enforces:
 
 Details:
 
-- **Model.** `gemma3:27b` is the default: multilingual including Dutch, reads images (so figure captions still work) and fits a 48 GB card with room for a long context. For a text-only model, set `LOCAL_LLM_VISION=0`; figure captions are then skipped instead of sent to a model that can't see. Any model that follows a JSON schema works. Compare one chapter before committing to one.
-- **Context window.** `LOCAL_LLM_CONTEXT` (default 32768 tokens) is set on every request. The plan stage sends a whole chapter, so a long chapter needs 65536. When a prompt doesn't fit, the stage stops and names the value to set. Otherwise Ollama would silently drop the start of the prompt.
-- **Server on another machine.** Set `LOCAL_LLM_URL=http://192.168.1.20:11434` and start Ollama there with `OLLAMA_HOST=0.0.0.0` so it listens beyond localhost.
+**Which model.** Sizes are Ollama's downloads, chosen for the 24 GB of an RTX PRO 5000 laptop GPU. With the default 32k context the largest sits at the edge of it. Whatever doesn't fit, Ollama moves to system RAM on its own, which only costs speed; `ollama ps` shows the split after the first request ("100% GPU" is all on the card).
+
+| model | size | when |
+|---|---|---|
+| `gemma4:31b` (default) | 20 GB | best Dutch writing in this size class; reads figures |
+| `gemma4:26b` | 19 GB | mixture of experts, 4B active: several times faster, a little less careful |
+| `qwen3.8:27b` | 18 GB | strongest at reasoning; reads figures |
+
+Any model that follows a JSON schema works. Run one chapter with two of them and compare the scripts and the audits before you commit. Bigger models run too, with the part that doesn't fit on the GPU in system RAM: much slower, which a weekend run can absorb. `qwen3.5:122b` (81 GB, mixture of experts) is the largest current one that is realistic, and needs roughly 64 GB of free system RAM next to the GPU.
+
+- **Reasoning ("thinking").** Gemma 4 and Qwen 3.8 reason before they answer, by default. It's slower and usually more careful, which suits a run that has all weekend. The reasoning counts toward `LOCAL_LLM_MAX_TOKENS` (default 16384). If a stage stops because the budget went to reasoning, raise it or set `LOCAL_LLM_THINK=off`. `doctor` shows whether the model reasons and whether it reads images; a model that can't read images has its figure captions skipped automatically.
+- **Context window.** `LOCAL_LLM_CONTEXT` (default 32768 tokens) is set on every request. The plan stage sends a whole chapter, so a long chapter needs 65536. When a prompt doesn't fit, the stage stops and names the value to set. Otherwise Ollama would silently drop the start of the prompt. On a 24 GB GPU, 65536 pushes part of the model into system RAM: slower, still fine.
+- **Server on another machine.** Set `LOCAL_LLM_URL=http://192.168.1.20:11434`. On that machine, set `OLLAMA_HOST=0.0.0.0` so Ollama listens beyond localhost, and allow port 11434 through its firewall.
+- **Several laptops.** Give one the model server and nothing else, and let the others run the pipeline against it. On the others, run `render` for finished chapters, which keeps their own GPU busy with Chatterbox while the model laptop writes the next chapter. Each rendering laptop works on different chapters.
 - **Other servers.** llama.cpp's `llama-server`, vLLM or LM Studio: set `LOCAL_LLM_API=openai` and the server's URL, and start the server with at least `LOCAL_LLM_CONTEXT` tokens of context.
-- **GPU memory.** Before `render` and `prototype-scene`, the model is unloaded from Ollama so Chatterbox gets the card.
+- **GPU memory.** Before `render` and `prototype-scene`, the model is unloaded from Ollama so Chatterbox gets the card. That only happens when the model server runs on the same machine; a server on another laptop keeps its model loaded.
 - **Robustness.** Every answer is validated against its schema, and an invalid answer goes back to the model once with the error. A model that gets stuck repeating itself gets one retry, then an error that says so, rather than "raise the limit".
 - **Quality.** The audit's support check, which catches lines the source doesn't back up, runs on the same local model. A weaker model means a weaker safety net as well as weaker writing. Read the audit output for the first chapters more carefully than you would with Claude.
 
@@ -296,8 +307,9 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 | `STUDIEPODCAST_LLM_MODEL` | `claude-opus-5` | Model id |
 | `STUDIEPODCAST_LLM_EFFORT` | `high` | `low` to `max` |
 | `ELEVENLABS_API_KEY` | | Accent tier |
-| `LOCAL_LLM_API`, `LOCAL_LLM_URL`, `LOCAL_LLM_MODEL` | `ollama`, `http://localhost:11434`, `gemma3:27b` | Local model server |
-| `LOCAL_LLM_CONTEXT`, `LOCAL_LLM_MAX_TOKENS`, `LOCAL_LLM_TIMEOUT` | `32768`, `8192`, `1800` | Context window, answer length, seconds per request |
+| `LOCAL_LLM_API`, `LOCAL_LLM_URL`, `LOCAL_LLM_MODEL` | `ollama`, `http://localhost:11434`, `gemma4:31b` | Local model server |
+| `LOCAL_LLM_CONTEXT`, `LOCAL_LLM_MAX_TOKENS`, `LOCAL_LLM_TIMEOUT` | `32768`, `16384`, `1800` | Context window, answer length incl. reasoning, seconds per request |
+| `LOCAL_LLM_THINK` | model's own default | `off` to answer without reasoning first; `on`; `low`/`medium`/`high` where supported |
 | `LOCAL_LLM_VISION`, `LOCAL_LLM_API_KEY` | `1`, | Image input for figure captions; key for servers started with one |
 | `PIPER_BIN`, `PIPER_VOICES_DIR` | `piper`, `~/.local/share/piper/voices` | Draft tier |
 | `STUDIEPODCAST_DEVICE` | `cuda`, `mps` on Apple Silicon | Chatterbox device |
@@ -320,4 +332,4 @@ The suite runs the whole pipeline on a generated four-page study book with a fak
 
 The Chatterbox, Piper, faster-whisper, WhisperX, MLX Whisper and ElevenLabs adapters are written against their documented APIs but were not run in this environment (no GPU, no Apple Silicon, no keys). M0 is where they get their first real test, which is also the point of M0.
 
-The local LLM backend was run here against a real Ollama 0.34.4 server with small CPU models (qwen2.5 0.5B and 1.5B): every pipeline schema is accepted, answers validate, the model check and unload work. It has not run with `gemma3:27b` on a GPU, so script quality with a local model is still yours to judge.
+The local LLM backend was run here against a real Ollama 0.34.4 server with small CPU models (qwen2.5 0.5B and 1.5B): every pipeline schema is accepted, answers validate, the model check and unload work. It has not run with `gemma4:31b` on a GPU, so script quality with a local model is still yours to judge.

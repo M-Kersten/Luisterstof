@@ -43,9 +43,10 @@ def _local(settings=None, **overrides) -> Settings:
 class FakeServer:
     """Stands in for Ollama (/api/*) or an OpenAI-compatible server; records every request."""
 
-    def __init__(self, replies=None, models=("gemma3:27b",)):
+    def __init__(self, replies=None, models=("gemma4:31b",), capabilities=("completion", "vision")):
         self.replies = list(replies or [])
         self.models = list(models)
+        self.capabilities = capabilities
         self.requests: list[tuple[str, str, dict]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -58,10 +59,13 @@ class FakeServer:
             return httpx.Response(200, json={"data": [{"id": m} for m in self.models]})
         if path == "/api/generate":
             return httpx.Response(200, json={"done": True})
-        content, finish = self.replies.pop(0) if self.replies else (self._canned(body, path), "stop")
+        if path == "/api/show":
+            return httpx.Response(200, json={} if self.capabilities is None else {"capabilities": list(self.capabilities)})
+        reply = self.replies.pop(0) if self.replies else (self._canned(body, path), "stop")
+        content, finish, thinking = (*reply, "") if len(reply) == 2 else reply
         if path == "/api/chat":
-            return httpx.Response(200, json={"message": {"role": "assistant", "content": content}, "done_reason": finish,
-                                             "prompt_eval_count": 100, "eval_count": 20})
+            return httpx.Response(200, json={"message": {"role": "assistant", "content": content, "thinking": thinking},
+                                             "done_reason": finish, "prompt_eval_count": 100, "eval_count": 20})
         return httpx.Response(200, json={"choices": [{"message": {"content": content}, "finish_reason": finish}],
                                          "usage": {"prompt_tokens": 100, "completion_tokens": 20}})
 
@@ -97,8 +101,9 @@ def test_ollama_request_carries_schema_context_and_images_and_parses_a_messy_ans
     result = llm.generate(_request(task="figure_caption", system=[text_block("Regels.", cache=True)],
                                    user=[image_block(png), text_block("Beschrijf de figuur.")]))
     assert result == Answer(verdict="ok", score=4)
-    method, path, body = server.requests[0]
-    assert (method, path, body["model"], body["stream"]) == ("POST", "/api/chat", "gemma3:27b", False)
+    method, path, body = next(r for r in server.requests if r[1] == "/api/chat")
+    assert (method, path, body["model"], body["stream"]) == ("POST", "/api/chat", "gemma4:31b", False)
+    assert "think" not in body  # left to the model unless LOCAL_LLM_THINK says otherwise
     assert body["options"]["num_ctx"] == 32768 and body["options"]["temperature"] == 0.2
     assert body["format"]["title"] == "Answer" and "cache_control" not in json.dumps(body)
     assert "Antwoordformaat" in body["messages"][0]["content"] and '"score"' in body["messages"][0]["content"]
@@ -112,7 +117,7 @@ def test_openai_compatible_request_shape():
     llm = LocalLLM(_local(local_llm_api="openai", local_llm_url="http://127.0.0.1:8080"), transport=httpx.MockTransport(server))
     assert llm.generate(_request(task="script_segment", user=[text_block("Schrijf."), image_block(png)])).score == 2
     _, path, body = server.requests[0]
-    assert path == "/v1/chat/completions" and body["temperature"] == 0.8 and body["max_tokens"] == 8192
+    assert path == "/v1/chat/completions" and body["temperature"] == 0.8 and body["max_tokens"] == 16384
     assert body["response_format"]["json_schema"]["name"] == "Answer"
     assert body["messages"][1]["content"][1] == {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png}"}}
 
@@ -151,6 +156,44 @@ def test_a_model_stuck_in_a_loop_gets_one_retry_and_then_a_specific_error():
         LocalLLM(_local(), transport=httpx.MockTransport(stuck)).generate(_request())
 
 
+def test_thinking_setting_and_a_budget_spent_on_reasoning(monkeypatch):
+    def body_for(**overrides):
+        server = FakeServer([('{"verdict": "ok", "score": 1}', "stop")])
+        LocalLLM(_local(**overrides), transport=httpx.MockTransport(server)).generate(_request())
+        return server.chats()[0]
+
+    assert body_for(local_llm_think="off")["think"] is False
+    assert body_for(local_llm_think="high")["think"] == "high"
+    assert body_for(local_llm_api="openai", local_llm_think="on")["chat_template_kwargs"] == {"enable_thinking": True}
+    with pytest.raises(ValueError, match="LOCAL_LLM_THINK"):
+        LocalLLM(_local(local_llm_think="maybe"))
+    reasoned_out = FakeServer([("", "length", "eerst dit, dan dat, " * 200)])
+    with pytest.raises(LLMTruncated, match="reasoning before"):
+        LocalLLM(_local(), transport=httpx.MockTransport(reasoned_out)).generate(_request())
+
+    def refuses(request):
+        return httpx.Response(400, json={"error": '"qwen2.5:0.5b" does not support thinking'})
+
+    with pytest.raises(LLMError, match="unset LOCAL_LLM_THINK"):
+        LocalLLM(_local(local_llm_think="on"), transport=httpx.MockTransport(refuses)).generate(_request())
+
+
+def test_vision_follows_what_the_model_reports():
+    def vision(capabilities, **overrides):
+        return LocalLLM(_local(**overrides), transport=httpx.MockTransport(FakeServer(capabilities=capabilities))).supports_images
+
+    assert vision(("completion", "vision")) is True
+    assert vision(("completion", "thinking")) is False  # a text-only model: captions are skipped, not sent
+    assert vision(None) is True  # an older server that doesn't report capabilities: trust the setting
+    assert vision(("completion", "vision"), local_llm_vision=False) is False
+
+
+def test_release_leaves_a_model_server_on_another_laptop_loaded():
+    server = FakeServer()
+    LocalLLM(_local(local_llm_url="http://192.168.77.3:11434"), transport=httpx.MockTransport(server)).release()
+    assert not any(path == "/api/generate" for _, path, _ in server.requests)
+
+
 def test_a_prompt_that_does_not_fit_is_refused_before_it_is_silently_truncated():
     server = FakeServer()
     llm = LocalLLM(_local(local_llm_context=4096), transport=httpx.MockTransport(server))
@@ -163,9 +206,9 @@ def test_release_unloads_and_check_finds_missing_models():
     server = FakeServer(models=["qwen3:32b"])
     llm = LocalLLM(_local(), transport=httpx.MockTransport(server))
     ok, detail = llm.check()
-    assert not ok and "ollama pull gemma3:27b" in detail
+    assert not ok and "ollama pull gemma4:31b" in detail
     llm.release()
-    assert ("POST", "/api/generate", {"model": "gemma3:27b", "keep_alive": 0}) in server.requests
+    assert ("POST", "/api/generate", {"model": "gemma4:31b", "keep_alive": 0}) in server.requests
     ok, _ = LocalLLM(_local(), transport=httpx.MockTransport(FakeServer())).check()
     assert ok
 

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
 from pipeline.config import Settings
-from pipeline.cues import cue_reaction, speakable, strip_cues
+from pipeline.cues import cue_reaction, pure_reaction, speakable, strip_cues
 from pipeline.llm import LLM, LLMRequest, text_block
 from pipeline.models import (
     AuditResult,
@@ -462,6 +462,8 @@ class Writer:
             )
             if cue and self.performance and line.reaction is None:
                 line.reaction = cue
+            if line.reaction and pure_reaction(line) is None:
+                line.reaction = None  # a labelled full sentence keeps its words; only bare reactions are reactions
             mode = raw.overlap if raw.overlap in ("interrupt", "backchannel") else "none"
             if mode != "none" and prev is not None and prev.speaker != speaker:
                 cut = None
