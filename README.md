@@ -319,3 +319,5 @@ The suite runs the whole pipeline on a generated four-page study book with a fak
 ## What has not been exercised here
 
 The Chatterbox, Piper, faster-whisper, WhisperX, MLX Whisper and ElevenLabs adapters are written against their documented APIs but were not run in this environment (no GPU, no Apple Silicon, no keys). M0 is where they get their first real test, which is also the point of M0.
+
+The local LLM backend was run here against a real Ollama 0.34.4 server with small CPU models (qwen2.5 0.5B and 1.5B): every pipeline schema is accepted, answers validate, the model check and unload work. It has not run with `gemma3:27b` on a GPU, so script quality with a local model is still yours to judge.

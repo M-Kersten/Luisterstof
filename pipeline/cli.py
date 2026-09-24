@@ -357,8 +357,10 @@ def _doctor_llm(settings: Settings) -> None:
 
         repos = sorted(r.repo_id for r in scan_cache_dir().repos)
         typer.echo(f"  models in the Hugging Face cache (all offline mode can load): {', '.join(repos) or 'none'}")
+    except ModuleNotFoundError:
+        typer.echo("  Hugging Face cache: huggingface_hub not installed (it comes with the chatterbox install)")
     except Exception as exc:  # noqa: BLE001
-        typer.echo(f"  Hugging Face cache: not readable ({type(exc).__name__})")
+        typer.echo(f"  Hugging Face cache: not readable ({type(exc).__name__}: {exc})")
 
 
 @app.command("prototype-scene")

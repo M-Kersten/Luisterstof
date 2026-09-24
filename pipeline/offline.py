@@ -61,8 +61,13 @@ def check_local_url(url: str) -> list[str]:
         raise OfflineViolation(f"LOCAL_LLM_URL {url!r} has no host")
     local, addresses = resolve_local(host)
     if not local:
-        where = ", ".join(addresses) if addresses else "does not resolve"
+        if not addresses:
+            where = f"{host} does not resolve"
+        elif addresses == [host]:
+            where = host
+        else:
+            where = f"{host} is {', '.join(addresses)}"
         raise OfflineViolation(
-            f"LOCAL_LLM_URL {url!r} is not on the local network ({host}: {where}); in offline mode the model "
+            f"LOCAL_LLM_URL {url!r} is not on the local network ({where}); in offline mode the model "
             "server must be localhost or a private address (10.x, 172.16-31.x, 192.168.x, fc00::/7)")
     return addresses
