@@ -89,6 +89,11 @@ class Settings:
     local_llm_vision: bool = True  # False: skip figure captions (a model without vision is detected on Ollama anyway)
     local_llm_api_key: str | None = None  # only for servers started with a key (vLLM --api-key, ...)
 
+    # Content plan and lexicon: "single" = one call per chapter (suits a frontier model), "thorough" = per
+    # section, quotes checked against the source, then a chapter pass and review rounds (pipeline/plan/thorough.py).
+    plan_mode: str = "single"
+    plan_review_rounds: int = 1
+
     # Nothing leaves the local network: Claude API and ElevenLabs refuse to start, the local LLM
     # must resolve to a private address, Hugging Face libraries run from their cache only.
     offline: bool = False
@@ -126,9 +131,12 @@ class Settings:
         if dotenv is not None:
             load_dotenv(dotenv)
         offline = _env_bool("STUDIEPODCAST_OFFLINE", False)
+        backend = _env_str("STUDIEPODCAST_LLM_BACKEND", "local" if offline else "anthropic").strip().casefold()
         base = cls(
+            plan_mode=_env_str("STUDIEPODCAST_PLAN_MODE", "thorough" if backend == "local" else "single").strip().casefold(),
+            plan_review_rounds=_env_int("STUDIEPODCAST_PLAN_REVIEW_ROUNDS", 1),
             offline=offline,
-            llm_backend=_env_str("STUDIEPODCAST_LLM_BACKEND", "local" if offline else "anthropic").strip().casefold(),
+            llm_backend=backend,
             local_llm_url=_env_str("LOCAL_LLM_URL", "http://localhost:11434"),
             local_llm_api=_env_str("LOCAL_LLM_API", "ollama").strip().casefold(),
             local_llm_model=_env_str("LOCAL_LLM_MODEL", "gemma4:31b"),
@@ -176,5 +184,6 @@ class Settings:
             "wer_threshold": self.wer_threshold,
             "llm_backend": self.llm_backend,
             "llm_model": self.local_llm_model if self.llm_backend == "local" else self.llm_model,
+            "plan_mode": self.plan_mode,
             "offline": self.offline,
         }

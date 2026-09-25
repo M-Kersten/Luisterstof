@@ -63,9 +63,14 @@ def ingest(pdf: Path, book_id: Annotated[str, typer.Option(help="Identifier, e.g
 
 
 @app.command()
-def plan(book_id: str, chapter: Annotated[str | None, typer.Argument()] = None):
+def plan(book_id: str, chapter: Annotated[str | None, typer.Argument()] = None,
+         compare: Annotated[bool, typer.Option(help="Make the plan both ways (single call and thorough) and write a comparison.")] = False):
     """Stage 2: content plan (claims, definitions, misconceptions) for one or all chapters."""
     p = _pipeline()
+    if compare:
+        for ch in _chapters(p, book_id, chapter):
+            typer.echo(f"  {ch}: {p.compare_plans(book_id, ch)}")
+        return
     for ch in _chapters(p, book_id, chapter):
         result = p.plan(book_id, ch)
         typer.echo(f"  {ch}: {len(result.key_claims)} beweringen, expert={result.needs_expert} ({result.expert_domain})")

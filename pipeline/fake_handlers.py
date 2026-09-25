@@ -85,6 +85,60 @@ def fake_plan(req: LLMRequest) -> dict:
     }
 
 
+def fake_plan_section(req: LLMRequest) -> dict:
+    """Candidates from the one section in the prompt; the first claim's quote is deliberately paraphrased
+    (a prefix the source doesn't contain), so the quote-fix pass has something to do."""
+    system = _text_of(req.system)
+    m = _SECTION_RE.search(system)
+    body = system[m.end():].strip() if m else ""
+    sents = _sentences(body)
+    claims = [{"claim": s, "source_quote": s[:200], "difficulty": 2 + (j % 3), "exam_relevance": 5 - (j % 3)}
+              for j, s in enumerate(sents[:3])]
+    if claims:
+        claims[0]["source_quote"] = "Volgens het boek geldt: " + claims[0]["source_quote"]
+    return {
+        "claims": claims,
+        "definitions": [{"term": m.group("title"), "definition": sents[0], "source_quote": sents[0][:120]}] if m and sents else [],
+        "misconceptions": [{"wrong": "Het begrip geldt altijd, ongeacht de voorwaarden.",
+                            "right": "Het begrip geldt alleen onder de voorwaarden uit de bron.",
+                            "why_tempting": "De voorwaarden staan in een bijzin."}] if sents else [],
+        "worked_example": None,
+        "formula_dense": "=" in body,
+    }
+
+
+def fake_plan_quotes(req: LLMRequest) -> dict:
+    """Strip the invented prefix: the rest is the literal sentence."""
+    fixes = [{"id": m.group(1), "source_quote": m.group(2).replace("Volgens het boek geldt: ", "")}
+             for m in re.finditer(r'\[(q\d+)\] bij: .*\n\s+citaat: "(.*)"', _text_of(req.user))]
+    return {"fixes": fixes}
+
+
+def fake_plan_merge(req: LLMRequest) -> dict:
+    system = _text_of(req.system)
+    claims = [(m.group(1), m.group(2)) for m in re.finditer(r"^\[(k\d+)\] \S+ \(m\d, t\d\) (.+)$", system, re.MULTILINE)]
+    definitions = re.findall(r"^\[(d\d+)\]", system, re.MULTILINE)
+    return {
+        "summary": "Dit hoofdstuk behandelt de kernbegrippen uit de secties, met definities en voorbeelden uit de bron.",
+        "learning_objectives": ["De student kan de kernbegrippen uitleggen.", "De student herkent de veelgemaakte fouten.",
+                                "De student kan de definities toepassen."],
+        "key_claims": [{"candidate": cid, "claim": text, "difficulty": 3, "exam_relevance": 4} for cid, text in claims[:-1]],
+        "definitions": definitions,
+        "misconceptions": [{"wrong": "Het begrip geldt altijd, ongeacht de voorwaarden.",
+                            "right": "Het begrip geldt alleen onder de voorwaarden uit de bron.",
+                            "why_tempting": "De voorwaarden staan in een bijzin."}],
+        "worked_example": None, "expert_domain": None, "expert_reason": None,
+    }
+
+
+def fake_plan_review(req: LLMRequest) -> dict:
+    """Adds back the one candidate the merge left out, then approves."""
+    pool = re.findall(r"^\[(k\d+)\]", _text_of(req.system), re.MULTILINE)
+    chosen = set(re.findall(r"^\[(k\d+)\]", _text_of(req.user), re.MULTILINE))
+    missing = [k for k in pool if k not in chosen]
+    return {"problems": [f"{k} ontbreekt" for k in missing], "add": missing, "remove": []}
+
+
 def fake_lexicon(req: LLMRequest) -> dict:
     user = _text_of(req.user)
     entries = []
@@ -224,6 +278,10 @@ def default_fake_llm() -> FakeLLM:
         "structure": fake_structure,
         "figure_caption": fake_figure_caption,
         "plan": fake_plan,
+        "plan_section": fake_plan_section,
+        "plan_quotes": fake_plan_quotes,
+        "plan_merge": fake_plan_merge,
+        "plan_review": fake_plan_review,
         "lexicon": fake_lexicon,
         "script_segment": fake_script_segment,
         "script_scene": fake_script_scene,

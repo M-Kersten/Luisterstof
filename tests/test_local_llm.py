@@ -28,7 +28,8 @@ SCHEMAS = (PlanOut, LexiconOut, StructureGuess, FigureDescription, SegmentOut, P
 HANDLERS = {"PlanOut": fh.fake_plan, "LexiconOut": fh.fake_lexicon, "StructureGuess": fh.fake_structure,
             "FigureDescription": fh.fake_figure_caption, "SegmentOut": fh.fake_script_segment,
             "PerformanceSegmentOut": fh.fake_script_scene, "SupportOut": fh.fake_support, "LintOut": fh.fake_lint,
-            "ContinuityOut": fh.fake_continuity}
+            "ContinuityOut": fh.fake_continuity, "SectionPlanOut": fh.fake_plan_section, "QuoteFixOut": fh.fake_plan_quotes,
+            "PlanMergeOut": fh.fake_plan_merge, "PlanReviewOut": fh.fake_plan_review}
 
 
 class Answer(BaseModel):
@@ -283,14 +284,15 @@ def test_whole_script_chain_runs_on_the_local_backend(tmp_path, cast_dir, sample
     """Ingest (with a figure caption), plan, lexicon, script, audit, continuity and render, over the wire format."""
     for key in HF_OFFLINE_ENV:
         monkeypatch.delenv(key, raising=False)
-    settings = _local(Settings(data_dir=tmp_path / "data", cast_dir=cast_dir, target_minutes=25))
+    settings = _local(Settings(data_dir=tmp_path / "data", cast_dir=cast_dir, target_minutes=25), plan_mode="thorough")
     server = FakeServer()
     p = Pipeline(settings, llm=LocalLLM(settings, transport=httpx.MockTransport(server)), fake_audio=True)
     p.ingest(sample_pdf, "demo")
     out = p.run_chapter("demo", "ch01", upto="render")
     assert out["render"].is_file() and out["script"].segments
     titles = {b["format"]["title"] for b in server.chats()}
-    assert {"PlanOut", "LexiconOut", "SegmentOut", "SupportOut", "ContinuityOut"} <= titles
+    assert {"SectionPlanOut", "QuoteFixOut", "PlanMergeOut", "PlanReviewOut", "LexiconOut", "SegmentOut", "SupportOut",
+            "ContinuityOut"} <= titles
     assert all(b["options"]["num_ctx"] == settings.local_llm_context for b in server.chats())
     unload = [i for i, (_, path, _) in enumerate(server.requests) if path == "/api/generate"]
     assert unload and unload[-1] > max(i for i, (_, path, _) in enumerate(server.requests) if path == "/api/chat")

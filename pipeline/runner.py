@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -135,21 +136,58 @@ class Pipeline:
         return book
 
     # Stage 2
+    def make_plan(self, book: Book, chapter_id: str, mode: str | None = None) -> ContentPlan:
+        mode = mode or self.settings.plan_mode
+        if mode == "thorough":
+            from pipeline.plan.thorough import plan_chapter_thorough
+
+            return plan_chapter_thorough(book, chapter_id, self.llm, self.cast, review_rounds=self.settings.plan_review_rounds,
+                                         progress=lambda kind, data: self.emit("plan", kind, chapter=chapter_id, **data))
+        if mode != "single":
+            raise StageError(f"STUDIEPODCAST_PLAN_MODE must be single or thorough, not {mode!r}")
+        return plan_chapter(book, chapter_id, self.llm, self.cast)
+
     def plan(self, book_id: str, chapter_id: str) -> ContentPlan:
         book = self.load_book(book_id)
-        self.emit("plan", "start", book_id=book_id, chapter=chapter_id)
-        plan = plan_chapter(book, chapter_id, self.llm, self.cast)
+        self.emit("plan", "start", book_id=book_id, chapter=chapter_id, mode=self.settings.plan_mode)
+        plan = self.make_plan(book, chapter_id)
         plan.save(self.paths(book_id).plan(chapter_id))
         self.emit("plan", "done", book_id=book_id, chapter=chapter_id, claims=len(plan.key_claims),
                   needs_expert=plan.needs_expert, warnings=plan.warnings)
         return plan
+
+    def compare_plans(self, book_id: str, chapter_id: str) -> Path:
+        """Both plan modes for one chapter, side by side. The configured mode's plan becomes the chapter's plan."""
+        from pipeline.plan.compare import compare_report
+
+        book = self.load_book(book_id)
+        paths = self.paths(book_id)
+        plans = {}
+        for mode in ("single", "thorough"):
+            self.emit("plan", "start", book_id=book_id, chapter=chapter_id, mode=mode)
+            started = time.monotonic()
+            plans[mode] = (self.make_plan(book, chapter_id, mode), time.monotonic() - started)
+            plans[mode][0].save(paths.plans_dir / f"{chapter_id}.plan.{mode}.json")
+        plans[self.settings.plan_mode][0].save(paths.plan(chapter_id))
+        report = paths.plans_dir / f"{chapter_id}.plan-compare.md"
+        report.write_text(compare_report(book.chapter(chapter_id), plans), encoding="utf-8")
+        self.emit("plan", "compared", book_id=book_id, chapter=chapter_id, report=str(report))
+        return report
 
     # Stage 2b
     def glossary(self, book_id: str, chapter_id: str) -> Glossary:
         book = self.load_book(book_id)
         glossary = self.load_glossary(book_id)
         self.emit("glossary", "start", book_id=book_id, chapter=chapter_id)
-        added = glossary.merge(propose_lexicon(book.chapter(chapter_id), glossary, self.llm))
+        chapter = book.chapter(chapter_id)
+        if self.settings.plan_mode == "thorough":
+            from pipeline.plan.thorough import propose_lexicon_thorough
+
+            entries = propose_lexicon_thorough(chapter, glossary, self.llm,
+                                               progress=lambda kind, data: self.emit("glossary", kind, chapter=chapter_id, **data))
+        else:
+            entries = propose_lexicon(chapter, glossary, self.llm)
+        added = glossary.merge(entries)
         glossary.save(self.paths(book_id).glossary_json)
         self.emit("glossary", "done", book_id=book_id, chapter=chapter_id, added=added, total=len(glossary.entries))
         return glossary
