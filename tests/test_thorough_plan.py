@@ -6,7 +6,14 @@ from typer.testing import CliRunner
 from pipeline.config import Settings
 from pipeline.fake_handlers import default_fake_llm
 from pipeline.models import Chapter, Glossary, Section
-from pipeline.plan.thorough import plan_chapter_thorough, propose_lexicon_thorough, section_parts
+from pipeline.plan.thorough import (
+    Part,
+    _place,
+    chapter_parts,
+    plan_chapter_thorough,
+    propose_lexicon_thorough,
+    section_parts,
+)
 
 
 def _content_sections(chapter):
@@ -17,11 +24,12 @@ def test_thorough_plan_has_only_literal_quotes_and_covers_every_section(book):
     llm = default_fake_llm()
     chapter = book.episode_chapters()[0]
     plan = plan_chapter_thorough(book, chapter.id, llm, None)
-    assert plan.key_claims and all(c.source_span.match_score == 100.0 for c in plan.key_claims)
+    assert plan.key_claims and all(c.source_span.match_score >= 95.0 for c in plan.key_claims)
     assert _content_sections(chapter) <= {c.source_span.section for c in plan.key_claims}
     tasks = [c.task for c in llm.calls]
-    assert tasks.count("plan_section") == len([s for s in chapter.sections if s.text.strip()])
-    assert "plan_quotes" in tasks  # the fake paraphrases one quote per section on purpose
+    assert tasks.count("plan_section") == len(chapter_parts(chapter)) < len(chapter.sections)  # short sections share a call
+    assert "plan_quotes" in tasks  # the fake invents one quote outright; that one needs the model
+    assert not any("Volgens het boek" in c.source_span.quote for c in plan.key_claims)  # near misses repaired locally
     assert tasks[-2:] == ["plan_merge", "plan_review"]
     assert any("review 1" in w for w in plan.warnings)  # the review put back the candidate the merge dropped
 
@@ -42,7 +50,7 @@ def test_unfixable_quote_drops_the_claim_and_an_empty_section_gets_a_second_pass
     plan = plan_chapter_thorough(book, chapter.id, llm, None, review_rounds=0)
     assert [c.task for c in llm.calls][:2] == ["plan_section", "plan_section"]  # the empty harvest was retried
     assert any("geschrapt" in w for w in plan.warnings)
-    assert all(not c.claim.startswith("Volgens het boek") and c.source_span.match_score == 100.0 for c in plan.key_claims)
+    assert all(c.source_span.match_score >= 95.0 for c in plan.key_claims)
 
 
 def test_merge_references_to_unknown_candidates_are_ignored(book):
@@ -69,13 +77,37 @@ def test_long_sections_are_read_in_parts_on_paragraph_boundaries():
     assert section_parts(Section(id="s2", title="Kort", text="Kort."), max_chars=5000) == ["Kort."]
 
 
+def test_short_sections_share_a_part_and_long_ones_are_split():
+    short = [Section(id=f"s{i}", title=f"K{i}", text="Zin. " * 200) for i in range(4)]  # 1000 chars each
+    long = Section(id="lang", title="L", text="\n\n".join("Alinea. " * 100 for _ in range(6)))  # ~4800 chars
+    chapter = Chapter(id="ch", title="T", pages=(1, 9), sections=[*short[:3], long, short[3],
+                                                                   Section(id="leeg", title="E", text="  ")])
+    parts = chapter_parts(chapter, max_chars=2500)
+    assert [[s.id for s, _ in p.pieces] for p in parts] == [["s0", "s1"], ["s2"], ["lang"], ["lang"], ["s3"]]
+    assert parts[0].label == "de secties s0 en s1" and "deel 1 van 2" in parts[2].label
+    assert "### Sectie s1: K1" in parts[0].text()
+
+
+def test_near_miss_quote_is_replaced_by_the_source_passage():
+    text = "De mediaan is de middelste waarneming. Bij een even aantal neem je het gemiddelde van de middelste twee."
+    part = Part([(Section(id="a", title="A", text="Iets anders."), "Iets anders."), (Section(id="b", title="B", text=text), text)], "x")
+    sid, quote, repaired = _place(part, "Bij een even aantal neem je dan het gemiddelde van beide middelste waarden.", "a")
+    assert sid == "b" and repaired and quote in text
+    assert _place(part, "Bij een even aantal neem je het gemiddelde van de middelste twee.", "a") == \
+        ("b", "Bij een even aantal neem je het gemiddelde van de middelste twee.", False)
+    assert _place(part, "Dit staat er helemaal niet, ook niet in de buurt.", "b") is None
+
+
 def test_thorough_lexicon_asks_per_section_and_later_sections_see_earlier_entries():
     llm = default_fake_llm()
     chapter = Chapter(id="ch01", title="T", pages=(1, 2), sections=[
         Section(id="s1", title="A", text="Het CBS meldt dat P(A|B) groter is dan 1/2 volgens het CBS."),
         Section(id="s2", title="B", text="Ook hier noemt het CBS de breuk 1/2 opnieuw, naast NATO."),
     ])
-    entries = propose_lexicon_thorough(chapter, Glossary(book_id="b"), llm)
+    together = default_fake_llm()
+    propose_lexicon_thorough(chapter, Glossary(book_id="b"), together)
+    assert [c.task for c in together.calls] == ["lexicon"]  # two short sections, one call
+    entries = propose_lexicon_thorough(chapter, Glossary(book_id="b"), llm, part_chars=70)
     lexicon_calls = [c for c in llm.calls if c.task == "lexicon"]
     assert len(lexicon_calls) == 2
     assert "CBS" in lexicon_calls[1].user  # the second section is told CBS is already in the lexicon

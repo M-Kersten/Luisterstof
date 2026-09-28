@@ -85,6 +85,7 @@ class Settings:
     local_llm_context: int = 32768
     local_llm_max_tokens: int = 16384  # covers a thinking model's reasoning as well as the answer
     local_llm_think: str = ""  # "" = the model's own default; on | off; low | medium | high where supported
+    local_llm_think_extract: str = ""  # plan sections, quote fixes, lexicon; "" = off for a model that reasons
     local_llm_timeout_s: float = 1800.0
     local_llm_vision: bool = True  # False: skip figure captions (a model without vision is detected on Ollama anyway)
     local_llm_api_key: str | None = None  # only for servers started with a key (vLLM --api-key, ...)
@@ -93,6 +94,7 @@ class Settings:
     # section, quotes checked against the source, then a chapter pass and review rounds (pipeline/plan/thorough.py).
     plan_mode: str = "single"
     plan_review_rounds: int = 1
+    plan_part_chars: int = 8000  # thorough mode: small sections are read together up to this size
 
     # Nothing leaves the local network: Claude API and ElevenLabs refuse to start, the local LLM
     # must resolve to a private address, Hugging Face libraries run from their cache only.
@@ -135,6 +137,7 @@ class Settings:
         base = cls(
             plan_mode=_env_str("STUDIEPODCAST_PLAN_MODE", "thorough" if backend == "local" else "single").strip().casefold(),
             plan_review_rounds=_env_int("STUDIEPODCAST_PLAN_REVIEW_ROUNDS", 1),
+            plan_part_chars=max(2000, _env_int("STUDIEPODCAST_PLAN_PART_CHARS", 8000)),
             offline=offline,
             llm_backend=backend,
             local_llm_url=_env_str("LOCAL_LLM_URL", "http://localhost:11434"),
@@ -143,6 +146,7 @@ class Settings:
             local_llm_context=_env_int("LOCAL_LLM_CONTEXT", 32768),
             local_llm_max_tokens=_env_int("LOCAL_LLM_MAX_TOKENS", 16384),
             local_llm_think=_env_str("LOCAL_LLM_THINK", "").strip().casefold(),
+            local_llm_think_extract=_env_str("LOCAL_LLM_THINK_EXTRACT", "").strip().casefold(),
             local_llm_timeout_s=_env_float("LOCAL_LLM_TIMEOUT", 1800.0),
             local_llm_vision=_env_bool("LOCAL_LLM_VISION", True),
             local_llm_api_key=_env_str("LOCAL_LLM_API_KEY"),

@@ -3,11 +3,13 @@
 One call over a whole chapter suits a frontier model. A local model loses
 sections, picks the wrong claims and paraphrases its "verbatim" quotes. So:
 
-1. per section (long sections in parts): candidate claims, definitions,
-   misconceptions, worked examples, with the section's text as the only source;
-2. every quote is checked against that text; failed ones go back once to be
-   fixed, and a candidate whose quote still isn't in the text is dropped;
-   a substantial section that yields nothing gets a second pass;
+1. per part (short sections together up to ``PART_CHARS``, long sections in
+   pieces): candidate claims, definitions, misconceptions, worked examples,
+   with that text as the only source;
+2. every quote is checked against that text. A near miss is replaced by the
+   source passage itself; a quote that isn't there at all goes back once to
+   be fixed, and a candidate whose quote still isn't in the text is dropped;
+   a substantial part that yields nothing gets a second pass;
 3. a chapter pass picks and merges the claims by candidate id, so quotes are
    never rewritten there, and writes summary and learning objectives;
 4. review rounds compare the selection with the section list and the candidate
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
@@ -38,9 +41,10 @@ from pipeline.plan.content_plan import (
 
 log = logging.getLogger(__name__)
 
-MAX_PART_CHARS = 12000  # a section longer than this is read in parts
+PART_CHARS = 8000  # one call reads up to this much: short sections together, a longer one in parts
 SUBSTANTIAL_SECTION_CHARS = 400  # below this an empty harvest is plausible
 QUOTE_MIN_SCORE = 95.0  # near-literal only; the single-call plan accepts 80, which lets paraphrases through
+REPAIR_MIN_SCORE = 85.0  # between this and QUOTE_MIN_SCORE the quote is replaced by the source passage itself
 MAX_CLAIMS = 25
 
 Progress = Callable[[str, dict], None]
@@ -51,6 +55,7 @@ Progress = Callable[[str, dict], None]
 # ---------------------------------------------------------------------------
 
 class SectionClaimOut(BaseModel):
+    section: str = Field(description="Id van de sectie waar het citaat staat.")
     claim: str = Field(description="Eén feitelijke bewering uit deze tekst, zelfstandig leesbaar, in het Nederlands.")
     source_quote: str = Field(description="Letterlijk citaat uit deze tekst van 20 tot 300 tekens dat de bewering onderbouwt. "
                                           "Exact overnemen, inclusief getallen en leestekens.")
@@ -59,6 +64,7 @@ class SectionClaimOut(BaseModel):
 
 
 class SectionDefinitionOut(BaseModel):
+    section: str = Field(description="Id van de sectie waar het citaat staat.")
     term: str
     definition: str = Field(description="Definitie in eigen woorden, trouw aan de bron.")
     source_quote: str = Field(description="Letterlijk citaat waarin de tekst de term definieert.")
@@ -138,7 +144,7 @@ Zoek wat er mis is: een sectie met inhoud die ontbreekt of maar één bijzaak he
 # Section pass
 # ---------------------------------------------------------------------------
 
-def section_parts(section: Section, max_chars: int = MAX_PART_CHARS) -> list[str]:
+def section_parts(section: Section, max_chars: int = PART_CHARS) -> list[str]:
     """The section's text in parts of at most ``max_chars``, split on paragraph boundaries."""
     text = section.text
     if len(text) <= max_chars:
@@ -161,6 +167,50 @@ def section_parts(section: Section, max_chars: int = MAX_PART_CHARS) -> list[str
     return parts
 
 
+@dataclass
+class Part:
+    """What one call reads: several short sections together, or one piece of a long section."""
+
+    pieces: list[tuple[Section, str]]  # (section, its text in this part)
+    label: str
+
+    def text(self) -> str:
+        return "\n\n".join(f"### Sectie {s.id}: {s.title}\n{t}" for s, t in self.pieces)
+
+    def chars(self) -> int:
+        return sum(len(t) for _, t in self.pieces)
+
+
+def chapter_parts(chapter: Chapter, max_chars: int = PART_CHARS) -> list[Part]:
+    """Consecutive short sections share a call up to ``max_chars``; a longer section is read in parts.
+    Every call has a fixed cost (instructions, schema, a JSON answer), so a heading with two paragraphs
+    under it isn't worth a call of its own."""
+    parts: list[Part] = []
+    group: list[tuple[Section, str]] = []
+
+    def flush() -> None:
+        if group:
+            ids = [s.id for s, _ in group]
+            label = f"sectie {ids[0]}" if len(ids) == 1 else "de secties " + ", ".join(ids[:-1]) + f" en {ids[-1]}"
+            parts.append(Part(list(group), label))
+            group.clear()
+
+    for section in chapter.sections:
+        if not section.text.strip():
+            continue
+        pieces = section_parts(section, max_chars)
+        if len(pieces) > 1:
+            flush()
+            parts += [Part([(section, t)], f"sectie {section.id} (deel {k} van {len(pieces)})")
+                      for k, t in enumerate(pieces, start=1)]
+            continue
+        if group and sum(len(t) for _, t in group) + len(section.text) > max_chars:
+            flush()
+        group.append((section, section.text))
+    flush()
+    return parts
+
+
 class Candidates:
     def __init__(self) -> None:
         self.claims: list[tuple[str, str, SectionClaimOut]] = []  # (id, section id, claim)
@@ -169,6 +219,7 @@ class Candidates:
         self.examples: list[tuple[str, WorkedExampleOut]] = []
         self.formula_dense: set[str] = set()
         self.warnings: list[str] = []
+        self.repaired = 0  # quotes put right from the source text, without a model call
 
     def claim(self, cid: str) -> tuple[str, str, SectionClaimOut] | None:
         return next((c for c in self.claims if c[0] == cid), None)
@@ -180,95 +231,120 @@ class Candidates:
         return counts
 
 
-def _section_request(book: Book, chapter: Chapter, section: Section, text: str, label: str,
-                     fix: str | None = None) -> LLMRequest:
+def _section_request(book: Book, chapter: Chapter, part: Part, fix: str | None = None) -> LLMRequest:
     outline = "\n".join(f"- {s.id}: {s.title}" for s in chapter.sections)
-    user = (f"Haal de bouwstenen uit {label}.\n\nDe secties van dit hoofdstuk, ter oriëntatie:\n{outline}")
+    user = (f"Haal de bouwstenen uit {part.label}. Geef bij elke bewering en definitie het id van de sectie "
+            f"waar het citaat staat.\n\nDe secties van dit hoofdstuk, ter oriëntatie:\n{outline}")
     if fix:
         user += "\n\n" + fix
     return LLMRequest(
         task="plan_section",
         system=[text_block(SECTION_SYSTEM),
-                text_block(f"# Boek: {book.title}\n# Hoofdstuk {chapter.id}: {chapter.title}\n\n"
-                           f"### Sectie {section.id}: {section.title}\n{text}")],
+                text_block(f"# Boek: {book.title}\n# Hoofdstuk {chapter.id}: {chapter.title}\n\n{part.text()}")],
         user=user,
         schema=SectionPlanOut,
         effort="high",
     )
 
 
-def _fix_quotes(llm: LLM, section: Section, text: str, failed: list[tuple[str, str, str]]) -> dict[str, str]:
-    """failed: (quote id, what it supports, quote). Returns quote id -> corrected quote (verified)."""
+def _snap(text: str, start: int, end: int) -> str:
+    """The source passage at [start, end), widened to whole words."""
+    while start > 0 and not text[start - 1].isspace():
+        start -= 1
+    while end < len(text) and not text[end].isspace():
+        end += 1
+    return " ".join(text[start:end].split())
+
+
+def _place(part: Part, quote: str, hint: str) -> tuple[str, str, bool] | None:
+    """(section id, verified quote, repaired) for a quote in this part, or None when it isn't there.
+
+    A quote that is near-literal but not quite (a changed word, a dropped comma) is replaced by the
+    passage it was taken from. That is what the quote-fix call would do, without the call."""
+    best: tuple[float, bool, Section, str, int, int] | None = None
+    for section, text in part.pieces:
+        hit = resolve_span(text, quote, REPAIR_MIN_SCORE)
+        if hit:
+            key = (hit[2], section.id == hint)
+            if best is None or key > best[:2]:
+                best = (hit[2], section.id == hint, section, text, hit[0], hit[1])
+    if best is None:
+        return None
+    score, _, section, text, start, end = best
+    if score >= QUOTE_MIN_SCORE:
+        return section.id, quote, False
+    return section.id, _snap(text, start, end), True
+
+
+def _fix_quotes(llm: LLM, part: Part, failed: list[tuple[str, str, str]]) -> dict[str, str]:
+    """failed: (quote id, what it supports, quote). Returns quote id -> the model's corrected quote (unverified)."""
     listing = "\n".join(f"[{qid}] bij: {what}\n     citaat: \"{quote}\"" for qid, what, quote in failed)
     request = LLMRequest(
         task="plan_quotes",
         system=[text_block("Je corrigeert citaten. Een citaat moet teken voor teken in de tekst staan. Zoek per citaat de passage "
                            "in de tekst die hetzelfde zegt en kopieer die letterlijk (20 tot 300 tekens). Staat het er niet, geef dan "
                            "een lege source_quote."),
-                text_block(f"### Sectie {section.id}: {section.title}\n{text}")],
+                text_block(part.text())],
         user=f"Deze citaten staan niet letterlijk in de tekst:\n{listing}",
         schema=QuoteFixOut,
         effort="medium",
     )
     out = llm.generate(request)
     assert isinstance(out, QuoteFixOut)
-    return {f.id: f.source_quote for f in out.fixes
-            if f.source_quote.strip() and resolve_span(text, f.source_quote, QUOTE_MIN_SCORE)}
+    return {f.id: f.source_quote for f in out.fixes if f.source_quote.strip()}
 
 
-def harvest_section(book: Book, chapter: Chapter, section: Section, llm: LLM, pool: Candidates,
-                    progress: Progress | None = None) -> None:
-    parts = section_parts(section)
-    found = 0
-    for k, text in enumerate(parts, start=1):
-        label = f"sectie {section.id}" + (f" (deel {k} van {len(parts)})" if len(parts) > 1 else "")
-        if progress:
-            progress("section", {"section": section.id, "part": k, "parts": len(parts)})
-        out = llm.generate(_section_request(book, chapter, section, text, label))
+def harvest_part(book: Book, chapter: Chapter, part: Part, llm: LLM, pool: Candidates,
+                 progress: Progress | None = None) -> None:
+    if progress:
+        progress("section", {"sections": [s.id for s, _ in part.pieces], "chars": part.chars()})
+    out = llm.generate(_section_request(book, chapter, part))
+    assert isinstance(out, SectionPlanOut)
+    if not out.claims and part.chars() >= SUBSTANTIAL_SECTION_CHARS:
+        out = llm.generate(_section_request(
+            book, chapter, part,
+            fix=f"Een eerdere poging vond in deze tekst geen enkele bewering, terwijl de tekst {part.chars()} tekens telt. "
+                "Lees opnieuw en haal de beweringen eruit die een student moet kennen."))
         assert isinstance(out, SectionPlanOut)
-        if not out.claims and len(text) >= SUBSTANTIAL_SECTION_CHARS:
-            out = llm.generate(_section_request(
-                book, chapter, section, text, label,
-                fix=f"Een eerdere poging vond in deze tekst geen enkele bewering, terwijl de tekst {len(text)} tekens telt. "
-                    "Lees opnieuw en haal de beweringen eruit die een student moet kennen."))
-            assert isinstance(out, SectionPlanOut)
-        found += _collect(llm, section, text, out, pool)
-    if not found and len(section.text) >= SUBSTANTIAL_SECTION_CHARS:
-        pool.warnings.append(f"sectie {section.id}: geen enkele bewering met een controleerbaar citaat gevonden")
+    _collect(llm, part, out, pool)
 
 
-def _collect(llm: LLM, section: Section, text: str, out: SectionPlanOut, pool: Candidates) -> int:
-    items: list[tuple[str, str, str]] = []  # (qid, what, quote)
+def _collect(llm: LLM, part: Part, out: SectionPlanOut, pool: Candidates) -> None:
+    first = part.pieces[0][0].id
+    items: list[tuple[str, str, str, str]] = []  # (qid, what, quote, section hint)
     for i, c in enumerate(out.claims):
-        items.append((f"q{i + 1}", c.claim, c.source_quote))
+        items.append((f"q{i + 1}", c.claim, c.source_quote, c.section.strip()))
     offset = len(out.claims)
     for j, d in enumerate(out.definitions):
-        items.append((f"q{offset + j + 1}", f"definitie {d.term}", d.source_quote))
-    failed = [it for it in items if not resolve_span(text, it[2], QUOTE_MIN_SCORE)]
-    fixed = _fix_quotes(llm, section, text, failed) if failed else {}
-    quotes = {qid: fixed.get(qid, quote) for qid, _, quote in items}
-    ok = {qid for qid, _, _ in items if qid in fixed or resolve_span(text, quotes[qid], QUOTE_MIN_SCORE)}
+        items.append((f"q{offset + j + 1}", f"definitie {d.term}", d.source_quote, d.section.strip()))
 
-    kept = 0
+    placed = {qid: _place(part, quote, hint) for qid, _, quote, hint in items}
+    failed = [(qid, what, quote) for qid, what, quote, _ in items if placed[qid] is None]
+    if failed:
+        hints = {qid: hint for qid, _, _, hint in items}
+        for qid, quote in _fix_quotes(llm, part, failed).items():
+            if qid in placed and placed[qid] is None:
+                placed[qid] = _place(part, quote, hints.get(qid, first))
+    pool.repaired += sum(1 for v in placed.values() if v and v[2])
+
     for i, c in enumerate(out.claims):
-        qid = f"q{i + 1}"
-        if qid not in ok:
-            pool.warnings.append(f"sectie {section.id}: bewering geschrapt, citaat staat niet in de bron: {c.claim[:80]}")
+        where = placed[f"q{i + 1}"]
+        if where is None:
+            pool.warnings.append(f"sectie {c.section or first}: bewering geschrapt, citaat staat niet in de bron: {c.claim[:80]}")
             continue
-        pool.claims.append((f"k{len(pool.claims) + 1}", section.id, c.model_copy(update={"source_quote": quotes[qid]})))
-        kept += 1
+        pool.claims.append((f"k{len(pool.claims) + 1}", where[0], c.model_copy(update={"source_quote": where[1], "section": where[0]})))
     for j, d in enumerate(out.definitions):
-        qid = f"q{offset + j + 1}"
-        if qid not in ok:
-            pool.warnings.append(f"sectie {section.id}: definitie {d.term} geschrapt, citaat staat niet in de bron")
+        where = placed[f"q{offset + j + 1}"]
+        if where is None:
+            pool.warnings.append(f"sectie {d.section or first}: definitie {d.term} geschrapt, citaat staat niet in de bron")
             continue
-        pool.definitions.append((f"d{len(pool.definitions) + 1}", section.id, d.model_copy(update={"source_quote": quotes[qid]})))
+        pool.definitions.append((f"d{len(pool.definitions) + 1}", where[0],
+                                 d.model_copy(update={"source_quote": where[1], "section": where[0]})))
     pool.misconceptions.extend(out.misconceptions)
     if out.worked_example and out.worked_example.steps:
         pool.examples.append((f"w{len(pool.examples) + 1}", out.worked_example))
     if out.formula_dense:
-        pool.formula_dense.add(section.id)
-    return kept
+        pool.formula_dense.update(s.id for s, _ in part.pieces)
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +398,17 @@ def _clean_selection(selected: list[PickedClaimOut], pool: Candidates) -> list[P
 
 
 def plan_chapter_thorough(book: Book, chapter_id: str, llm: LLM, cast: Cast | None = None, *,
-                          review_rounds: int = 1, progress: Progress | None = None) -> ContentPlan:
+                          review_rounds: int = 1, part_chars: int = PART_CHARS,
+                          progress: Progress | None = None) -> ContentPlan:
     chapter = book.chapter(chapter_id)
     pool = Candidates()
-    for section in chapter.sections:
-        if section.text.strip():
-            harvest_section(book, chapter, section, llm, pool, progress)
+    for part in chapter_parts(chapter, part_chars):
+        harvest_part(book, chapter, part, llm, pool, progress)
+    counts = pool.per_section()
+    pool.warnings += [f"sectie {s.id}: geen enkele bewering met een controleerbaar citaat gevonden"
+                      for s in chapter.sections if len(s.text.strip()) >= SUBSTANTIAL_SECTION_CHARS and not counts.get(s.id)]
+    if pool.repaired:
+        log.info("%s: %d quotes repaired from the source text", chapter_id, pool.repaired)
     if not pool.claims:
         raise ValueError(f"no claim with a verifiable quote in any section of {chapter_id}; check the ingest of this chapter")
 
@@ -395,22 +476,20 @@ def plan_chapter_thorough(book: Book, chapter_id: str, llm: LLM, cast: Cast | No
 # Lexicon, per section
 # ---------------------------------------------------------------------------
 
-def propose_lexicon_thorough(chapter: Chapter, glossary: Glossary, llm: LLM,
+def propose_lexicon_thorough(chapter: Chapter, glossary: Glossary, llm: LLM, *, part_chars: int = PART_CHARS,
                              progress: Progress | None = None) -> list[LexiconEntry]:
-    """One lexicon call per section part. Each sees the entries found so far, so a term gets one spelling."""
+    """One lexicon call per part (the same parts as the plan). Each sees the entries found so far,
+    so a term gets one spelling."""
     from pipeline.plan.glossary import propose_lexicon
 
     working = glossary.model_copy(deep=True)
     found: list[LexiconEntry] = []
-    for section in chapter.sections:
-        for k, text in enumerate(section_parts(section), start=1):
-            if not text.strip():
-                continue
-            if progress:
-                progress("lexicon_section", {"section": section.id, "part": k})
-            part = Chapter(id=chapter.id, title=chapter.title, pages=chapter.pages,
-                           sections=[section.model_copy(update={"text": text})])
-            entries = propose_lexicon(part, working, llm)
-            working.merge(entries)
-            found.extend(entries)
+    for part in chapter_parts(chapter, part_chars):
+        if progress:
+            progress("lexicon_section", {"sections": [s.id for s, _ in part.pieces], "chars": part.chars()})
+        sub = Chapter(id=chapter.id, title=chapter.title, pages=chapter.pages,
+                      sections=[s.model_copy(update={"text": t}) for s, t in part.pieces])
+        entries = propose_lexicon(sub, working, llm)
+        working.merge(entries)
+        found.extend(entries)
     return found

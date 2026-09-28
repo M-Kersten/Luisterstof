@@ -44,8 +44,9 @@ def _local(settings=None, **overrides) -> Settings:
 class FakeServer:
     """Stands in for Ollama (/api/*) or an OpenAI-compatible server; records every request."""
 
-    def __init__(self, replies=None, models=("gemma4:31b",), capabilities=("completion", "vision")):
+    def __init__(self, replies=None, models=("gemma4:31b",), capabilities=("completion", "vision"), loaded=None):
         self.replies = list(replies or [])
+        self.loaded = loaded  # (size, size_vram) reported by /api/ps, None = nothing loaded
         self.models = list(models)
         self.capabilities = capabilities
         self.requests: list[tuple[str, str, dict]] = []
@@ -60,6 +61,9 @@ class FakeServer:
             return httpx.Response(200, json={"data": [{"id": m} for m in self.models]})
         if path == "/api/generate":
             return httpx.Response(200, json={"done": True})
+        if path == "/api/ps":
+            return httpx.Response(200, json={"models": [] if self.loaded is None else [
+                {"name": self.models[0], "size": self.loaded[0], "size_vram": self.loaded[1]}]})
         if path == "/api/show":
             return httpx.Response(200, json={} if self.capabilities is None else {"capabilities": list(self.capabilities)})
         reply = self.replies.pop(0) if self.replies else (self._canned(body, path), "stop")
@@ -314,3 +318,33 @@ def test_without_vision_figures_are_not_sent_to_the_model(tmp_path, cast_dir, sa
         skipped = any(st == "note" and "captions skipped" in d.get("message", "") for _, st, d in events)
         assert skipped is (not vision)
     assert isinstance(captioners[0], LLMCaptioner) and captioners[1] is None
+
+
+def test_gpu_placement_is_reported_and_a_cpu_spill_is_flagged_once(tmp_path):
+    llm = LocalLLM(_local(), transport=httpx.MockTransport(FakeServer(loaded=(20_000_000_000, 15_000_000_000))))
+    assert llm.placement() == (20_000_000_000, 15_000_000_000)
+    assert LocalLLM(_local(), transport=httpx.MockTransport(FakeServer())).placement() is None
+
+    events = []
+    p = Pipeline(_local(Settings(data_dir=tmp_path)), llm=llm, on_event=lambda s, st, d: events.append((s, st, d)))
+    p._check_gpu_placement()
+    p._check_gpu_placement()
+    notes = [d["message"] for s, st, d in events if (s, st) == ("llm", "note")]
+    assert len(notes) == 1 and notes[0].startswith("25% of gemma4:31b runs on the CPU")
+
+
+def test_extraction_answers_directly_on_a_reasoning_model_and_the_rest_keeps_reasoning():
+    server = FakeServer([('{"verdict": "ok", "score": 1}', "stop")] * 3, capabilities=("completion", "thinking"))
+    llm = LocalLLM(_local(), transport=httpx.MockTransport(server))
+    llm.generate(_request(task="plan_section"))
+    llm.generate(_request(task="plan_merge"))
+    first, second = server.chats()
+    assert first["think"] is False and "think" not in second
+
+    server = FakeServer([('{"verdict": "ok", "score": 1}', "stop")], capabilities=("completion", "thinking"))
+    LocalLLM(_local(local_llm_think_extract="on"), transport=httpx.MockTransport(server)).generate(_request(task="lexicon"))
+    assert server.chats()[0]["think"] is True
+
+    server = FakeServer([('{"verdict": "ok", "score": 1}', "stop")])  # can't reason: nothing is sent
+    LocalLLM(_local(), transport=httpx.MockTransport(server)).generate(_request(task="plan_section"))
+    assert "think" not in server.chats()[0]

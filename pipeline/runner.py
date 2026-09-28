@@ -63,6 +63,7 @@ class Pipeline:
         self.cast = cast or load_cast(settings.cast_dir)
         self.banned = load_banned(settings.cast_dir)
         self.on_event = on_event
+        self._gpu_checked = False
 
     # ------------------------------------------------------------------
     @property
@@ -135,6 +136,34 @@ class Pipeline:
                   warnings=book.warnings)
         return book
 
+    # ------------------------------------------------------------ llm accounting
+    def _llm_usage(self) -> tuple[int, int, float]:
+        u = getattr(self._llm, "usage", None) if self._llm is not None else None
+        return (u.calls, u.output_tokens, u.seconds) if u is not None else (0, 0, 0.0)
+
+    def _llm_spent(self, before: tuple[int, int, float]) -> dict:
+        """Calls, output tokens, model seconds and speed since ``before``: where a stage's time went."""
+        calls, out, secs = (a - b for a, b in zip(self._llm_usage(), before, strict=True))
+        if not calls:
+            return {}
+        spent = {"llm_calls": calls, "llm_seconds": round(secs), "llm_output_tokens": out}
+        if out and secs:
+            spent["tokens_per_s"] = round(out / secs, 1)
+        return spent
+
+    def _check_gpu_placement(self) -> None:
+        """Once per run: say so when part of the local model runs on the CPU. That alone makes it several times slower."""
+        if self._gpu_checked or self._llm is None or not hasattr(self._llm, "placement"):
+            return
+        self._gpu_checked = True
+        placed = self._llm.placement()
+        if placed and placed[1] < placed[0]:
+            share = round(100 * (placed[0] - placed[1]) / placed[0])
+            self.emit("llm", "note", message=(
+                f"{share}% of {self._llm.model} runs on the CPU because it doesn't fit in GPU memory; that makes every "
+                "call several times slower. Lower LOCAL_LLM_CONTEXT, set OLLAMA_FLASH_ATTENTION=1 and "
+                "OLLAMA_KV_CACHE_TYPE=q8_0 for the Ollama server, or use a smaller model. `studiepodcast doctor` shows it too."))
+
     # Stage 2
     def make_plan(self, book: Book, chapter_id: str, mode: str | None = None) -> ContentPlan:
         mode = mode or self.settings.plan_mode
@@ -142,7 +171,7 @@ class Pipeline:
             from pipeline.plan.thorough import plan_chapter_thorough
 
             return plan_chapter_thorough(book, chapter_id, self.llm, self.cast, review_rounds=self.settings.plan_review_rounds,
-                                         progress=lambda kind, data: self.emit("plan", kind, chapter=chapter_id, **data))
+                                         part_chars=self.settings.plan_part_chars, progress=lambda kind, data: self.emit("plan", kind, chapter=chapter_id, **data))
         if mode != "single":
             raise StageError(f"STUDIEPODCAST_PLAN_MODE must be single or thorough, not {mode!r}")
         return plan_chapter(book, chapter_id, self.llm, self.cast)
@@ -150,10 +179,12 @@ class Pipeline:
     def plan(self, book_id: str, chapter_id: str) -> ContentPlan:
         book = self.load_book(book_id)
         self.emit("plan", "start", book_id=book_id, chapter=chapter_id, mode=self.settings.plan_mode)
+        before = self._llm_usage()
         plan = self.make_plan(book, chapter_id)
         plan.save(self.paths(book_id).plan(chapter_id))
         self.emit("plan", "done", book_id=book_id, chapter=chapter_id, claims=len(plan.key_claims),
-                  needs_expert=plan.needs_expert, warnings=plan.warnings)
+                  needs_expert=plan.needs_expert, warnings=plan.warnings, **self._llm_spent(before))
+        self._check_gpu_placement()
         return plan
 
     def compare_plans(self, book_id: str, chapter_id: str) -> Path:
@@ -179,17 +210,19 @@ class Pipeline:
         book = self.load_book(book_id)
         glossary = self.load_glossary(book_id)
         self.emit("glossary", "start", book_id=book_id, chapter=chapter_id)
+        before = self._llm_usage()
         chapter = book.chapter(chapter_id)
         if self.settings.plan_mode == "thorough":
             from pipeline.plan.thorough import propose_lexicon_thorough
 
-            entries = propose_lexicon_thorough(chapter, glossary, self.llm,
+            entries = propose_lexicon_thorough(chapter, glossary, self.llm, part_chars=self.settings.plan_part_chars,
                                                progress=lambda kind, data: self.emit("glossary", kind, chapter=chapter_id, **data))
         else:
             entries = propose_lexicon(chapter, glossary, self.llm)
         added = glossary.merge(entries)
         glossary.save(self.paths(book_id).glossary_json)
-        self.emit("glossary", "done", book_id=book_id, chapter=chapter_id, added=added, total=len(glossary.entries))
+        self.emit("glossary", "done", book_id=book_id, chapter=chapter_id, added=added, total=len(glossary.entries),
+                  **self._llm_spent(before))
         return glossary
 
     def save_glossary(self, book_id: str, glossary: Glossary) -> Glossary:

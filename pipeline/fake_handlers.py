@@ -86,24 +86,34 @@ def fake_plan(req: LLMRequest) -> dict:
 
 
 def fake_plan_section(req: LLMRequest) -> dict:
-    """Candidates from the one section in the prompt; the first claim's quote is deliberately paraphrased
-    (a prefix the source doesn't contain), so the quote-fix pass has something to do."""
+    """Candidates from every section in the prompt. Per section the first quote carries an invented prefix
+    (a near miss, repaired from the source) and the second is made up entirely (it goes to the quote-fix call,
+    which can't find it either, so the claim is dropped)."""
     system = _text_of(req.system)
-    m = _SECTION_RE.search(system)
-    body = system[m.end():].strip() if m else ""
-    sents = _sentences(body)
-    claims = [{"claim": s, "source_quote": s[:200], "difficulty": 2 + (j % 3), "exam_relevance": 5 - (j % 3)}
-              for j, s in enumerate(sents[:3])]
-    if claims:
-        claims[0]["source_quote"] = "Volgens het boek geldt: " + claims[0]["source_quote"]
+    heads = list(_SECTION_RE.finditer(system))
+    claims, definitions, formula = [], [], False
+    for n, m in enumerate(heads):
+        body = system[m.end():heads[n + 1].start() if n + 1 < len(heads) else len(system)].strip()
+        sents = _sentences(body)
+        formula = formula or "=" in body
+        own = [{"section": m.group("id"), "claim": s, "source_quote": s[:200], "difficulty": 2 + (j % 3),
+                "exam_relevance": 5 - (j % 3)} for j, s in enumerate(sents[:4])]
+        if own:
+            own[0]["source_quote"] = "Volgens het boek geldt: " + own[0]["source_quote"]
+        if len(own) > 3:
+            own[1]["source_quote"] = "Dit citaat staat nergens in de bron en is door het model bedacht."
+        claims += own
+        if sents:
+            definitions.append({"section": m.group("id"), "term": m.group("title"), "definition": sents[0],
+                                "source_quote": sents[0][:120]})
     return {
         "claims": claims,
-        "definitions": [{"term": m.group("title"), "definition": sents[0], "source_quote": sents[0][:120]}] if m and sents else [],
+        "definitions": definitions,
         "misconceptions": [{"wrong": "Het begrip geldt altijd, ongeacht de voorwaarden.",
                             "right": "Het begrip geldt alleen onder de voorwaarden uit de bron.",
-                            "why_tempting": "De voorwaarden staan in een bijzin."}] if sents else [],
+                            "why_tempting": "De voorwaarden staan in een bijzin."}] if claims else [],
         "worked_example": None,
-        "formula_dense": "=" in body,
+        "formula_dense": formula,
     }
 
 

@@ -348,6 +348,16 @@ def _doctor_llm(settings: Settings) -> None:
             llm = LocalLLM(settings)
             ok, detail = llm.check()
             typer.echo(f"  server: {'ok' if ok else '!!'} {detail}")
+            placed = llm.placement() if ok else None
+            if placed is None:
+                typer.echo("  gpu: model not loaded right now; check again during a plan, or run `ollama ps`")
+            elif placed[1] >= placed[0]:
+                typer.echo(f"  gpu: ok, all {placed[0] / 1e9:.1f} GB in GPU memory")
+            else:
+                cpu = round(100 * (placed[0] - placed[1]) / placed[0])
+                typer.echo(f"  gpu: !! {cpu}% of the model runs on the CPU ({placed[1] / 1e9:.1f} of {placed[0] / 1e9:.1f} GB "
+                           "in GPU memory), which makes it several times slower. Lower LOCAL_LLM_CONTEXT, set "
+                           "OLLAMA_FLASH_ATTENTION=1 and OLLAMA_KV_CACHE_TYPE=q8_0 for Ollama, or use a smaller model")
             caps = llm.capabilities() if ok else None
             if caps is not None:
                 typer.echo(f"  capabilities: {', '.join(sorted(caps)) or 'none reported'}")
@@ -356,7 +366,8 @@ def _doctor_llm(settings: Settings) -> None:
                 think = think_value(settings.local_llm_think)
                 if "thinking" in caps and think is None:
                     typer.echo("  note: this model reasons before it answers (slower, usually more careful); "
-                               "LOCAL_LLM_THINK=off makes it answer directly")
+                               "LOCAL_LLM_THINK=off makes it answer directly. Plan sections, quote fixes and the "
+                               "lexicon answer directly already (LOCAL_LLM_THINK_EXTRACT=on to change that)")
                 if think and "thinking" not in caps:
                     typer.echo(f"  !! LOCAL_LLM_THINK={settings.local_llm_think}, but this model can't reason step by step: unset it")
         except Exception as exc:  # noqa: BLE001

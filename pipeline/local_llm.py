@@ -39,6 +39,9 @@ TOKENS_PER_IMAGE = 1024
 CONTEXT_MARGIN = 256
 RETRIES = 1
 WRITING_TASKS = frozenset({"script_segment", "script_scene"})
+# Pulling claims, quotes and terms out of a text: the code checks every quote afterwards, so reasoning first
+# mostly costs time. Merge, review, script and audit keep the model's reasoning.
+EXTRACT_TASKS = frozenset({"plan_section", "plan_quotes", "lexicon"})
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 LOOP_NUDGE = ("\n\nLet op: een eerder antwoord op deze vraag bleef hetzelfde herhalen tot het werd afgekapt. "
               "Houd het beknopt, herhaal niets en sluit elke lijst zodra de inhoud op is.")
@@ -143,6 +146,7 @@ class LocalLLM:
         self.model = settings.local_llm_model
         self.base_url = settings.local_llm_url.rstrip("/")
         self.think = think_value(settings.local_llm_think)
+        self.think_extract = think_value(settings.local_llm_think_extract)
         self._capabilities: set[str] | None | bool = False  # False = not looked up yet
         headers = {"Authorization": f"Bearer {settings.local_llm_api_key}"} if settings.local_llm_api_key else {}
         # trust_env=False: traffic for a local server never goes through an HTTP(S)_PROXY from the environment.
@@ -202,23 +206,34 @@ class LocalLLM:
                 "(Sending it anyway would cut off the start of the prompt without any error.)")
         return min(wanted, room)
 
+    def think_for(self, task: str) -> bool | str | None:
+        """The reasoning setting for one task. Extraction answers directly on a model that reasons by default,
+        unless LOCAL_LLM_THINK_EXTRACT says otherwise."""
+        if task in EXTRACT_TASKS:
+            if self.think_extract is not None:
+                return self.think_extract
+            if self.api == "ollama" and "thinking" in (self.capabilities() or ()):
+                return False
+        return self.think
+
     def _body(self, request: LLMRequest, messages: list[dict], schema: dict, max_tokens: int, attempt: int) -> dict:
         temperature = 0.8 if request.task in WRITING_TASKS else 0.2 + 0.2 * attempt
+        think = self.think_for(request.task)
         if self.api == "ollama":
             body = {"model": self.model, "messages": messages, "stream": False, "format": schema, "keep_alive": "10m",
                     "options": {"num_ctx": self.settings.local_llm_context, "num_predict": max_tokens,
                                 "temperature": temperature, "seed": 1000 + attempt}}
-            if self.think is not None:
-                body["think"] = self.think
+            if think is not None:
+                body["think"] = think
             return body
         body = {"model": self.model, "messages": messages, "stream": False, "max_tokens": max_tokens,
                 "temperature": temperature, "seed": 1000 + attempt,
                 "response_format": {"type": "json_schema",
                                     "json_schema": {"name": request.schema.__name__, "schema": schema}}}
-        if isinstance(self.think, bool):
-            body["chat_template_kwargs"] = {"enable_thinking": self.think}  # llama.cpp, vLLM (Qwen-style templates)
-        elif self.think:
-            body["reasoning_effort"] = self.think
+        if isinstance(think, bool):
+            body["chat_template_kwargs"] = {"enable_thinking": think}  # llama.cpp, vLLM (Qwen-style templates)
+        elif think:
+            body["reasoning_effort"] = think
         return body
 
     def _post(self, body: dict) -> tuple[str, str | None, SimpleNamespace, int]:
@@ -254,7 +269,10 @@ class LocalLLM:
             started = time.monotonic()
             log.info("llm %s task=%s model=%s attempt=%d", self.name, request.task, self.model, attempt + 1)
             content, finish, usage, thought = self._post(self._body(request, messages, schema, max_tokens, attempt))
-            self.usage.add(usage, time.monotonic() - started)
+            seconds = time.monotonic() - started
+            self.usage.add(usage, seconds)
+            log.info("llm %s task=%s: %d prompt + %d answer tokens in %.0f s (%.1f tokens/s)", self.name, request.task,
+                     usage.input_tokens or 0, usage.output_tokens or 0, seconds, (usage.output_tokens or 0) / max(seconds, 0.001))
             if finish == "length":
                 if thought and not clean_answer(content):
                     raise LLMTruncated(
@@ -296,6 +314,22 @@ class LocalLLM:
             self.client.post("/api/generate", json={"model": self.model, "keep_alive": 0}, timeout=30.0)
         except httpx.HTTPError as exc:
             log.info("could not unload %s: %s", self.model, exc)
+
+    def placement(self) -> tuple[int, int] | None:
+        """(model size, bytes of it in GPU memory) while Ollama has the model loaded; None when unknown.
+        Less in GPU memory than the size means part of it runs on the CPU."""
+        if self.api != "ollama":
+            return None
+        try:
+            response = self.client.get("/api/ps", timeout=10.0)
+            response.raise_for_status()
+            wanted = self.model if ":" in self.model else f"{self.model}:latest"
+            for m in response.json().get("models", []):
+                if (m.get("name") or m.get("model")) == wanted and m.get("size"):
+                    return int(m["size"]), int(m.get("size_vram") or 0)
+        except (httpx.HTTPError, ValueError, TypeError):
+            pass
+        return None
 
     def check(self) -> tuple[bool, str]:
         """(usable, explanation) for `studiepodcast doctor`: server reachable and the model available."""
