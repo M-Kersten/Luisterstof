@@ -267,7 +267,8 @@ Meld geen stijlvoorkeuren, alleen overtredingen van deze zeven regels."""
 
 
 def check_support(script: Script, plan: ContentPlan, book: Book, llm: LLM, plan_lookup: PlanLookup | None = None,
-                  book_lookup: Callable[[str], Book | None] | None = None) -> tuple[list[AuditIssue], SupportReport]:
+                  book_lookup: Callable[[str], Book | None] | None = None,
+                  progress: Callable[[int, int, str], None] | None = None) -> tuple[list[AuditIssue], SupportReport]:
     issues: list[AuditIssue] = []
     checked = 0
     unsupported = 0
@@ -280,7 +281,9 @@ def check_support(script: Script, plan: ContentPlan, book: Book, llm: LLM, plan_
             return claim, (book_lookup(chapter_id) if book_lookup else book) if claim else None
         return plan.claim(cid), book
 
-    for seg in script.segments:
+    for n, seg in enumerate(script.segments, start=1):
+        if progress:
+            progress(n, len(script.segments), f"bronnencontrole: {seg.title or seg.type}")
         rows: list[str] = []
         ids: list[str] = []
         for line in seg.lines:
@@ -362,6 +365,7 @@ def audit_script(
     llm: LLM | None = None,
     plan_lookup: PlanLookup | None = None,
     llm_lint: bool = True,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> AuditResult:
     result = AuditResult(episode_id=script.episode_id, script_revision=script.revision)
     result.issues += check_structure(script, cast)
@@ -369,7 +373,7 @@ def audit_script(
     result.issues += cov_issues
     result.issues += lint_rules(script, cast, banned, glossary, settings)
     if llm is not None:
-        sup_issues, result.support = check_support(script, plan, book, llm, plan_lookup)
+        sup_issues, result.support = check_support(script, plan, book, llm, plan_lookup, progress=progress)
         result.issues += sup_issues
         if llm_lint:
             result.issues += lint_llm(script, llm)

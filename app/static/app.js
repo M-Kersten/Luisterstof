@@ -273,16 +273,121 @@ function collectGlossary() {
 // ------------------------------------------------------------------- jobs
 async function loadJobs() {
   const jobs = await api.get("/api/jobs" + (state.book ? `?book_id=${state.book}` : ""));
-  $("#jobs").innerHTML = jobs.slice(0, 12).map(j => `<li class="${j.status}">${j.stage} ${j.chapter_id || ""} · ${j.status}${j.error ? " · " + escapeHtml(j.error.slice(0, 80)) : ""}</li>`).join("");
+  $("#jobs").innerHTML = jobs.slice(0, 12).map(j => `<li class="${j.status}">${STAGES[j.stage] || j.stage} ${j.chapter_id || ""} · ${j.status}` +
+    (["queued", "running"].includes(j.status) ? ` <button class="link" data-cancel="${j.id}" title="${j.status === "queued" ? "Haalt deze job uit de wachtrij." : "Stopt deze job bij het volgende controlepunt."}">stop</button>` : "") +
+    `${j.error ? " · " + escapeHtml(j.error.slice(0, 80)) : ""}</li>`).join("");
+  return jobs;
+}
+
+const STAGES = { ingest: "Inlezen", pipeline: "Boek verwerken", plan: "Plan", glossary: "Lexicon", script: "Script",
+  audit: "Audit", continuity: "Continuïteit", draft: "Piper draft", render: "Chatterbox render", eleven: "ElevenLabs",
+  approve: "Goedkeuren", all: "Hoofdstuk", book: "Boek", run: "Hoofdstuk" };
+// Events that announce the step about to start; "turn" reports a finished one.
+const DONE_KINDS = new Set(["turn"]);
+const run = { job: null, started: 0, stage: null, book: null, outer: null, inner: null, innerStart: 0, tokens: null, stopping: false, timer: null };
+const watching = new Set();
+
+function fmtDuration(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+function startRun(job, ts) {
+  Object.assign(run, { job, started: ts || Date.now(), stage: job.stage, book: null, outer: null, inner: null, tokens: null, stopping: false });
+  $("#stop-job").disabled = false;
+  $("#stop-job").textContent = "Stop";
+  $("#progress-panel").classList.remove("stopping");
+  $("#progress-panel").hidden = false;
+  clearInterval(run.timer);
+  run.timer = setInterval(renderProgress, 1000);
+}
+
+function endRun(job) {
+  if (!run.job || run.job.id !== job.id) return;
+  clearInterval(run.timer);
+  run.job = null;
+  $("#progress-panel").hidden = true;
+}
+
+function trackEvent(job, ev) {
+  const d = ev.data || {};
+  const ts = Date.parse(ev.ts) || Date.now();
+  if (!run.job || run.job.id !== job.id) startRun(job, ts);
+  if (ev.stage === "llm" && ev.status === "tokens") { run.tokens = { ...d, at: Date.now() }; renderProgress(); return; }
+  if (ev.stage === "job" && ev.status === "stopping") run.stopping = true;
+  else if (ev.stage === "book") run.book = { index: d.index, total: d.total, label: d.label };
+  else if (ev.stage === "run") { run.outer = { index: d.index, total: d.total, label: d.label }; run.inner = null; }
+  else if (ev.status === "start") { run.stage = ev.stage; run.inner = null; run.tokens = null; }
+  else if (d.index && d.total) {
+    const done = DONE_KINDS.has(ev.status) ? d.index : d.index - 1;
+    if (!run.inner || run.inner.stage !== ev.stage || run.inner.total !== d.total) run.innerStart = ts;
+    run.stage = ev.stage;
+    const label = d.label || (ev.status === "turn" ? `beurt ${d.turn}${d.speaker ? " (" + d.speaker + ")" : ""}` : "");
+    run.inner = { stage: ev.stage, index: d.index, total: d.total, done, label, at: ts };
+  }
+  renderProgress();
+}
+
+function renderProgress() {
+  if (!run.job) return;
+  const now = Date.now();
+  const where = run.job.chapter_id ? ` · ${run.job.chapter_id}` : ` · ${run.job.book_id}`;
+  $("#progress-title").textContent = `${STAGES[run.stage] || STAGES[run.job.stage] || run.job.stage}${where}`;
+  $("#progress-panel").classList.toggle("stopping", run.stopping);
+  const outer = [];
+  if (run.book) outer.push(`hoofdstuk ${run.book.index} van ${run.book.total}: ${run.book.label}`);
+  if (run.outer) outer.push(`stap ${run.outer.index} van ${run.outer.total}: ${run.outer.label}`);
+  $("#progress-outer").textContent = outer.join(" · ");
+  const bar = $("#progress-bar");
+  const detail = [];
+  if (run.inner) {
+    bar.max = run.inner.total;
+    bar.value = run.inner.done;
+    detail.push(`${run.inner.index} van ${run.inner.total}${run.inner.label ? ": " + run.inner.label : ""}`);
+    if (run.inner.done > 0 && run.inner.done < run.inner.total) {
+      const per = (now - run.innerStart) / run.inner.done;
+      detail.push(`nog ~${fmtDuration(per * (run.inner.total - run.inner.done))} voor ${STAGES[run.inner.stage] || run.inner.stage}`);
+    }
+  } else {
+    bar.removeAttribute("value");  // no known total: an indeterminate bar
+  }
+  if (run.tokens && now - run.tokens.at < 10000) {
+    const rate = run.tokens.seconds ? ` (${(run.tokens.tokens / run.tokens.seconds).toFixed(1)} per s)` : "";
+    detail.push(`model schrijft: ${run.tokens.tokens} tokens${rate}`);
+  }
+  detail.push(`bezig ${fmtDuration(now - run.started)}`);
+  if (run.stopping) detail.push("stopt bij het volgende controlepunt");
+  $("#progress-detail").textContent = detail.join(" · ");
+}
+
+async function stopJob(jobId) {
+  try {
+    const job = await api.send(`/api/jobs/${jobId}/cancel`, "POST", {});
+    log(`■ stop gevraagd voor ${STAGES[job.stage] || job.stage} ${job.chapter_id || ""} (${job.status})`);
+    if (run.job && run.job.id === jobId) {
+      run.stopping = true;
+      $("#stop-job").disabled = true;
+      $("#stop-job").textContent = "Stoppen...";
+      renderProgress();
+    }
+    loadJobs();
+  } catch (err) { log("fout: " + err.message); }
 }
 
 function watch(job) {
-  log(`▶ job ${job.id} ${job.stage} ${job.chapter_id || ""}`);
+  if (watching.has(job.id)) return;
+  watching.add(job.id);
+  log(`▶ job ${job.id} ${STAGES[job.stage] || job.stage} ${job.chapter_id || ""}`);
+  // The browser reconnects on its own and sends the last event id, so a render that outlives one stream continues.
   const es = new EventSource(`/api/jobs/${job.id}/events`);
   es.addEventListener("stage", (e) => {
     const ev = JSON.parse(e.data);
+    trackEvent(job, ev);
+    if (ev.stage === "llm" && ev.status === "tokens") return;  // heartbeat: progress panel only
     const d = { ...ev.data };
     delete d.book_id;
+    delete d.trace;
     log(`[${ev.stage}] ${ev.status} ${Object.entries(d).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" ")}`);
   });
   es.addEventListener("job", (e) => {
@@ -290,11 +395,12 @@ function watch(job) {
     if (["done", "failed", "cancelled"].includes(j.status)) {
       log(`■ job ${j.id} ${j.status}${j.error ? ": " + j.error : ""}`);
       es.close();
+      watching.delete(j.id);
+      endRun(j);
       loadJobs();
       if (state.book) openBook(state.book).then(() => state.chapter && openChapter(state.chapter));
     }
   });
-  es.onerror = () => es.close();
   loadJobs();
 }
 
@@ -366,6 +472,11 @@ $("#eleven").onclick = async () => {
   catch (err) { log("fout: " + err.message); }
 };
 $("#clear-log").onclick = () => { $("#log").textContent = ""; };
+$("#stop-job").onclick = () => run.job && stopJob(run.job.id);
+$("#jobs").onclick = (e) => {
+  const id = e.target.dataset && e.target.dataset.cancel;
+  if (id) stopJob(id);
+};
 
 function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
@@ -381,5 +492,7 @@ function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":
     if (h.tags && h.tags.length) $("#tag-list").textContent = h.tags.join(", ");
   } catch {}
   await loadBooks();
-  await loadJobs();
+  const jobs = await loadJobs();
+  // After a reload: pick up jobs that are still running or waiting, oldest first.
+  jobs.filter(j => ["running", "queued"].includes(j.status)).reverse().forEach(watch);
 })();

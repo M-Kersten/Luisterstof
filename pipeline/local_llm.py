@@ -21,13 +21,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
 from pydantic import BaseModel
 
+from pipeline.cancel import Cancelled
 from pipeline.config import Settings
 from pipeline.llm import LLMError, LLMRequest, LLMTruncated, Usage, _as_blocks, parse_json_into
 from pipeline.offline import check_local_url, on_this_machine
@@ -116,6 +119,26 @@ _THINK_OFF = {"off", "false", "0", "no", "nee"}
 _THINK_LEVELS = {"low", "medium", "high"}
 
 
+HEARTBEAT_S = 3.0
+
+
+def _stream_event(line: str, api: str) -> dict | None:
+    """One streamed chunk: a JSON line from Ollama, a ``data:`` line from an OpenAI-compatible server."""
+    line = line.strip()
+    if api == "openai":
+        if not line.startswith("data:"):
+            return None
+        line = line[5:].strip()
+        if line == "[DONE]":
+            return None
+    if not line:
+        return None
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+
 def think_value(raw: str) -> bool | str | None:
     """LOCAL_LLM_THINK -> what to send: None = leave it to the model, True/False, or a level."""
     raw = (raw or "").strip().casefold()
@@ -148,6 +171,9 @@ class LocalLLM:
         self.think = think_value(settings.local_llm_think)
         self.think_extract = think_value(settings.local_llm_think_extract)
         self._capabilities: set[str] | None | bool = False  # False = not looked up yet
+        self._abort = threading.Event()
+        # Heartbeat while the model writes: (task, tokens so far, seconds). Called at most every few seconds.
+        self.on_tokens: Callable[[str, int, float], None] | None = None
         headers = {"Authorization": f"Bearer {settings.local_llm_api_key}"} if settings.local_llm_api_key else {}
         # trust_env=False: traffic for a local server never goes through an HTTP(S)_PROXY from the environment.
         self.client = httpx.Client(base_url=self.base_url, headers=headers, transport=transport, trust_env=False,
@@ -220,13 +246,14 @@ class LocalLLM:
         temperature = 0.8 if request.task in WRITING_TASKS else 0.2 + 0.2 * attempt
         think = self.think_for(request.task)
         if self.api == "ollama":
-            body = {"model": self.model, "messages": messages, "stream": False, "format": schema, "keep_alive": "10m",
+            body = {"model": self.model, "messages": messages, "stream": True, "format": schema, "keep_alive": "10m",
                     "options": {"num_ctx": self.settings.local_llm_context, "num_predict": max_tokens,
                                 "temperature": temperature, "seed": 1000 + attempt}}
             if think is not None:
                 body["think"] = think
             return body
-        body = {"model": self.model, "messages": messages, "stream": False, "max_tokens": max_tokens,
+        body = {"model": self.model, "messages": messages, "stream": True, "stream_options": {"include_usage": True},
+                "max_tokens": max_tokens,
                 "temperature": temperature, "seed": 1000 + attempt,
                 "response_format": {"type": "json_schema",
                                     "json_schema": {"name": request.schema.__name__, "schema": schema}}}
@@ -236,31 +263,67 @@ class LocalLLM:
             body["reasoning_effort"] = think
         return body
 
-    def _post(self, body: dict) -> tuple[str, str | None, SimpleNamespace, int]:
+    def abort(self) -> None:
+        """Stop the call in flight at its next token and refuse new ones. Closing the stream makes the server
+        stop generating too."""
+        self._abort.set()
+
+    def _post(self, body: dict, task: str = "") -> tuple[str, str | None, SimpleNamespace, int]:
+        """Streams the answer, so a stop takes effect between two tokens and a heartbeat reports progress."""
         path = "/api/chat" if self.api == "ollama" else "/v1/chat/completions"
+        content: list[str] = []
+        thinking: list[str] = []
+        finish: str | None = None
+        usage = SimpleNamespace(input_tokens=0, output_tokens=0)
+        chunks, started, beat = 0, time.monotonic(), time.monotonic()
         try:
-            response = self.client.post(path, json=body)
+            with self.client.stream("POST", path, json=body) as response:
+                if response.status_code >= 400:
+                    text = response.read().decode("utf-8", "replace")
+                    if "does not support thinking" in text:
+                        raise LLMError(f"{self.model} can't reason step by step, but LOCAL_LLM_THINK={self.settings.local_llm_think} "
+                                       "asks for it: unset LOCAL_LLM_THINK or set it to off")
+                    raise LLMError(f"local LLM at {self.base_url} answered {response.status_code}: {text[:500]}")
+                for line in response.iter_lines():
+                    if self._abort.is_set():
+                        raise Cancelled()
+                    data = _stream_event(line, self.api)
+                    if data is None:
+                        continue
+                    if self.api == "ollama":
+                        message = data.get("message") or {}
+                        content.append(message.get("content") or "")
+                        thinking.append(message.get("thinking") or "")
+                        if data.get("done"):
+                            finish = data.get("done_reason")
+                            usage = SimpleNamespace(input_tokens=data.get("prompt_eval_count", 0),
+                                                    output_tokens=data.get("eval_count", 0))
+                    else:
+                        for choice in data.get("choices") or []:
+                            delta = choice.get("delta") or choice.get("message") or {}
+                            content.append(delta.get("content") or "")
+                            thinking.append(delta.get("reasoning_content") or delta.get("reasoning") or "")
+                            finish = choice.get("finish_reason") or finish
+                        if data.get("usage"):
+                            u = data["usage"]
+                            usage = SimpleNamespace(input_tokens=u.get("prompt_tokens", 0),
+                                                    output_tokens=u.get("completion_tokens", 0))
+                    chunks += 1
+                    if self.on_tokens and time.monotonic() - beat >= HEARTBEAT_S:
+                        beat = time.monotonic()
+                        self.on_tokens(task, chunks, beat - started)
         except httpx.HTTPError as exc:
+            if self._abort.is_set():
+                raise Cancelled() from exc
             raise LLMError(f"local LLM at {self.base_url} not reachable ({type(exc).__name__}: {exc}). "
                            "Is the server running? `studiepodcast doctor` checks it.") from exc
-        if response.status_code >= 400:
-            if "does not support thinking" in response.text:
-                raise LLMError(f"{self.model} can't reason step by step, but LOCAL_LLM_THINK={self.settings.local_llm_think} "
-                               "asks for it: unset LOCAL_LLM_THINK or set it to off")
-            raise LLMError(f"local LLM at {self.base_url} answered {response.status_code}: {response.text[:500]}")
-        data = response.json()
-        if self.api == "ollama":
-            message = data.get("message") or {}
-            usage = SimpleNamespace(input_tokens=data.get("prompt_eval_count", 0), output_tokens=data.get("eval_count", 0))
-            return message.get("content") or "", data.get("done_reason"), usage, len(message.get("thinking") or "")
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        u = data.get("usage") or {}
-        usage = SimpleNamespace(input_tokens=u.get("prompt_tokens", 0), output_tokens=u.get("completion_tokens", 0))
-        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
-        return message.get("content") or "", choice.get("finish_reason"), usage, len(reasoning)
+        if not usage.output_tokens:
+            usage.output_tokens = chunks  # one token per streamed chunk, near enough
+        return "".join(content), finish, usage, len("".join(thinking))
 
     def generate(self, request: LLMRequest) -> BaseModel:
+        if self._abort.is_set():
+            raise Cancelled()
         schema = inline_schema(request.schema.model_json_schema())
         messages, n_images = self._messages(request, schema)
         error: LLMError | None = None
@@ -268,7 +331,9 @@ class LocalLLM:
             max_tokens = self._output_budget(request, messages, n_images)
             started = time.monotonic()
             log.info("llm %s task=%s model=%s attempt=%d", self.name, request.task, self.model, attempt + 1)
-            content, finish, usage, thought = self._post(self._body(request, messages, schema, max_tokens, attempt))
+            if self._abort.is_set():
+                raise Cancelled()
+            content, finish, usage, thought = self._post(self._body(request, messages, schema, max_tokens, attempt), request.task)
             seconds = time.monotonic() - started
             self.usage.add(usage, seconds)
             log.info("llm %s task=%s: %d prompt + %d answer tokens in %.0f s (%.1f tokens/s)", self.name, request.task,

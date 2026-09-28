@@ -68,3 +68,5 @@ def test_upload_run_edit_approve(settings, sample_pdf):
         r = client.post("/api/books/demo/chapters/ch99/run", json={"stage": "plan"})
         assert _wait(client, r.json()["id"])["status"] == "failed"
         assert client.get("/api/books/nope").status_code == 404
+        assert client.post("/api/jobs/nope/cancel").status_code == 404
+        assert client.post(f"/api/jobs/{job['id']}/cancel").json()["status"] == "done"  # finished jobs stay as they are

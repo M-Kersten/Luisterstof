@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -393,6 +394,7 @@ class Writer:
         self.settings = settings
         self.continuity = continuity or []
         self.performance = performance
+        self.progress: Callable[[int, int, str], None] | None = None  # (segment number, segments, title)
 
     # System prefix: identical for every segment call of one episode.
     def _system(self, plan: ContentPlan, glossary: Glossary | None, guest: Guest | None, briefs: list[SegmentBrief]) -> list[dict]:
@@ -495,7 +497,9 @@ class Writer:
                         guest_id=guest.id if guest and plan.needs_expert else None)
         system = self._system(plan, glossary, guest, briefs)
         budget = self._interrupt_budget(target_minutes)
-        for brief in briefs:
+        for n, brief in enumerate(briefs, start=1):
+            if self.progress:
+                self.progress(n, len(briefs), brief.title)
             used = sum(1 for line in script.lines() if line.overlap.mode == "interrupt")
             request = LLMRequest(
                 task="script_segment",
@@ -562,10 +566,13 @@ class Writer:
         budget = self._interrupt_budget(script.target_minutes)
         new_script = Script(episode_id=script.episode_id, target_minutes=script.target_minutes, title=script.title,
                             guest_id=script.guest_id, revision=script.revision + 1)
+        todo = sorted(per_segment)
         for i, seg in enumerate(script.segments):
             if i not in per_segment:
                 new_script.segments.append(seg)
                 continue
+            if self.progress:
+                self.progress(todo.index(i) + 1, len(todo), f"herschrijven: {seg.title or seg.type}")
             used = sum(1 for line in new_script.lines() if line.overlap.mode == "interrupt")
             fix = "\n".join(per_segment[i]) + "\n\nHuidige versie van dit segment:\n" + "\n".join(
                 f"[{line.id}] {line.speaker}: {line.text}" for line in seg.lines

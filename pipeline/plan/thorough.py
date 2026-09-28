@@ -295,9 +295,10 @@ def _fix_quotes(llm: LLM, part: Part, failed: list[tuple[str, str, str]]) -> dic
 
 
 def harvest_part(book: Book, chapter: Chapter, part: Part, llm: LLM, pool: Candidates,
-                 progress: Progress | None = None) -> None:
+                 progress: Progress | None = None, step: tuple[int, int] = (1, 1)) -> None:
     if progress:
-        progress("section", {"sections": [s.id for s, _ in part.pieces], "chars": part.chars()})
+        progress("section", {"sections": [s.id for s, _ in part.pieces], "chars": part.chars(),
+                             "index": step[0], "total": step[1], "label": part.label})
     out = llm.generate(_section_request(book, chapter, part))
     assert isinstance(out, SectionPlanOut)
     if not out.claims and part.chars() >= SUBSTANTIAL_SECTION_CHARS:
@@ -402,8 +403,10 @@ def plan_chapter_thorough(book: Book, chapter_id: str, llm: LLM, cast: Cast | No
                           progress: Progress | None = None) -> ContentPlan:
     chapter = book.chapter(chapter_id)
     pool = Candidates()
-    for part in chapter_parts(chapter, part_chars):
-        harvest_part(book, chapter, part, llm, pool, progress)
+    parts = chapter_parts(chapter, part_chars)
+    steps = len(parts) + 1 + max(0, review_rounds)
+    for n, part in enumerate(parts, start=1):
+        harvest_part(book, chapter, part, llm, pool, progress, (n, steps))
     counts = pool.per_section()
     pool.warnings += [f"sectie {s.id}: geen enkele bewering met een controleerbaar citaat gevonden"
                       for s in chapter.sections if len(s.text.strip()) >= SUBSTANTIAL_SECTION_CHARS and not counts.get(s.id)]
@@ -413,7 +416,8 @@ def plan_chapter_thorough(book: Book, chapter_id: str, llm: LLM, cast: Cast | No
         raise ValueError(f"no claim with a verifiable quote in any section of {chapter_id}; check the ingest of this chapter")
 
     if progress:
-        progress("merge", {"candidates": len(pool.claims)})
+        progress("merge", {"candidates": len(pool.claims), "index": len(parts) + 1, "total": steps,
+                           "label": "beweringen kiezen en samenvoegen"})
     pool_text = _pool_text(pool, chapter)
     merged = llm.generate(LLMRequest(
         task="plan_merge",
@@ -428,7 +432,8 @@ def plan_chapter_thorough(book: Book, chapter_id: str, llm: LLM, cast: Cast | No
 
     for round_no in range(1, max(0, review_rounds) + 1):
         if progress:
-            progress("review", {"round": round_no, "claims": len(selected)})
+            progress("review", {"round": round_no, "claims": len(selected), "index": len(parts) + 1 + round_no,
+                                "total": steps, "label": f"controle, ronde {round_no}"})
         review = llm.generate(LLMRequest(
             task="plan_review",
             system=[text_block(REVIEW_SYSTEM), text_block(pool_text)],
@@ -484,9 +489,11 @@ def propose_lexicon_thorough(chapter: Chapter, glossary: Glossary, llm: LLM, *, 
 
     working = glossary.model_copy(deep=True)
     found: list[LexiconEntry] = []
-    for part in chapter_parts(chapter, part_chars):
+    parts = chapter_parts(chapter, part_chars)
+    for n, part in enumerate(parts, start=1):
         if progress:
-            progress("lexicon_section", {"sections": [s.id for s, _ in part.pieces], "chars": part.chars()})
+            progress("lexicon_section", {"sections": [s.id for s, _ in part.pieces], "chars": part.chars(),
+                                         "index": n, "total": len(parts), "label": part.label})
         sub = Chapter(id=chapter.id, title=chapter.title, pages=chapter.pages,
                       sections=[s.model_copy(update={"text": t}) for s, t in part.pieces])
         entries = propose_lexicon(sub, working, llm)

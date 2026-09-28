@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pipeline.cancel import Cancelled
+
 TERMINAL = {"done", "failed", "cancelled"}
 
 
@@ -124,6 +126,9 @@ class JobManager:
         self._queue: queue.Queue[tuple[str, Callable[[Any], Any]] | None] = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="studiepodcast-worker", daemon=True)
         self._started = False
+        self._lock = threading.Lock()
+        self._current: tuple[str, Any] | None = None  # (job id, its pipeline) while one runs
+        self._stop_requested: set[str] = set()
 
     def start(self) -> None:
         if not self._started:
@@ -140,12 +145,29 @@ class JobManager:
         self.start()
         return job
 
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        """A queued job is dropped; a running one stops at its next checkpoint (the next event, or the next
+        token of a local model call). A finished job is left as it is."""
+        job = self.store.get(job_id)
+        if job["status"] == "queued":
+            self.store.update(job_id, "cancelled", error="gestopt voordat hij begon")
+        elif job["status"] == "running":
+            with self._lock:
+                self._stop_requested.add(job_id)
+                current = self._current
+            if current and current[0] == job_id and hasattr(current[1], "abort"):
+                current[1].abort()
+            self.store.add_event(job_id, "job", "stopping", {})
+        return self.store.get(job_id)
+
     def _run(self) -> None:
         while True:
             item = self._queue.get()
             if item is None:
                 return
             job_id, fn = item
+            if self.store.get(job_id)["status"] == "cancelled":
+                continue
             self.store.update(job_id, "running")
 
             def on_event(stage: str, status: str, data: dict, job_id=job_id) -> None:
@@ -153,26 +175,40 @@ class JobManager:
 
             try:
                 pipeline = self.pipeline_factory(on_event)
+                with self._lock:
+                    self._current = (job_id, pipeline)
+                    stop_now = job_id in self._stop_requested
+                if stop_now and hasattr(pipeline, "abort"):
+                    pipeline.abort()
                 result = fn(pipeline)
                 self.store.update(job_id, "done", result=_summarise(result))
+            except Cancelled:
+                self.store.add_event(job_id, "job", "cancelled", {})
+                self.store.update(job_id, "cancelled", error="gestopt")
             except Exception as exc:  # noqa: BLE001 - surfaced to the UI
                 self.store.add_event(job_id, "job", "error", {"error": str(exc), "trace": traceback.format_exc()[-2000:]})
                 self.store.update(job_id, "failed", error=str(exc))
+            finally:
+                with self._lock:
+                    self._current = None
+                    self._stop_requested.discard(job_id)
 
-    def stream(self, job_id: str, poll_s: float = 0.4, timeout_s: float = 3600) -> Iterator[str]:
-        """Server-sent events: every stage event, then a final job status event."""
-        last = 0
+    def stream(self, job_id: str, poll_s: float = 0.4, timeout_s: float = 3600, after: int = 0) -> Iterator[str]:
+        """Server-sent events: every stage event after ``after``, then a final job status event. Each stage event
+        carries its sequence number as the SSE id, so a browser that reconnects (a render runs for hours, the
+        stream for one) picks up where it left off."""
+        last = after
         started = time.monotonic()
         yield f"event: job\ndata: {json.dumps(self.store.get(job_id))}\n\n"
         while True:
             for ev in self.store.events_since(job_id, last):
                 last = ev["seq"]
-                yield f"event: stage\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                yield f"id: {ev['seq']}\nevent: stage\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
             job = self.store.get(job_id)
             if job["status"] in TERMINAL:
                 for ev in self.store.events_since(job_id, last):
                     last = ev["seq"]
-                    yield f"event: stage\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                    yield f"id: {ev['seq']}\nevent: stage\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
                 yield f"event: job\ndata: {json.dumps(job)}\n\n"
                 return
             if time.monotonic() - started > timeout_s:

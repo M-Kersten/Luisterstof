@@ -210,7 +210,9 @@ studiepodcast serve            # http://127.0.0.1:8000
 
 Upload a PDF, watch the stages stream over SSE, browse and download every artifact, edit the script line by line (text, speaker, tags, covers, overlap, pause), re-audit, approve, render, and pick blocks for the ElevenLabs accent tier. Saving a script bumps its revision and clears the approval, so an edited script is always re-audited before it renders.
 
-API summary: `POST /api/books` (upload), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|draft|render|all"}`, `POST .../approve`, `POST .../eleven` with `{"blocks": ["b001"]}`, `GET /api/jobs/{id}/events` (SSE), `GET /api/books/{id}/artifacts/{path}`.
+While a job runs, a panel at the top shows the stage, a progress bar and the time left. The bar counts plan parts, script segments, audit segments or rendered turns; the line under it adds the chapter step and, with a local model, the tokens written so far. **Stop** ends the job at the next checkpoint: the next token of a local model call (the server stops generating too), the next take of a render, or the next step. With the Claude API a call in flight finishes first. What was saved before the stop stays; the interrupted stage starts over when you run it again. A reloaded page picks up running jobs.
+
+API summary: `POST /api/books` (upload), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|draft|render|all"}`, `POST .../approve`, `POST .../eleven` with `{"blocks": ["b001"]}`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`.
 
 ## The cast
 

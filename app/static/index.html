@@ -53,12 +53,21 @@
     </section>
     <section>
       <h2>Jobs</h2>
-      <p class="help">Wat nu draait en wat klaar is. Blauw draait, rood is mislukt; de details staan in de log onderaan.</p>
+      <p class="help">Wat nu draait en wat klaar is. Blauw draait, rood is mislukt; de details staan in de log onderaan. <b>stop</b> haalt een wachtende job uit de rij of stopt een lopende; wat al klaar is, blijft bewaard.</p>
       <ul id="jobs"></ul>
     </section>
   </aside>
 
   <section id="content">
+    <div id="progress-panel" hidden>
+      <div class="bar small">
+        <b id="progress-title"></b>
+        <button id="stop-job" title="Stopt deze job. Wat al klaar is, blijft bewaard; de stap die bezig was, moet je later opnieuw starten.">Stop</button>
+      </div>
+      <div id="progress-outer" class="muted"></div>
+      <progress id="progress-bar" max="1"></progress>
+      <div id="progress-detail" class="muted"></div>
+    </div>
     <div id="book-panel" hidden>
       <h2 id="book-title"></h2>
       <p class="help">Elke rij is een hoofdstuk en straks een aflevering. De kolommen volgen de stappen van links naar rechts. Klik een hoofdstuk om het te openen.</p>
@@ -192,7 +201,7 @@
 
     <div id="log-panel">
       <h3>Log <button id="clear-log" class="link">wissen</button></h3>
-      <p class="help">Voortgang van lopende jobs, stap voor stap. ▶ is gestart, ■ is klaar of mislukt.</p>
+      <p class="help">Voortgang van lopende jobs, stap voor stap. ▶ is gestart, ■ is klaar, mislukt of gestopt.</p>
       <pre id="log"></pre>
     </div>
   </section>

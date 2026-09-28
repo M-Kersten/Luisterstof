@@ -16,6 +16,7 @@ from typing import Any
 from pipeline.audio.render_draft import render_draft
 from pipeline.audio.render_final import render_eleven_blocks, render_final
 from pipeline.audio.synth import NullSynth, Synth
+from pipeline.cancel import Cancelled
 from pipeline.config import Settings
 from pipeline.ingest.figures import LLMCaptioner
 from pipeline.ingest.run import ingest_book
@@ -64,13 +65,24 @@ class Pipeline:
         self.banned = load_banned(settings.cast_dir)
         self.on_event = on_event
         self._gpu_checked = False
+        self._aborted = False
 
     # ------------------------------------------------------------------
     @property
     def llm(self) -> LLM:
         if self._llm is None:
             self._llm = make_llm(self.settings, fake=self._llm_fake_requested)
+        if hasattr(self._llm, "on_tokens") and self._llm.on_tokens is None:
+            self._llm.on_tokens = lambda task, tokens, seconds: self.emit("llm", "tokens", task=task, tokens=tokens,
+                                                                          seconds=round(seconds))
         return self._llm
+
+    def abort(self) -> None:
+        """Stop at the next checkpoint: the next event, or the next token of a local model call."""
+        self._aborted = True
+        stop = getattr(self._llm, "abort", None)
+        if stop:
+            stop()
 
     def release_llm(self) -> None:
         """Hand the GPU back before rendering: a local model server would otherwise sit on its memory."""
@@ -79,6 +91,8 @@ class Pipeline:
             release()
 
     def emit(self, stage: str, status: str, **data: Any) -> None:
+        if self._aborted:
+            raise Cancelled()
         log.info("%s %s %s", stage, status, data if data else "")
         if self.on_event:
             self.on_event(stage, status, data)
@@ -240,6 +254,8 @@ class Pipeline:
         continuity = load_continuity(self.settings.cast_dir, last_n=10)
         continuity = [e for e in continuity if e.episode != chapter_id]
         writer = Writer(self.llm, self.cast, self.settings, continuity)
+        writer.progress = lambda n, total, title: self.emit("script", "segment", chapter=chapter_id, index=n, total=total,
+                                                            label=title)
         self.emit("script", "start", book_id=book_id, chapter=chapter_id, guest=plan.needs_expert)
         script = writer.write(plan, book, glossary, previous_plan=previous_plan, next_chapter_title=nxt.title if nxt else None)
         script.save(self.paths(book_id).script(chapter_id))
@@ -263,7 +279,9 @@ class Pipeline:
         glossary = self.load_glossary(book_id)
         self.emit("audit", "start", book_id=book_id, chapter=chapter_id, revision=script.revision)
         audit = audit_script(script, plan, book, self.cast, self.banned, self.settings, glossary=glossary,
-                             llm=self.llm if llm_checks else None, plan_lookup=self.plan_lookup(book_id))
+                             llm=self.llm if llm_checks else None, plan_lookup=self.plan_lookup(book_id),
+                             progress=lambda n, total, label: self.emit("audit", "segment", chapter=chapter_id, index=n,
+                                                                        total=total, label=label))
         audit.save(self.paths(book_id).audit(chapter_id))
         self.emit("audit", "done", book_id=book_id, chapter=chapter_id, passed=audit.passed,
                   blocking=len(audit.blocking()), warnings=len(audit.warnings()), coverage_missing=audit.coverage.missing)
@@ -350,27 +368,40 @@ class Pipeline:
         if upto not in order:
             raise ValueError(f"upto must be one of {order}")
         stop = order.index(upto)
+        names = {"plan": "plan", "glossary": "lexicon", "script": "script en audit", "draft": "Piper draft",
+                 "approve": "goedkeuren", "render": "Chatterbox render"}
+
+        def step(name: str) -> None:
+            self.emit("run", "step", book_id=book_id, chapter=chapter_id, index=order.index(name) + 1, total=stop + 1,
+                      label=names[name])
+
         out: dict[str, Any] = {}
         if stop >= 0:
+            step("plan")
             out["plan"] = self.plan(book_id, chapter_id)
         if stop >= 1:
+            step("glossary")
             out["glossary"] = self.glossary(book_id, chapter_id)
         if stop >= 2:
+            step("script")
             out["script"], out["audit"] = self.script(book_id, chapter_id, llm_checks=llm_checks)
         if stop >= 3:
+            step("draft")
             out["draft"] = self.draft(book_id, chapter_id)[0]
         if stop >= 4:
+            step("approve")
             out["approve"] = self.approve(book_id, chapter_id, force=upto == "render" and not out["audit"].passed)
         if stop >= 5:
+            step("render")
             out["render"] = self.render(book_id, chapter_id)[0]
         return out
 
     def run_book(self, book_id: str, *, upto: str = "draft", chapters: list[str] | None = None, llm_checks: bool = True) -> dict[str, dict]:
         book = self.load_book(book_id)
         results = {}
-        for ch in book.episode_chapters():
-            if chapters and ch.id not in chapters:
-                continue
+        todo = [ch for ch in book.episode_chapters() if not chapters or ch.id in chapters]
+        for n, ch in enumerate(todo, start=1):
+            self.emit("book", "chapter", book_id=book_id, chapter=ch.id, index=n, total=len(todo), label=f"{ch.id} {ch.title}")
             results[ch.id] = self.run_chapter(book_id, ch.id, upto=upto, llm_checks=llm_checks)
         return results
 

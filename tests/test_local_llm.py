@@ -68,11 +68,19 @@ class FakeServer:
             return httpx.Response(200, json={} if self.capabilities is None else {"capabilities": list(self.capabilities)})
         reply = self.replies.pop(0) if self.replies else (self._canned(body, path), "stop")
         content, finish, thinking = (*reply, "") if len(reply) == 2 else reply
-        if path == "/api/chat":
-            return httpx.Response(200, json={"message": {"role": "assistant", "content": content, "thinking": thinking},
-                                             "done_reason": finish, "prompt_eval_count": 100, "eval_count": 20})
-        return httpx.Response(200, json={"choices": [{"message": {"content": content}, "finish_reason": finish}],
-                                         "usage": {"prompt_tokens": 100, "completion_tokens": 20}})
+        pieces = [content[i:i + 40] for i in range(0, len(content), 40)] or [""]
+        if path == "/api/chat":  # Ollama streams one JSON object per line
+            lines = [{"message": {"role": "assistant", "content": "", "thinking": thinking}, "done": False}] if thinking else []
+            lines += [{"message": {"role": "assistant", "content": p}, "done": False} for p in pieces]
+            lines.append({"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": finish,
+                          "prompt_eval_count": 100, "eval_count": 20})
+            return httpx.Response(200, content="\n".join(json.dumps(x) for x in lines).encode())
+        events = [{"choices": [{"delta": {"reasoning_content": thinking}, "finish_reason": None}]}] if thinking else []
+        events += [{"choices": [{"delta": {"content": p}, "finish_reason": None}]} for p in pieces]
+        events.append({"choices": [{"delta": {}, "finish_reason": finish}]})
+        events.append({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 20}})
+        sse = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+        return httpx.Response(200, content=sse.encode())
 
     @staticmethod
     def _canned(body, path) -> str:
@@ -107,7 +115,7 @@ def test_ollama_request_carries_schema_context_and_images_and_parses_a_messy_ans
                                    user=[image_block(png), text_block("Beschrijf de figuur.")]))
     assert result == Answer(verdict="ok", score=4)
     method, path, body = next(r for r in server.requests if r[1] == "/api/chat")
-    assert (method, path, body["model"], body["stream"]) == ("POST", "/api/chat", "gemma4:31b", False)
+    assert (method, path, body["model"], body["stream"]) == ("POST", "/api/chat", "gemma4:31b", True)
     assert "think" not in body  # left to the model unless LOCAL_LLM_THINK says otherwise
     assert body["options"]["num_ctx"] == 32768 and body["options"]["temperature"] == 0.2
     assert body["format"]["title"] == "Answer" and "cache_control" not in json.dumps(body)

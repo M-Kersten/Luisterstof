@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -258,13 +258,21 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         except KeyError as exc:
             raise HTTPException(404, "unknown job") from exc
 
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str) -> dict[str, Any]:
+        try:
+            return manager.cancel(job_id)
+        except KeyError as exc:
+            raise HTTPException(404, "unknown job") from exc
+
     @app.get("/api/jobs/{job_id}/events")
-    def job_events(job_id: str):
+    def job_events(job_id: str, after: int = 0, last_event_id: str | None = Header(None)):  # noqa: B008
         try:
             store.get(job_id)
         except KeyError as exc:
             raise HTTPException(404, "unknown job") from exc
-        return StreamingResponse(manager.stream(job_id), media_type="text/event-stream",
+        resume = int(last_event_id) if last_event_id and last_event_id.isdigit() else after
+        return StreamingResponse(manager.stream(job_id, after=resume), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/api/cast")
