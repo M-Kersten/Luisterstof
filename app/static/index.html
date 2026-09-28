@@ -10,31 +10,50 @@
 <body>
 <header>
   <h1>Studiepodcast</h1>
-  <span id="health" class="muted"></span>
+  <span id="health" class="muted" title="Welk model de teksten schrijft (plan, lexicon, script, audit) en of boektekst het netwerk verlaat."></span>
 </header>
 <main>
   <aside id="sidebar">
     <section>
       <h2>Nieuw boek</h2>
       <form id="upload">
-        <input type="file" name="file" accept="application/pdf" required>
-        <input type="text" name="book_id" placeholder="book id (optioneel)">
-        <select name="method">
-          <option value="auto">structuur: auto</option>
-          <option value="fonts">fonts</option>
-          <option value="toc">toc</option>
-          <option value="llm">llm</option>
+        <input type="file" name="file" accept="application/pdf" required
+               title="Het studieboek als PDF. Elk hoofdstuk wordt één aflevering.">
+        <input type="text" name="book_id" placeholder="book id (optioneel)"
+               title="Korte naam voor dit boek, bijvoorbeeld statistiek1. Leeg laten: de bestandsnaam wordt gebruikt.">
+        <select name="method" title="Hoe de hoofdstukken in de PDF worden gevonden.">
+          <option value="auto" title="Probeert eerst lettergroottes, dan de inhoudsopgave van de PDF, dan het taalmodel.">structuur: auto</option>
+          <option value="fonts" title="Koppen herkennen aan hun lettergrootte. Snel, werkt bij de meeste boeken.">fonts</option>
+          <option value="toc" title="De inhoudsopgave die in de PDF zelf is opgeslagen (bladwijzers).">toc</option>
+          <option value="llm" title="Het taalmodel leest de eerste pagina's en wijst de hoofdstukken aan. Langzaamst.">llm</option>
         </select>
-        <label><input type="checkbox" name="auto" checked> direct doorlopen tot de Piper-draft</label>
+        <label title="Leest het boek in en maakt voor elk hoofdstuk plan, lexicon, script, audit en een Piper-draft. Daarna stopt het bij de goedkeuring; er wordt nog niets met Chatterbox gerenderd.">
+          <input type="checkbox" name="auto" checked> direct doorlopen tot de Piper-draft</label>
         <button type="submit">Upload</button>
       </form>
+      <details class="help">
+        <summary>Hoe werkt het?</summary>
+        <ol>
+          <li><b>Inlezen</b>: de PDF wordt opgedeeld in hoofdstukken en secties.</li>
+          <li><b>Plan</b>: per hoofdstuk de beweringen, definities en misvattingen, elk met een letterlijk citaat uit het boek. Dit is de feitelijke basis.</li>
+          <li><b>Lexicon</b>: hoe leenwoorden, formules en afkortingen worden uitgesproken. Geldt voor het hele boek.</li>
+          <li><b>Script</b>: de dialoog tussen Tessa en Joris, geschreven vanuit het plan.</li>
+          <li><b>Audit</b>: controleert het script tegen het plan en de bron. Blokkerende problemen houden de render tegen.</li>
+          <li><b>Piper draft</b>: een snelle, vlakke voorleesversie om inhoud en tempo te beluisteren. Kost seconden.</li>
+          <li><b>Goedkeuren</b>: jij beslist dat deze scriptversie goed is. Pas dan mag de dure render.</li>
+          <li><b>Chatterbox render</b>: de echte aflevering met de gekloonde stemmen. Kost uren GPU-tijd.</li>
+        </ol>
+        <p>Pas je het script aan, dan vervallen audit en goedkeuring en begin je weer bij stap 5.</p>
+      </details>
     </section>
     <section>
       <h2>Boeken</h2>
+      <p class="help">Klik een boek om zijn hoofdstukken te zien.</p>
       <ul id="books"></ul>
     </section>
     <section>
       <h2>Jobs</h2>
+      <p class="help">Wat nu draait en wat klaar is. Blauw draait, rood is mislukt; de details staan in de log onderaan.</p>
       <ul id="jobs"></ul>
     </section>
   </aside>
@@ -42,8 +61,17 @@
   <section id="content">
     <div id="book-panel" hidden>
       <h2 id="book-title"></h2>
+      <p class="help">Elke rij is een hoofdstuk en straks een aflevering. De kolommen volgen de stappen van links naar rechts. Klik een hoofdstuk om het te openen.</p>
       <table id="chapters">
-        <thead><tr><th>Hoofdstuk</th><th>Plan</th><th>Script</th><th>Audit</th><th>Draft</th><th>Goedgekeurd</th><th>Final</th></tr></thead>
+        <thead><tr>
+          <th title="Hoofdstuknummer en titel, met pagina's en lengte.">Hoofdstuk</th>
+          <th title="Is het inhoudsplan gemaakt: de beweringen met citaten waar het script op rust?">Plan</th>
+          <th title="Is er een script? rev = hoe vaak het is opgeslagen.">Script</th>
+          <th title="Uitkomst van de controle op het script. Blokkerend betekent: eerst oplossen, dan pas goedkeuren.">Audit</th>
+          <th title="Is er een Piper-draft om te beluisteren?">Draft</th>
+          <th title="Heb jij deze scriptversie goedgekeurd voor de render?">Goedgekeurd</th>
+          <th title="Is de echte aflevering met Chatterbox gerenderd? Gevlagd = beurten die de controle niet haalden.">Final</th>
+        </tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -52,52 +80,119 @@
       <div class="bar">
         <h2 id="chapter-title"></h2>
         <div class="actions">
-          <button data-run="plan">Plan</button>
-          <button data-run="glossary">Lexicon</button>
-          <button data-run="script">Script</button>
-          <button data-run="audit">Audit</button>
-          <button data-run="draft">Piper draft</button>
-          <button id="approve">Goedkeuren</button>
-          <button data-run="render" id="render">Chatterbox render</button>
+          <button data-run="plan" title="Stap 1. Maakt het inhoudsplan opnieuw: beweringen, definities en misvattingen met citaten uit het boek. Overschrijft het bestaande plan.">1 Plan</button>
+          <button data-run="glossary" title="Stap 2. Zoekt leenwoorden, formules en afkortingen in dit hoofdstuk en voegt hun uitspraak toe aan het lexicon van het boek. Bestaande termen blijven staan.">2 Lexicon</button>
+          <button data-run="script" title="Stap 3. Schrijft het script opnieuw vanuit het plan, controleert het meteen (audit) en herschrijft één keer wat blokkeert. Overschrijft je handmatige wijzigingen.">3 Script</button>
+          <button data-run="audit" title="Stap 4. Controleert het huidige script opnieuw, bijvoorbeeld na je eigen aanpassingen. Verandert niets aan het script.">4 Audit</button>
+          <button data-run="draft" title="Stap 5. Snelle voorleesversie met Piper: vlak, maar genoeg om inhoud, lengte en tempo te beoordelen. Kost seconden.">5 Piper draft</button>
+          <button id="approve" title="Stap 6. Jouw akkoord op deze scriptversie. Kan alleen als de audit van precies deze versie geslaagd is.">6 Goedkeuren</button>
+          <button data-run="render" id="render" title="Stap 7. De echte aflevering met Chatterbox: meerdere opnames per beurt, gecontroleerd en gemonteerd. Kost uren GPU-tijd.">7 Chatterbox render</button>
         </div>
       </div>
+      <p id="next-step" class="help next"></p>
       <nav class="tabs">
-        <button data-tab="script" class="active">Script</button>
-        <button data-tab="audit">Audit</button>
-        <button data-tab="plan">Plan</button>
-        <button data-tab="lexicon">Lexicon</button>
-        <button data-tab="audio">Audio</button>
-        <button data-tab="artifacts">Artefacten</button>
+        <button data-tab="script" class="active" title="De dialoog, regel voor regel. Hier pas je hem aan.">Script</button>
+        <button data-tab="audit" title="Wat de controle vond, per regel.">Audit</button>
+        <button data-tab="plan" title="De feitelijke basis: beweringen met hun bron.">Plan</button>
+        <button data-tab="lexicon" title="Hoe termen worden uitgesproken, voor het hele boek.">Lexicon</button>
+        <button data-tab="audio" title="De draft, de echte aflevering en de kwaliteitscontrole.">Audio</button>
+        <button data-tab="artifacts" title="Alle bestanden die de stappen hebben gemaakt.">Artefacten</button>
       </nav>
 
       <div class="tab" id="tab-script">
+        <details class="help">
+          <summary>Wat staat hier?</summary>
+          <p>Elke rij is één regel dialoog, gegroepeerd per segment (koude opening, blokken, quiz, afsluiting). Links staat het regelnummer, dan de spreker en de tekst. Rechts:</p>
+          <ul>
+            <li><b>tags</b>: de emotie waarmee de regel wordt uitgesproken, gescheiden door komma's. Toegestaan: <span id="tag-list">excited, deadpan, ...</span>.</li>
+            <li><b>covers</b>: welke beweringen uit het plan (c1, c2, ...) deze regel feitelijk overbrengt. De audit controleert dat elke vereiste bewering ergens gedekt is en dat de regel klopt met de bron.</li>
+            <li><b>none / interrupt / backchannel</b>: <i>interrupt</i> onderbreekt de vorige spreker; die regel moet dan eindigen op een afgebroken stuk met een streepje (—). <i>backchannel</i> is een korte reactie onder de ander door (ja, precies, een lach) die de tijdlijn niet opschuift.</li>
+            <li><b>pauze ms</b>: een bewuste stilte na de regel, in milliseconden, bijvoorbeeld 2500 na een quizvraag.</li>
+          </ul>
+          <p>Een rode achtergrond betekent dat de audit iets over deze regel vond. <b>Script opslaan</b> maakt een nieuwe revisie; de audit en je goedkeuring vervallen dan, dus draai daarna Audit opnieuw.</p>
+          <p>De tekst wordt letterlijk uitgesproken: schrijf geen regieaanwijzingen zoals (lacht), gebruik tags. Een woord in HOOFDLETTERS krijgt nadruk.</p>
+        </details>
         <div class="bar small">
           <span id="script-meta" class="muted"></span>
-          <div><button id="save-script">Script opslaan</button></div>
+          <div><button id="save-script" title="Slaat je wijzigingen op als nieuwe revisie. Audit en goedkeuring vervallen.">Script opslaan</button></div>
         </div>
         <div id="script-lines"></div>
       </div>
-      <div class="tab" id="tab-audit" hidden><pre id="audit-summary"></pre><div id="audit-issues"></div></div>
-      <div class="tab" id="tab-plan" hidden><div id="plan-view"></div></div>
+      <div class="tab" id="tab-audit" hidden>
+        <details class="help">
+          <summary>Wat controleert de audit?</summary>
+          <ul>
+            <li><b>support</b>: elke regel met een bewering wordt naast het citaat uit het boek gelegd. Wat de bron niet onderbouwt, blokkeert.</li>
+            <li><b>coverage</b>: elke bewering die een segment moet dekken, komt in een regel terug.</li>
+            <li><b>lint</b>: stijlregels. Verboden AI-podcastzinnen, tics van de verkeerde host, onderbrekingen over een getal of definitie, te weinig reactie tussen de hosts, de lengte.</li>
+            <li><b>structure</b>: de vaste opbouw van een aflevering (koude opening, quiz, afsluiting).</li>
+          </ul>
+          <p><span class="badge bad">blokkerend</span> houdt de goedkeuring tegen. <span class="badge warn">waarschuwing</span> mag blijven staan, maar is het lezen waard. Klik een regelnummer om naar die regel in het script te springen.</p>
+        </details>
+        <pre id="audit-summary"></pre><div id="audit-issues"></div>
+      </div>
+      <div class="tab" id="tab-plan" hidden>
+        <details class="help">
+          <summary>Hoe lees je het plan?</summary>
+          <p>Het plan bevat geen grappen: het is wat de aflevering feitelijk moet overbrengen. Het script verwijst ernaar met de ids (c1, c2, ...).</p>
+          <ul>
+            <li><b>moeilijkheid</b> 1 tot 5: hoe lastig voor een eerstejaars. <b>tentamen</b> 1 tot 5: hoe zeker het tentamenstof is.</li>
+            <li>Achter elke bewering staan de sectie en de <b>citaatscore</b>: 100 betekent dat het citaat letterlijk in het boek staat, lager dat het er bijna in staat, 0 dat het niet gevonden is. Dan geldt de hele sectie als bron en is de controle zwakker.</li>
+            <li><b>expert nodig</b>: het hoofdstuk krijgt een gastexpert als de stof buiten wat de hosts geloofwaardig kunnen dragen valt, of als een sectie gemiddeld moeilijker is dan 4.</li>
+            <li><b>notatiezwaar</b>: secties met veel formules; die worden in vorm en betekenis beschreven in plaats van symbool voor symbool voorgelezen.</li>
+          </ul>
+        </details>
+        <div id="plan-view"></div>
+      </div>
       <div class="tab" id="tab-lexicon" hidden>
-        <div class="bar small"><span class="muted">Per boek. Vergrendelde termen klinken in elk hoofdstuk hetzelfde.</span><button id="save-glossary">Lexicon opslaan</button></div>
-        <table id="glossary"><thead><tr><th>surface</th><th>kind</th><th>spoken</th><th>lock</th><th></th></tr></thead><tbody></tbody></table>
-        <button id="add-entry">+ term</button>
+        <details class="help" open>
+          <summary>Wat doet het lexicon?</summary>
+          <p>Voor de opname wordt elke term in de linkerkolom vervangen door de uitspraak rechts. Dit geldt voor het hele boek, zodat een term in hoofdstuk 9 net zo klinkt als in hoofdstuk 2.</p>
+          <ul>
+            <li><b>surface</b>: de term precies zoals hij in de tekst staat.</li>
+            <li><b>kind</b>: <i>loanword_en</i> is een Engels leenwoord (met een Nederlandse fonetische spelling), <i>notation</i> een formule, eenheid of symbool (voluit zoals een docent het zegt), <i>abbreviation</i> een afkorting (voluit, of letter voor letter).</li>
+            <li><b>spoken</b>: wat de stem zegt.</li>
+            <li><b>lock</b>: vastgezet. Een later hoofdstuk stelt voor deze term geen andere uitspraak meer voor.</li>
+          </ul>
+        </details>
+        <div class="bar small"><span class="muted">Per boek. Vergrendelde termen klinken in elk hoofdstuk hetzelfde.</span><button id="save-glossary" title="Slaat het lexicon op. Geldt vanaf de volgende draft of render.">Lexicon opslaan</button></div>
+        <table id="glossary"><thead><tr>
+          <th title="De term zoals hij in de tekst staat.">surface</th>
+          <th title="Leenwoord, notatie of afkorting.">kind</th>
+          <th title="Wat de stem zegt.">spoken</th>
+          <th title="Vastgezet: latere hoofdstukken veranderen deze uitspraak niet.">lock</th>
+          <th></th></tr></thead><tbody></tbody></table>
+        <button id="add-entry" title="Voeg zelf een term toe.">+ term</button>
       </div>
       <div class="tab" id="tab-audio" hidden>
+        <details class="help">
+          <summary>Wat hoor en zie je hier?</summary>
+          <ul>
+            <li><b>Piper draft</b>: vlakke computerstem, alleen om inhoud, volgorde en lengte te beoordelen voordat je goedkeurt.</li>
+            <li><b>Chatterbox final</b>: de echte aflevering. Elke beurt is meerdere keren opgenomen; een spraakherkenner schrijft elke opname terug uit en de opname die het script het best volgt, wordt gekozen.</li>
+            <li><b>verificatie</b>: bij hoeveel beurten die terugschrijving gelukt is. Minder dan alles betekent dat de spraakherkenner niet werkte en opnames ongecontroleerd zijn gebruikt.</li>
+            <li><b>geschatte uitlijning</b>: bij die beurten is niet exact bekend waar elk woord valt, dus onderbrekingen en reacties kunnen midden in een woord landen. Draai <code>studiepodcast doctor</code>.</li>
+            <li><b>gevlagde beurten</b>: geen enkele opname volgde het script goed genoeg. Beluister ze; pas zo nodig de tekst aan.</li>
+            <li><b>blokken</b>: stukken van maximaal 3000 tekens die je los met ElevenLabs kunt laten inspreken, voor momenten waar echte overlappende spraak het verschil maakt. Dat stuurt die scripttekst naar ElevenLabs; in offline modus kan dat niet.</li>
+          </ul>
+        </details>
         <h3>Piper draft</h3><div id="draft-audio" class="muted">nog niet gerenderd</div>
         <h3>Chatterbox final</h3><div id="final-audio" class="muted">nog niet gerenderd</div>
         <div id="audio-quality" style="margin-top:.3rem"></div>
         <div id="flagged"></div>
         <h3>Blokken (accent tier)</h3>
         <div id="blocks"></div>
-        <button id="eleven">Geselecteerde blokken met ElevenLabs renderen</button>
+        <button id="eleven" title="Laat de aangevinkte blokken inspreken door ElevenLabs en monteert ze in de aflevering. Stuurt de tekst van die blokken naar ElevenLabs.">Geselecteerde blokken met ElevenLabs renderen</button>
       </div>
-      <div class="tab" id="tab-artifacts" hidden><ul id="artifact-list"></ul></div>
+      <div class="tab" id="tab-artifacts" hidden>
+        <p class="help">Elk bestand dat een stap heeft gemaakt: het boek in stukken (book.json), plannen, scripts, audits, lexicon, audio en transcripten. Handig om iets na te lezen of te bewaren.</p>
+        <ul id="artifact-list"></ul>
+      </div>
     </div>
 
     <div id="log-panel">
       <h3>Log <button id="clear-log" class="link">wissen</button></h3>
+      <p class="help">Voortgang van lopende jobs, stap voor stap. ▶ is gestart, ■ is klaar of mislukt.</p>
       <pre id="log"></pre>
     </div>
   </section>

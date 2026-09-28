@@ -81,8 +81,11 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         model = settings.local_llm_model if settings.llm_backend == "local" else settings.llm_model
+        from pipeline.tags import known_tags
+
         return {"ok": True, "fake_llm": fake_llm, "fake_audio": fake_audio, "model": model,
-                "llm_backend": settings.llm_backend, "offline": settings.offline}
+                "llm_backend": settings.llm_backend, "offline": settings.offline, "plan_mode": settings.plan_mode,
+                "tags": known_tags()}
 
     @app.get("/api/books")
     def list_books() -> list[dict[str, Any]]:

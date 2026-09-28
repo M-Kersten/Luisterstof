@@ -35,6 +35,11 @@ tr.clickable:hover { background: #eef3f8; }
 .badge.warn { background: #fdf0d8; color: var(--warn); }
 .badge.bad { background: #f9e0dd; color: var(--bad); }
 .muted { color: var(--muted); }
+.help { color: var(--muted); font-size: .85rem; margin: .3rem 0 .6rem; }
+.help summary { cursor: pointer; }
+.help ol, .help ul { padding-left: 1.2rem; margin: .3rem 0; }
+.help.next { color: inherit; }
+.help.next:empty { display: none; }
 .segment { margin: 1rem 0 .3rem; font-weight: 600; color: var(--accent); }
 .line { display: grid; grid-template-columns: 52px 110px 1fr 220px; gap: .5rem; padding: .35rem 0; border-bottom: 1px dashed var(--line); }
 .line.has-issue { background: #fff6f5; }
