@@ -222,6 +222,10 @@ class LocalLLM:
                     else sum(len(p.get("text", "")) for p in m["content"]) for m in messages)
         prompt = int(chars / CHARS_PER_TOKEN) + 1 + n_images * TOKENS_PER_IMAGE
         wanted = request.max_tokens or self.settings.local_llm_max_tokens
+        if self._reasons(request.task):
+            # A request's max_tokens sizes the answer (it was set for Claude). Here the reasoning comes out of the
+            # same budget, so a reasoning call gets at least LOCAL_LLM_MAX_TOKENS.
+            wanted = max(wanted, self.settings.local_llm_max_tokens)
         room = self.settings.local_llm_context - prompt - CONTEXT_MARGIN
         if room < min(wanted, 1024):
             suggestion = 1 << (prompt + wanted + CONTEXT_MARGIN - 1).bit_length()
@@ -242,9 +246,17 @@ class LocalLLM:
                 return False
         return self.think
 
-    def _body(self, request: LLMRequest, messages: list[dict], schema: dict, max_tokens: int, attempt: int) -> dict:
+    def _reasons(self, task: str) -> bool:
+        """Whether this call may reason before it answers: asked for, or the model's default."""
+        think = self.think_for(task)
+        if think is not None:
+            return bool(think)
+        return self.api == "ollama" and "thinking" in (self.capabilities() or ())
+
+    def _body(self, request: LLMRequest, messages: list[dict], schema: dict, max_tokens: int, attempt: int,
+              no_think: bool = False) -> dict:
         temperature = 0.8 if request.task in WRITING_TASKS else 0.2 + 0.2 * attempt
-        think = self.think_for(request.task)
+        think = False if no_think else self.think_for(request.task)
         if self.api == "ollama":
             body = {"model": self.model, "messages": messages, "stream": True, "format": schema, "keep_alive": "10m",
                     "options": {"num_ctx": self.settings.local_llm_context, "num_predict": max_tokens,
@@ -327,22 +339,29 @@ class LocalLLM:
         schema = inline_schema(request.schema.model_json_schema())
         messages, n_images = self._messages(request, schema)
         error: LLMError | None = None
+        no_think = False
         for attempt in range(RETRIES + 1):
             max_tokens = self._output_budget(request, messages, n_images)
             started = time.monotonic()
             log.info("llm %s task=%s model=%s attempt=%d", self.name, request.task, self.model, attempt + 1)
             if self._abort.is_set():
                 raise Cancelled()
-            content, finish, usage, thought = self._post(self._body(request, messages, schema, max_tokens, attempt), request.task)
+            content, finish, usage, thought = self._post(
+                self._body(request, messages, schema, max_tokens, attempt, no_think), request.task)
             seconds = time.monotonic() - started
             self.usage.add(usage, seconds)
             log.info("llm %s task=%s: %d prompt + %d answer tokens in %.0f s (%.1f tokens/s)", self.name, request.task,
                      usage.input_tokens or 0, usage.output_tokens or 0, seconds, (usage.output_tokens or 0) / max(seconds, 0.001))
             if finish == "length":
                 if thought and not clean_answer(content):
+                    if attempt < RETRIES and not no_think:
+                        log.warning("%s reasoned through the whole %d-token budget on %s; answering directly instead",
+                                    self.model, max_tokens, request.task)
+                        no_think = True
+                        continue
                     raise LLMTruncated(
                         f"task {request.task}: {self.model} spent the whole {max_tokens}-token budget reasoning before "
-                        "it wrote an answer. Raise LOCAL_LLM_MAX_TOKENS (and LOCAL_LLM_CONTEXT to make room), or set "
+                        "it wrote an answer, also after a retry without reasoning. Raise LOCAL_LLM_MAX_TOKENS (and LOCAL_LLM_CONTEXT to make room), or set "
                         "LOCAL_LLM_THINK=off for faster, shorter answers.")
                 stuck = looping(content)
                 if stuck and attempt < RETRIES:

@@ -180,9 +180,10 @@ def test_thinking_setting_and_a_budget_spent_on_reasoning(monkeypatch):
     assert body_for(local_llm_api="openai", local_llm_think="on")["chat_template_kwargs"] == {"enable_thinking": True}
     with pytest.raises(ValueError, match="LOCAL_LLM_THINK"):
         LocalLLM(_local(local_llm_think="maybe"))
-    reasoned_out = FakeServer([("", "length", "eerst dit, dan dat, " * 200)])
-    with pytest.raises(LLMTruncated, match="reasoning before"):
+    reasoned_out = FakeServer([("", "length", "eerst dit, dan dat, " * 200)] * 2)
+    with pytest.raises(LLMTruncated, match="also after a retry without reasoning"):
         LocalLLM(_local(), transport=httpx.MockTransport(reasoned_out)).generate(_request())
+    assert reasoned_out.chats()[1]["think"] is False
 
     def refuses(request):
         return httpx.Response(400, json={"error": '"qwen2.5:0.5b" does not support thinking'})
@@ -212,7 +213,7 @@ def test_a_prompt_that_does_not_fit_is_refused_before_it_is_silently_truncated()
     llm = LocalLLM(_local(local_llm_context=4096), transport=httpx.MockTransport(server))
     with pytest.raises(LLMError, match=r"LOCAL_LLM_CONTEXT=\d+"):
         llm.generate(_request(user="woord " * 4000))
-    assert server.requests == []  # nothing was sent
+    assert server.chats() == []  # the prompt was not sent (only the capability lookup was)
 
 
 def test_release_unloads_and_check_finds_missing_models():
@@ -356,3 +357,17 @@ def test_extraction_answers_directly_on_a_reasoning_model_and_the_rest_keeps_rea
     server = FakeServer([('{"verdict": "ok", "score": 1}', "stop")])  # can't reason: nothing is sent
     LocalLLM(_local(), transport=httpx.MockTransport(server)).generate(_request(task="plan_section"))
     assert "think" not in server.chats()[0]
+
+
+def test_a_reasoning_call_gets_the_full_budget_and_falls_back_to_answering_directly():
+    server = FakeServer([("", "length", "nadenken " * 500), ('{"verdict": "ok", "score": 2}', "stop")],
+                        capabilities=("completion", "thinking"))
+    llm = LocalLLM(_local(), transport=httpx.MockTransport(server))
+    assert llm.generate(_request(task="lint", max_tokens=6000)) == Answer(verdict="ok", score=2)
+    first, second = server.chats()
+    assert first["options"]["num_predict"] == 16384 and "think" not in first  # 6000 was sized for Claude's answer
+    assert second["think"] is False
+
+    plain = FakeServer([('{"verdict": "ok", "score": 2}', "stop")])  # no reasoning: the request's own limit holds
+    LocalLLM(_local(), transport=httpx.MockTransport(plain)).generate(_request(task="lint", max_tokens=6000))
+    assert plain.chats()[0]["options"]["num_predict"] == 6000
