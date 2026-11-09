@@ -60,7 +60,7 @@ def render_with_takes(
     verify = transcriber is not None and not synth.deterministic
     if synth.deterministic:
         n_takes = 1
-    # the checkpoint tag ("" for piper/null) keeps a checkpoint switch from handing back
+    # the checkpoint tag ("" for null) keeps a checkpoint switch from handing back
     # the other checkpoint's cached takes: same text and seed, different weights
     tag = getattr(synth, "cache_tag", "")
     params = (f"n={n_takes};wer={wer_threshold};cps={cps:.1f};verify={verify};"
@@ -108,8 +108,8 @@ def render_with_takes(
             cache.put(key, clip, meta)
         if verify and transcript is None:
             # A transcriber that raises (rather than returning None on a known failure, as
-            # FasterWhisperTranscriber/MlxWhisperTranscriber now do) must still not take the
-            # whole render down: fall back to unverified for the rest of this turn.
+            # FasterWhisperTranscriber does) must still not take the whole render down: fall
+            # back to unverified for the rest of this turn.
             try:
                 transcript = transcriber.transcribe(clip)  # type: ignore[union-attr]
             except Exception as exc:  # noqa: BLE001
@@ -117,8 +117,7 @@ def render_with_takes(
                 verify = False
                 transcript = None
             else:
-                extra = {"asr_words": clip.meta["asr_words"]} if clip.meta.get("asr_words") else {}
-                cache.update_meta(key, transcript=transcript, **extra)
+                cache.update_meta(key, transcript=transcript)
         rate = word_error_rate(text, transcript, glossary) if verify and transcript is not None else None
         accepted = True if rate is None else rate <= wer_threshold
         record = TakeRecord(seed=seed, exaggeration=exag, path=str(cache.path(key)), duration_s=clip.duration_s,

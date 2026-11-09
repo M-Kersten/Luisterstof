@@ -88,16 +88,6 @@ def text_block(text: str) -> dict[str, Any]:
     return {"type": "text", "text": text}
 
 
-def image_block(data_b64: str, media_type: str = "image/png") -> dict[str, Any]:
-    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data_b64}}
-
-
-def _as_blocks(content: ContentBlocks) -> list[dict[str, Any]]:
-    if isinstance(content, str):
-        return [text_block(content)]
-    return [text_block(b) if isinstance(b, str) else dict(b) for b in content]
-
-
 # ---------------------------------------------------------------------------
 # prompt and answer helpers, shared by the OpenCode backend
 # ---------------------------------------------------------------------------
@@ -135,16 +125,17 @@ def estimate_tokens(text: str) -> int:
     return int(len(text) / CHARS_PER_TOKEN) + 1
 
 
-def _text_and_images(content: ContentBlocks) -> tuple[str, list[tuple[str, str]]]:
+def content_text(content: ContentBlocks) -> str:
+    """The prompt text of a request: content blocks are text blocks, joined in order."""
     texts: list[str] = []
-    images: list[tuple[str, str]] = []
-    for block in _as_blocks(content):
-        if block.get("type") == "image":
-            source = block.get("source", {})
-            images.append((source.get("media_type", "image/png"), source.get("data", "")))
+    blocks = [text_block(content)] if isinstance(content, str) else content
+    for block in blocks:
+        if isinstance(block, str):
+            if block:
+                texts.append(block)
         elif block.get("type") == "text" and block.get("text"):
             texts.append(block["text"])
-    return "\n\n".join(texts), images
+    return "\n\n".join(texts)
 
 
 def looping(text: str, window: int = 2500, repeats: int = 6) -> bool:

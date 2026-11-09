@@ -7,7 +7,7 @@ import pytest
 
 from pipeline.config import QUALITY_PASSES, Settings
 from pipeline.models import AuditIssue, AuditResult
-from pipeline.plan.content_plan import plan_chapter
+from pipeline.plan.thorough import plan_chapter_thorough
 from pipeline.runner import Pipeline
 from pipeline.script.writer import FLAT_SEGMENT_TARGETS, Writer, naturalness_issues
 
@@ -72,7 +72,7 @@ def test_naturalness_issues_only_the_shape_rules():
 
 
 def test_flat_script_without_quality_mode_is_left_alone(book, fake_llm, cast, settings):
-    plan = plan_chapter(book, "ch01", fake_llm, cast)
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
     writer = Writer(fake_llm, cast, settings)
     script = writer.write(plan, book, None)
     audit = _warning_audit("too_few_overlaps")
@@ -82,7 +82,7 @@ def test_flat_script_without_quality_mode_is_left_alone(book, fake_llm, cast, se
 
 
 def test_quality_mode_hands_flat_segments_to_the_writer(book, fake_llm, cast, settings):
-    plan = plan_chapter(book, "ch01", fake_llm, cast)
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
     writer = Writer(fake_llm, cast, settings.with_quality())
     script = writer.write(plan, book, None)
     audit = _warning_audit("too_few_overlaps")  # episode-wide: nobody owns it, the flattest segments do

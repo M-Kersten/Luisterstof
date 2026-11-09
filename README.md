@@ -13,8 +13,7 @@ upload PDF
   -> lexicon           glossary.json      loanwords, notation, abbreviations, resolved before render
   -> script            chXX.script.json   cold open, recap, body blocks, guest, "wacht opnieuw", quiz, outro
   -> audit             chXX.audit.json    support (LLM), coverage, lint; blocking issues gate the render
-  -> piper draft       out/chXX.draft.mp3 seconds, free, for a first listen
-  === APPROVAL GATE ===
+  === APPROVAL GATE (read the script and the audit) ===
   -> chatterbox render out/chXX.mp3       take selection, WhisperX alignment, timeline assembly, mix
 ```
 
@@ -30,15 +29,14 @@ uv pip install -e ".[dev]"
 cp .env.example .env        # everything has a default; see OpenCode below
 ```
 
-Local synthesis is a separate install because torch is large and platform-specific. Pick one:
+Local synthesis is a separate install because torch is large and platform-specific:
 
 ```bash
 uv pip install -e ".[cuda]" --no-build-isolation-package pkuseg    # 24GB GPU box
-uv pip install -e ".[mac]" --no-build-isolation-package pkuseg     # Apple Silicon
 studiepodcast doctor           # shows the platform profile and what is installed
 ```
 
-`--no-build-isolation-package pkuseg` works around a real bug in `pkuseg` (a `chatterbox-tts` dependency, used for Chinese text segmentation): its `setup.py` calls `numpy.get_include()` without declaring numpy as a build dependency, which breaks under the isolated build environment `uv` (and modern `pip`) uses by default. The flag builds that one package against the venv's own packages instead of a throwaway one, so numpy — already installed by the `.[dev]` step above — is visible to it. If you're on plain `pip` instead of `uv`, run `pip install --no-build-isolation "pkuseg==0.0.25"` once first, then the normal `pip install -e ".[mac]"`.
+`--no-build-isolation-package pkuseg` works around a real bug in `pkuseg` (a `chatterbox-tts` dependency, used for Chinese text segmentation): its `setup.py` calls `numpy.get_include()` without declaring numpy as a build dependency, which breaks under the isolated build environment `uv` (and modern `pip`) uses by default. The flag builds that one package against the venv's own packages instead of a throwaway one, so numpy — already installed by the `.[dev]` step above — is visible to it. If you're on plain `pip` instead of `uv`, run `pip install --no-build-isolation "pkuseg==0.0.25"` once first, then the normal `pip install -e ".[cuda]"`.
 
 ### Troubleshooting: chatterbox crashes with `'NoneType' object is not callable` in `perth`
 
@@ -49,20 +47,6 @@ python -c "from perth.perth_net.perth_net_implicit.perth_watermarker import Pert
 ```
 
 That raises the actual missing or broken import. Reinstall exactly that package (pin the version `chatterbox-tts` wants if it's `torch` or `torchaudio`, e.g. `uv pip install torch==2.6.0 torchaudio==2.6.0`), then retry.
-
-Piper voices go under `PIPER_VOICES_DIR` (default `~/.local/share/piper/voices`) as `<name>.onnx` plus `<name>.onnx.json`. The draft voices named in `cast/hosts.yaml` are `nl_NL-mls-medium` and `nl_NL-pim-medium`.
-
-### Apple Silicon (M3 Pro, 18 GB)
-
-The defaults switch when the machine is an M-series Mac, so nothing needs to be set by hand. What changes:
-
-- Chatterbox runs on Metal (`STUDIEPODCAST_DEVICE=mps`) with one worker instead of three. The multilingual model takes a few GB of unified memory; three copies would not fit next to Whisper and the OS. Expect roughly real time per take, so a 25-minute episode at three takes per turn is an hour or two of rendering. It is unattended, and the cache means a re-render after editing a few lines takes minutes.
-- Verification uses MLX Whisper (`WHISPER_BACKEND=mlx`, model `mlx-community/whisper-large-v3-turbo`) on the GPU. faster-whisper only has a CPU path on Apple Silicon and would take longer than the synthesis it checks. MLX Whisper returns word timestamps in the same pass, so the accepted take's timestamps are matched onto the script and WhisperX is not needed.
-- Piper runs on the CPU everywhere and is unchanged.
-
-The first thing to lower on a laptop is the take count: `STUDIEPODCAST_TAKES=2` cuts render time by a third at the cost of a few more flagged turns. If Metal lacks an op, PyTorch falls back to the CPU for that op automatically (`PYTORCH_ENABLE_MPS_FALLBACK` is set by the adapter). `studiepodcast doctor` prints the resolved profile, whether torch sees MPS, which packages import, and whether the reference clips and Piper voices are in place.
-
-An Intel Mac works the same way on the CPU, just slowly; set `STUDIEPODCAST_DEVICE=cpu` and `WHISPER_BACKEND=faster` there.
 
 ### Dry run without any keys or models
 
@@ -110,15 +94,11 @@ What this means in practice:
   whose quote still isn't there is dropped with a warning. A chapter pass then picks and merges the
   claims by candidate id, so quotes are never rewritten, and writes the summary and learning
   objectives. `STUDIEPODCAST_PLAN_REVIEW_ROUNDS` (default 1) review rounds add what's missing and
-  remove what's double. `STUDIEPODCAST_PLAN_MODE=single` collapses a chapter into one call per
-  artifact if you want the cheap-and-quick version. `studiepodcast plan <book> <chapter> --compare`
-  makes the plan both ways and writes `plans/<chapter>.plan-compare.md`: sections covered, how many
-  quotes are literally in the source, claims per section, and both plans in full. The lexicon reads
-  the same parts.
-- **Figure captions are skipped.** The text endpoint takes text only, so the pipeline asks before
-  sending a picture and goes without one. Nothing else changes; the same schema validation, repair
-  round and repetition guard protect every answer. A model that gets stuck repeating itself gets
-  one retry, then an error that says so, rather than "raise the limit".
+  remove what's double. The lexicon reads the same parts.
+- **Figures travel as their caption text.** The endpoint is text-only and always will be: prompts
+  are plain text and a picture is never sent. Nothing else changes; the same schema validation,
+  repair round and repetition guard protect every answer. A model that gets stuck repeating itself
+  gets one retry, then an error that says so, rather than "raise the limit".
 - **A long chapter takes minutes per call**, so `OPENCODE_TIMEOUT` defaults to 1800 seconds. Lower
   it if you want a stalled server noticed sooner. The endpoint does not stream, so a Stop ends the
   job once the call in flight gets its answer; everything saved before it stays.
@@ -159,7 +139,7 @@ the model call in flight gets its answer.
 
 ### Keeping book content on your machine
 
-The audio side (Chatterbox, Whisper, Piper) is always local. For the text side, honesty matters:
+The audio side (Chatterbox, faster-whisper, WhisperX) is always local. For the text side, honesty matters:
 the OpenCode *server* runs on your machine, but if the model OpenCode is configured with is a
 hosted one, your book text goes to that provider. For confidential material, point OpenCode at a
 local model and run with `STUDIEPODCAST_OFFLINE=1`.
@@ -208,7 +188,7 @@ Both are per-host settings in `cast/hosts.yaml` (and per-guest in `guests.yaml`)
 studiepodcast ingest boek.pdf --book-id statistiek1 [--method auto|fonts|toc|llm]
 ```
 
-Chapter detection tries font-size heuristics, then the PDF's bookmark TOC, then the model on the first pages. Figures keep the caption text that is next to them; a vision description is added only when the model reports it can read images, which the OpenCode text endpoint cannot, so it is skipped (`--no-captions` skips the question too). Tables are spelled out as sentences. Check the chapter boundaries in `data/books/statistiek1/book.json` before going on.
+Chapter detection tries font-size heuristics, then the PDF's bookmark TOC, then the model on the first pages. Figures keep the caption text that is next to them; there is no vision pass, the endpoint is text-only. Tables are spelled out as sentences. Check the chapter boundaries in `data/books/statistiek1/book.json` before going on.
 
 **M2 Content plan and lexicon** for one chapter, then verify the claims by hand:
 
@@ -228,13 +208,9 @@ studiepodcast audit statistiek1 ch03      # re-audit after editing the script js
 
 Target: coverage 100% on `exam_relevance >= 3`, zero lint hits, zero unsupported claims. Blocking issues are listed with line ids.
 
-**M4 Piper draft.** First listen. Expect to rewrite `cast/hosts.yaml` here.
+**M4 Human check.** Read the script and the audit output. Expect to rewrite `cast/hosts.yaml` here.
 
-```bash
-studiepodcast draft statistiek1 ch03
-```
-
-**M5 Chatterbox render.** Approve the script revision you listened to, then commit the GPU minutes:
+**M5 Chatterbox render.** Approve the script revision you checked, then commit the GPU minutes:
 
 ```bash
 studiepodcast approve statistiek1 ch03
@@ -246,7 +222,7 @@ Per speaker turn: cache lookup, three takes with seed and exaggeration jitter, f
 **M6 Whole book.**
 
 ```bash
-studiepodcast run statistiek1 --upto draft        # every chapter up to the approval gate
+studiepodcast run statistiek1                     # every chapter up to the approval gate
 studiepodcast continuity                           # what the writer sees from earlier episodes
 ```
 
@@ -258,11 +234,13 @@ studiepodcast continuity                           # what the writer sees from e
 studiepodcast serve            # http://127.0.0.1:8000
 ```
 
+Or double-click `start-app.bat`: it checks that the OpenCode server is reachable, starts the app and opens your browser.
+
 Upload a PDF, watch the stages stream over SSE, browse and download every artifact, edit the script line by line (text, speaker, tags, covers, overlap, pause), re-audit, approve and render. Saving a script bumps its revision and clears the approval, so an edited script is always re-audited before it renders. The "grondig" checkbox (on upload and next to the stage buttons) runs just that job in quality mode, hours-per-chapter thoroughness included, without changing the server's own settings.
 
 While a job runs, a panel at the top shows the stage, a progress bar and the time left. The bar counts plan parts, script segments, audit segments or rendered turns; the line under it adds the chapter step and the tokens the model has written so far. **Stop** ends the job at the next checkpoint: the next take of a render, the next step, or, in a stage that makes several model calls, the next call. The OpenCode endpoint does not stream, so a call already in flight gets its answer first and nothing after it runs. What was saved before the stop stays; the interrupted stage starts over when you run it again. A reloaded page picks up running jobs.
 
-API summary: `POST /api/books` (upload, `quality=true` for thorough), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|draft|render|all", "quality": false}`, `POST .../approve`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`. `GET /api/health` reports the model, the plan mode and the writing passes in effect.
+API summary: `POST /api/books` (upload, `quality=true` to run it in quality mode), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|render|all", "quality": false}`, `POST .../approve`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`. `GET /api/health` reports the model and the writing passes in effect.
 
 ## The cast
 
@@ -347,22 +325,22 @@ How the parts work:
 - **Reaction bank.** Chatterbox Multilingual has no `[laugh]` tags, and one-word generations are unreliable. Laughs, sighs and short reactions come from `cast/reactions/<speaker>/<label>/*.wav`. Generate candidates, keep the good ones, or drop in real recordings. A label with an empty bank folder falls back to synthesis and the report says so.
 - **Shared acoustics** (`cast/acoustics.yaml`). A partial per-speaker EQ correction toward the shared average spectrum removes chain differences without matching the timbres. Manual `eq:` bands per host go on top, e.g. `eq: [{freq_hz: 300, gain_db: -2, q: 1.0}]`. Then the same high-pass and presence profile for everyone, one compressor and one small room on the dialogue bus.
 
-Alignment cache: an alignment that was estimated is no longer reused from cache. It is retried on the next render, so after fixing WhisperX/MLX Whisper those turns get real word timing without clearing anything.
+Alignment cache: an alignment that was estimated is no longer reused from cache. It is retried on the next render, so after fixing a broken WhisperX install those turns get real word timing without clearing anything.
 
 ### Locating and verifying voice quality problems
 
-Every rendered turn is judged twice and both judgements are recorded in the render manifest: faster-whisper (or MLX Whisper) re-transcribes the chosen take and scores it against the script text (WER), and a forced aligner places every word in time for the timeline logic to cut on. Neither step crashes the render when it fails, an unreachable transcriber or a broken CUDA/cuDNN install degrades to "accept unverified" or "estimate word positions evenly", by design, so a bad machine still finishes a render. That also means a render can complete and sound wrong without ever raising an error. Three ways to see what actually happened, from least to most detail:
+Every rendered turn is judged twice and both judgements are recorded in the render manifest: faster-whisper re-transcribes the chosen take and scores it against the script text (WER), and WhisperX places every word in time for the timeline logic to cut on. Neither step crashes the render when it fails, an unreachable transcriber or a broken CUDA/cuDNN install degrades to "accept unverified" or "estimate word positions evenly", by design, so a bad machine still finishes a render. That also means a render can complete and sound wrong without ever raising an error. Three ways to see what actually happened, from least to most detail:
 
 ```bash
 studiepodcast render <book> <chapter>          # prints a verification/alignment summary after rendering
 studiepodcast inspect <book> <chapter>          # every turn: WER, take path, flags, alignment method
 studiepodcast inspect <book> <chapter> --only-suspect   # only the turns worth listening to first
-studiepodcast doctor                            # is whisperx/faster-whisper/mlx_whisper actually importing?
+studiepodcast doctor                            # is whisperx/faster-whisper actually importing?
 ```
 
 The web UI shows the same summary (verified turns, alignment fallback count) in the Audio tab, and `GET /api/books/{id}/chapters/{ch}` returns it as `manifest_quality`.
 
-**Abrupt cutoffs mid-sentence.** This is very likely `inspect` reporting turns with "geschatte uitlijning" (estimated alignment). When the real forced aligner (WhisperX on CUDA, MLX Whisper on Apple Silicon) is not actually working, every interrupt cut-point and backchannel insertion falls back to word positions spaced evenly across the clip's duration, not where the words were actually spoken. A cut that lands mid-word sounds exactly like a clipped sentence. Run `doctor` first, on the machine with the cuDNN/ctranslate2 mismatch this is the same root cause as the missing `cudnn_ops_infer64_8.dll` error above: `pip install --upgrade ctranslate2`, then re-render and check `inspect` again for the fallback count to drop to zero.
+**Abrupt cutoffs mid-sentence.** This is very likely `inspect` reporting turns with "geschatte uitlijning" (estimated alignment). When the real forced aligner (WhisperX on CUDA) is not actually working, every interrupt cut-point and backchannel insertion falls back to word positions spaced evenly across the clip's duration, not where the words were actually spoken. A cut that lands mid-word sounds exactly like a clipped sentence. Run `doctor` first, on the machine with the cuDNN/ctranslate2 mismatch this is the same root cause as the missing `cudnn_ops_infer64_8.dll` error above: `pip install --upgrade ctranslate2`, then re-render and check `inspect` again for the fallback count to drop to zero.
 
 **Background noise, rustling ("gerritsel").** Chatterbox clones the reference clip, including its recording conditions; this is a named pitfall in `PLAN.md`, not a synthesis bug, so no render setting fixes it. Listen to `cast/refs/*.wav` directly. Any rustling, room tone, or mic handling noise there gets reproduced, often exaggerated, in every line cloned from it. Re-record 30 to 60 seconds in a quiet room, close to the mic, no fabric or paper handling, then re-run the M0 audition (`studiepodcast audition ...`) before trusting the new clip. There is no automated way to guarantee a clip is clean; audition and listen before freezing it.
 
@@ -374,19 +352,16 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 |---|---|---|
 | `STUDIEPODCAST_OFFLINE` | `0` | `1`: nothing leaves the local network (see above) |
 | `STUDIEPODCAST_QUALITY_MODE` | `0` | `1`: quality over speed (see above); raises the passes below and rewrites flat scripts |
-| `STUDIEPODCAST_PLAN_MODE`, `STUDIEPODCAST_PLAN_REVIEW_ROUNDS`, `STUDIEPODCAST_PLAN_PART_CHARS` | `thorough`, `1`, `8000` | How the content plan and lexicon are made; how much text one thorough call reads (`single` is the cheap-and-quick plan) |
+| `STUDIEPODCAST_PLAN_REVIEW_ROUNDS`, `STUDIEPODCAST_PLAN_PART_CHARS` | `1`, `8000` | How the content plan and lexicon are made; how much text one plan call reads |
 | `STUDIEPODCAST_REVISE_ROUNDS` | `1` | How often a script the audit blocks is rewritten before it is accepted as it is |
 | `OPENCODE_URL`, `OPENCODE_PASSWORD` | service.json, then the desktop app's log, then `http://127.0.0.1:4096` | OpenCode server (backend `opencode`) and its Basic-auth password |
 | `OPENCODE_MODEL` | `strata/strata` | `provider/id` (optionally `#variant`) as OpenCode lists them |
 | `OPENCODE_TIMEOUT` | `1800` | Seconds per OpenCode call; a long chapter takes minutes |
-| `PIPER_BIN`, `PIPER_VOICES_DIR` | `piper`, `~/.local/share/piper/voices` | Cheap draft listen |
-| `STUDIEPODCAST_DEVICE` | `cuda`, `mps` on Apple Silicon | Chatterbox device |
+| `STUDIEPODCAST_DEVICE` | `cuda` | Chatterbox device |
 | `CHATTERBOX_CKPT_DIR` | the Hugging Face cache | Use a local folder of Chatterbox V3 weights instead of downloading |
 | `HF_TOKEN` | | Only needed to fetch weights the first time, never for a render |
-| `CHATTERBOX_WORKERS` | `3`, `1` on Apple Silicon | Parallel model instances (a few GB each) |
-| `WHISPER_BACKEND` | `faster`, `mlx` on Apple Silicon | Verification and alignment backend |
+| `CHATTERBOX_WORKERS` | `3` | Parallel model instances (a few GB each) |
 | `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE` | `large-v3`, `int8` | faster-whisper model |
-| `MLX_WHISPER_MODEL` | `mlx-community/whisper-large-v3-turbo` | MLX Whisper model |
 | `STUDIEPODCAST_TAKES`, `STUDIEPODCAST_WER_THRESHOLD` | `3`, `0.05` | Take loop |
 | `STUDIEPODCAST_DATA_DIR`, `STUDIEPODCAST_CAST_DIR` | `data`, `cast` | Storage |
 
@@ -400,6 +375,6 @@ The suite runs the whole pipeline on a generated four-page study book with a fak
 
 ## What has not been exercised here
 
-The Piper, WhisperX and MLX Whisper adapters are written against their documented APIs but were not run in this environment (no Apple Silicon, no keys). M0 and M4 are where they get their first real test, which is also the point of them.
+The WhisperX adapter is written against its documented API but was not exercised in this environment (the installed whisperx cannot load under this torch version, so alignment runs on the uniform fallback here). M0 and M5 are where it gets its first real test, which is also the point of it.
 
-What *was* run here: Chatterbox V3 on a CUDA box rendering the shipped Dutch references, with faster-whisper scoring the takes (mean word error rate 0.033 on V3 against 0.042 on V2, which is why V3 is what loads), and the OpenCode backend against the real desktop server for `doctor`, a plan and a script. Script quality with your own model is still yours to judge: `studiepodcast plan <book> <chapter> --compare` and the audit output are the places to look first.
+What *was* run here: Chatterbox V3 on a CUDA box rendering the shipped Dutch references, with faster-whisper scoring the takes (mean word error rate 0.033 on V3 against 0.042 on V2, which is why V3 is what loads), and the OpenCode backend against the real desktop server for `doctor`, a plan and a script. Script quality with your own model is still yours to judge: the audit output and a quality-mode rewrite are the places to look first.

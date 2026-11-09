@@ -13,7 +13,6 @@ from statistics import mean
 from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
-from pipeline.llm import LLM, LLMRequest, text_block
 from pipeline.models import (
     Book,
     Cast,
@@ -78,34 +77,11 @@ class PlanOut(BaseModel):
     )
 
 
-PLAN_SYSTEM = """Je maakt het inhoudsplan voor één hoofdstuk van een Nederlands studieboek, als basis voor een studiepodcast.
-
-Dit plan bevat nul grappen en nul persoonlijkheid. Het is de feitelijke ruggengraat waar later een script op wordt geschreven. Wat hier fout is, wordt later met overtuiging fout verteld, dus werk uitsluitend vanuit de brontekst.
-
-Regels:
-- Elke bewering (key claim) is één zelfstandig leesbare zin die letterlijk uit de bron te herleiden is. Voeg geen kennis van buiten de bron toe.
-- Geef bij elke bewering en definitie een letterlijk citaat uit de opgegeven sectie (20 tot 300 tekens). Kopieer exact, inclusief getallen en leestekens. Verzin geen citaten.
-- Kies het aantal beweringen naar de lengte en dichtheid van het hoofdstuk: minimaal 6, maximaal 25, en dek elke sectie.
-- difficulty: 1 tot 5. exam_relevance: 1 tot 5, waarbij 5 zeker tentamenstof is.
-- Misvattingen zijn opvattingen die de tekst expliciet of impliciet weerlegt, plus waarom ze verleidelijk zijn.
-- Een gastexpert is nodig als het hoofdstuk een vakgebied raakt dat geen van de twee hosts geloofwaardig kan dragen. Anders expert_domain null.
-- Markeer secties met veel formules als formula_dense_sections.
-- Alles in het Nederlands.
-"""
-
-
 def _hosts_summary(cast: Cast | None) -> str:
     if cast is None or not cast.hosts:
         return "Geen castinformatie beschikbaar."
     parts = [f"- {h.name} ({h.role}): achtergrond: {h.background.strip()}" for h in cast.hosts]
     return "De hosts en hun achtergrond, om te bepalen of een gastexpert nodig is:\n" + "\n".join(parts)
-
-
-def chapter_source_text(chapter: Chapter) -> str:
-    parts = []
-    for s in chapter.sections:
-        parts.append(f"### Sectie {s.id}: {s.title}\n{s.text}")
-    return "\n\n".join(parts)
 
 
 def resolve_span(section_text: str, quote: str, min_score: float = 80.0) -> tuple[int, int, float] | None:
@@ -147,27 +123,6 @@ def _locate(chapter: Chapter, section_id: str, quote: str, warnings: list[str], 
 
 def _clamp(value: int, lo: int = 1, hi: int = 5) -> int:
     return max(lo, min(hi, int(value)))
-
-
-def plan_chapter(book: Book, chapter_id: str, llm: LLM, cast: Cast | None = None) -> ContentPlan:
-    chapter = book.chapter(chapter_id)
-    source = chapter_source_text(chapter)
-    section_list = "\n".join(f"- {s.id}: {s.title} ({len(s.text)} tekens)" for s in chapter.sections)
-    request = LLMRequest(
-        task="plan",
-        system=[
-            text_block(PLAN_SYSTEM + "\n" + _hosts_summary(cast)),
-            text_block(f"# Boek: {book.title}\n# Hoofdstuk {chapter.id}: {chapter.title}\n\n{source}"),
-        ],
-        user=(
-            f"Maak het inhoudsplan voor hoofdstuk {chapter.id} ({chapter.title}).\n"
-            f"Secties:\n{section_list}\n\nGebruik uitsluitend de sectie-ids hierboven."
-        ),
-        schema=PlanOut,
-    )
-    out = llm.generate(request)
-    assert isinstance(out, PlanOut)
-    return build_plan(chapter, out)
 
 
 def build_plan(chapter: Chapter, out: PlanOut) -> ContentPlan:

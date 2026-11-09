@@ -1,4 +1,4 @@
-"""Final tier: Chatterbox with take selection, WhisperX alignment, timeline assembly."""
+"""The render: Chatterbox with take selection, WhisperX alignment, timeline assembly."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def render_final(
     transcriber = transcriber or make_transcriber(settings, fake=fake)
     aligner = aligner or make_aligner(settings, fake=fake)
     try:
-        return render_episode(script, glossary, cast, settings, paths, tier="final", synth=synth,
+        return render_episode(script, glossary, cast, settings, paths, synth=synth,
                               transcriber=transcriber, aligner=aligner, on_event=on_event)
     finally:
         close = getattr(synth, "close", None)

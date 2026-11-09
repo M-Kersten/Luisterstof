@@ -62,8 +62,8 @@ def test_helpers():
     assert join_lines(["een ver-", "schil", "in tekst"]) == "een verschil in tekst"
     assert formula_density("z = (x - mu) / sigma") > formula_density("Een gewone zin zonder symbolen.")
     assert is_caption("Figuur 3.2: De verdeling") and is_caption("Tabel 1.1 Kansen") and not is_caption("De figuur toont")
-    assert figure_to_text("Figuur 1", "Een stijgende lijn.") == "[Figuur 1. Een stijgende lijn.]"
-    assert figure_to_text(None, None) == ""
+    assert figure_to_text("Figuur 1: Een stijgende lijn") == "[Figuur 1: Een stijgende lijn.]"
+    assert figure_to_text(None) == "" and figure_to_text("   ") == ""
     text = table_to_text([["a", "b"], ["1", "2"], [None, ""]], "Tabel 2.1: X")
     assert text.startswith("[Tabel 2.1: X.") and "Rij 1: a 1, b 2." in text
 

@@ -50,7 +50,7 @@ async function openBook(bookId) {
       : `<span class="badge bad" title="Open het hoofdstuk en kijk in het Audit-tab wat er mis is.">${ch.audit_blocking} blokkerend</span>`;
     tr.innerHTML = `<td>${ch.id} ${ch.title}<br><span class="muted">p${ch.pages[0]}-${ch.pages[1]}, ${ch.chars} tekens</span></td>
       <td>${badge(ch.plan)}</td><td>${ch.script ? `<span class="badge ok" title="Revisie ${ch.script_revision}: zo vaak is het script opgeslagen.">rev ${ch.script_revision}</span>` : badge(false)}</td>
-      <td>${audit}</td><td>${badge(ch.draft)}</td><td>${badge(ch.approved)}</td>
+      <td>${audit}</td><td>${badge(ch.approved)}</td>
       <td>${badge(ch.final)}${ch.flagged_turns ? ` <span class="badge warn" title="Beurten waarvan geen enkele opname het script goed genoeg volgde. Beluister ze in het Audio-tab.">${ch.flagged_turns} gevlagd</span>` : ""}</td>`;
     tr.onclick = () => openChapter(ch.id);
     tbody.appendChild(tr);
@@ -67,10 +67,10 @@ async function openChapter(chapterId) {
   $("#chapter-panel").hidden = false;
   $("#chapter-title").textContent = `${chapterId}: ${(data.plan && data.plan.chapter_title) || ""}`;
   $("#approve").disabled = !(data.audit && data.audit.passed) || data.approved;
-  $("#approve").textContent = data.approved ? "6 Goedgekeurd" : "6 Goedkeuren";
+  $("#approve").textContent = data.approved ? "5 Goedgekeurd" : "5 Goedkeuren";
   $("#approve").title = approveReason(data);
   $("#render").disabled = !data.approved;
-  $("#render").title = data.approved ? RENDER_TITLE : "Stap 7. Kan pas na je goedkeuring van deze scriptversie (stap 6). De render kost uren GPU-tijd, daarom eerst de draft beluisteren.";
+  $("#render").title = data.approved ? RENDER_TITLE : "Stap 6. Kan pas na je goedkeuring van deze scriptversie (stap 5). De render kost uren GPU-tijd, lees daarom eerst het script en de audit.";
   $("#next-step").innerHTML = nextStep(data);
   renderScript(data);
   renderAudit(data);
@@ -90,13 +90,13 @@ function auditState(data) {
 }
 
 function approveReason(data) {
-  if (data.approved) return `Stap 6. Revisie ${data.script.revision} is goedgekeurd. Sla je het script opnieuw op, dan vervalt dit.`;
-  if (!data.script) return "Stap 6. Er is nog geen script om goed te keuren.";
+  if (data.approved) return `Stap 5. Revisie ${data.script.revision} is goedgekeurd. Sla je het script opnieuw op, dan vervalt dit.`;
+  if (!data.script) return "Stap 5. Er is nog geen script om goed te keuren.";
   const a = auditState(data);
-  if (a === "blocked") return "Stap 6. Kan nog niet: de audit vond blokkerende problemen. Los ze op in het Script-tab, sla op en draai Audit opnieuw.";
-  if (!data.audit) return "Stap 6. Kan nog niet: draai eerst de Audit.";
-  if (a === "stale") return "Stap 6. De audit hoort bij een oudere revisie. Goedkeuren draait de audit eerst opnieuw op deze versie.";
-  return "Stap 6. Jouw akkoord op deze scriptversie. Luister eerst de Piper-draft; daarna mag de Chatterbox-render.";
+  if (a === "blocked") return "Stap 5. Kan nog niet: de audit vond blokkerende problemen. Los ze op in het Script-tab, sla op en draai Audit opnieuw.";
+  if (!data.audit) return "Stap 5. Kan nog niet: draai eerst de Audit.";
+  if (a === "stale") return "Stap 5. De audit hoort bij een oudere revisie. Goedkeuren draait de audit eerst opnieuw op deze versie.";
+  return "Stap 5. Jouw akkoord op deze scriptversie. Lees eerst het script en de audit; daarna mag de Chatterbox-render.";
 }
 
 function nextStep(data) {
@@ -109,9 +109,8 @@ function nextStep(data) {
     const n = data.audit.issues.filter(i => i.severity === "blocking").length;
     return step(`${n} blokkerend${n === 1 ? " probleem" : "e problemen"} oplossen. Zie het Audit-tab, pas de regels aan in het Script-tab, sla op en draai <b>4 Audit</b>. Of laat <b>3 Script</b> alles opnieuw schrijven.`);
   }
-  if (!data.draft.audio) return step("<b>5 Piper draft</b> en beluister hem in het Audio-tab.");
-  if (!data.approved) return step("beluister de draft in het Audio-tab. Klopt de inhoud, klik dan <b>6 Goedkeuren</b>.");
-  if (!data.final.audio) return step("<b>7 Chatterbox render</b>. Dit duurt uren; de voortgang staat in de log.");
+  if (!data.approved) return step("lees het script in het Script-tab en de bevindingen in het Audit-tab. Klopt de inhoud, klik dan <b>5 Goedkeuren</b>.");
+  if (!data.final.audio) return step("<b>6 Chatterbox render</b>. Dit duurt uren; de voortgang staat in de log.");
   const flagged = data.manifest ? data.manifest.turns.filter(t => t.flagged).length : 0;
   return flagged
     ? step(`de aflevering is klaar. Beluister de ${flagged} gevlagde beurten in het Audio-tab.`)
@@ -216,7 +215,6 @@ function scoreTitle(score) {
 
 function renderAudio(data) {
   const player = (url) => url ? `<audio controls src="${url}"></audio> <a href="${url}" download>download</a>` : '<span class="muted">nog niet gerenderd</span>';
-  $("#draft-audio").innerHTML = player(data.draft.audio);
   $("#final-audio").innerHTML = player(data.final.audio);
   const q = data.manifest_quality;
   const qualityEl = $("#audio-quality");
@@ -279,7 +277,7 @@ async function loadJobs() {
 }
 
 const STAGES = { ingest: "Inlezen", pipeline: "Boek verwerken", plan: "Plan", glossary: "Lexicon", script: "Script",
-  audit: "Audit", continuity: "Continuïteit", draft: "Piper draft", render: "Chatterbox render",
+  audit: "Audit", continuity: "Continuïteit", render: "Chatterbox render",
   approve: "Goedkeuren", all: "Hoofdstuk", book: "Boek", run: "Hoofdstuk" };
 // Events that announce the step about to start; "turn" reports a finished one.
 const DONE_KINDS = new Set(["turn"]);
@@ -482,7 +480,7 @@ function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":
     const h = await api.get("/api/health");
     const where = `OpenCode (${h.model}): het schrijfmodel draait op deze machine` +
       (h.offline ? ", offline: niets verlaat het netwerk" : "");
-    const plan = h.plan_mode === "thorough" ? "plan per sectie (grondig)" : "plan in één keer";
+    const plan = "plan per sectie (grondig)";
     const fake = [h.fake_llm && "nep-LLM", h.fake_audio && "nep-audio"].filter(Boolean);
     const p = h.writing_passes || {};
     const passes = h.quality_mode

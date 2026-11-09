@@ -145,7 +145,7 @@ def run_prototype(pipeline, book_id: str, chapter_id: str, *, synth=None, transc
     try:
         for name, options in (variants or VARIANTS).items():
             variant = (as_current(scene) if options is None else scene).model_copy(update={"episode_id": f"{episode}-{name}"})
-            audio, _, manifest = render_episode(variant, glossary, cast, settings, paths, tier="final", synth=synth,
+            audio, _, manifest = render_episode(variant, glossary, cast, settings, paths, synth=synth,
                                                 transcriber=transcriber, aligner=aligner, performance=options,
                                                 on_event=lambda kind, data, n=name: pipeline.emit("prototype", kind, variant=n, **data))
             target = out_dir / f"scene_{name}{audio.suffix}"

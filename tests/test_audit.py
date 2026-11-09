@@ -1,6 +1,6 @@
 from pipeline.llm import FakeLLM
 from pipeline.models import Glossary, LexiconEntry, Line, Overlap, Script, Segment
-from pipeline.plan.content_plan import plan_chapter
+from pipeline.plan.thorough import plan_chapter_thorough
 from pipeline.script.audit import audit_script, check_coverage, check_structure, lint_rules
 from pipeline.script.writer import Writer
 
@@ -129,7 +129,7 @@ def test_structure_checks(cast):
 
 
 def test_coverage(book, fake_llm, cast):
-    plan = plan_chapter(book, "ch01", fake_llm, cast)
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
     required = [c.id for c in plan.claims_with_relevance(3)]
     s = _script([Line(id="l001", speaker="tessa", text="x", covers=[required[0], "c99"])])
     issues, report = check_coverage(s, plan)
@@ -139,7 +139,7 @@ def test_coverage(book, fake_llm, cast):
 
 
 def test_full_audit_with_llm_checks(book, fake_llm, cast, banned, settings):
-    plan = plan_chapter(book, "ch01", fake_llm, cast)
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
     script = Writer(fake_llm, cast, settings).write(plan, book, None)
     result = audit_script(script, plan, book, cast, banned, settings, llm=fake_llm)
     assert result.passed and result.support.checked > 0 and not result.coverage.missing

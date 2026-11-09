@@ -71,10 +71,6 @@ class BookPaths:
     def out_dir(self) -> Path:
         return self.root / "out"
 
-    @property
-    def figures_dir(self) -> Path:
-        return self.root / "figures"
-
     # Chapter level ------------------------------------------------------
     def plan(self, chapter_id: str) -> Path:
         return self.plans_dir / f"{validate_id(chapter_id, 'chapter_id')}.plan.json"
@@ -94,16 +90,14 @@ class BookPaths:
     def lines_dir(self, chapter_id: str) -> Path:
         return self.render_chapter(chapter_id) / "lines"
 
-    def manifest(self, chapter_id: str, tier: str) -> Path:
-        return self.render_chapter(chapter_id) / f"{tier}.manifest.json"
+    def manifest(self, chapter_id: str) -> Path:
+        return self.render_chapter(chapter_id) / "final.manifest.json"
 
-    def out_audio(self, chapter_id: str, tier: str = "final") -> Path:
-        suffix = ".mp3" if tier == "final" else f".{tier}.mp3"
-        return self.out_dir / f"{validate_id(chapter_id, 'chapter_id')}{suffix}"
+    def out_audio(self, chapter_id: str) -> Path:
+        return self.out_dir / f"{validate_id(chapter_id, 'chapter_id')}.mp3"
 
-    def transcript(self, chapter_id: str, tier: str = "final") -> Path:
-        suffix = ".transcript.json" if tier == "final" else f".{tier}.transcript.json"
-        return self.out_dir / f"{validate_id(chapter_id, 'chapter_id')}{suffix}"
+    def transcript(self, chapter_id: str) -> Path:
+        return self.out_dir / f"{validate_id(chapter_id, 'chapter_id')}.transcript.json"
 
     def approval(self, chapter_id: str) -> Path:
         return self.audits_dir / f"{validate_id(chapter_id, 'chapter_id')}.approved.json"
@@ -111,7 +105,7 @@ class BookPaths:
     # Helpers ------------------------------------------------------------
     def ensure(self) -> BookPaths:
         for d in (self.root, self.plans_dir, self.scripts_dir, self.audits_dir, self.render_dir,
-                  self.cache_dir, self.out_dir, self.figures_dir):
+                  self.cache_dir, self.out_dir):
             d.mkdir(parents=True, exist_ok=True)
         return self
 

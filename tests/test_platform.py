@@ -1,37 +1,29 @@
-"""Platform profile, MLX backend plumbing and token-to-timing matching."""
+"""Settings defaults, backend selection and token-to-timing matching."""
 
 import numpy as np
 
-from pipeline import config
 from pipeline.audio.asr import (
     EchoTranscriber,
-    MlxWhisperAligner,
-    MlxWhisperTranscriber,
+    FasterWhisperTranscriber,
     UniformAligner,
     WhisperXAligner,
     WordTiming,
-    asr_words_from_meta,
     make_aligner,
     make_transcriber,
     match_words_to_text,
     tokenize,
 )
 from pipeline.audio.cache import RenderCache
-from pipeline.audio.synth import AudioClip, NullSynth, VoiceSpec
-from pipeline.audio.takes import render_with_takes
+from pipeline.audio.synth import AudioClip
 from pipeline.config import Settings
 
 
-def test_defaults_follow_platform(monkeypatch):
-    monkeypatch.setattr(config, "apple_silicon", lambda: True)
-    for var in ("STUDIEPODCAST_DEVICE", "CHATTERBOX_WORKERS", "WHISPER_BACKEND", "STUDIEPODCAST_TAKES"):
+def test_defaults_and_env_overrides(monkeypatch):
+    for var in ("STUDIEPODCAST_DEVICE", "CHATTERBOX_WORKERS", "STUDIEPODCAST_TAKES", "WHISPER_MODEL"):
         monkeypatch.delenv(var, raising=False)
-    mac = Settings.from_env(dotenv=None)
-    assert (mac.device, mac.chatterbox_workers, mac.whisper_backend) == ("mps", 1, "mlx")
-    assert mac.profile()["whisper_model"] == "mlx-community/whisper-large-v3-turbo"
-    monkeypatch.setattr(config, "apple_silicon", lambda: False)
-    linux = Settings.from_env(dotenv=None)
-    assert (linux.device, linux.chatterbox_workers, linux.whisper_backend) == ("cuda", 3, "faster")
+    default = Settings.from_env(dotenv=None)
+    assert (default.device, default.chatterbox_workers) == ("cuda", 3)
+    assert default.profile()["whisper_model"] == "large-v3"
     monkeypatch.setenv("STUDIEPODCAST_TAKES", "2")
     monkeypatch.setenv("STUDIEPODCAST_DEVICE", "cpu")
     custom = Settings.from_env(dotenv=None)
@@ -39,12 +31,13 @@ def test_defaults_follow_platform(monkeypatch):
 
 
 def test_backend_selection():
-    mac = Settings(whisper_backend="mlx", device="mps")
-    assert isinstance(make_transcriber(mac), MlxWhisperTranscriber) and isinstance(make_aligner(mac), MlxWhisperAligner)
-    cuda = Settings(whisper_backend="faster", device="cuda")
+    cuda = Settings(device="cuda")
+    assert isinstance(make_transcriber(cuda), FasterWhisperTranscriber)
     assert isinstance(make_aligner(cuda), WhisperXAligner) and make_aligner(cuda).device == "cuda"
-    assert WhisperXAligner(Settings(device="mps")).device == "cpu"
-    assert isinstance(make_transcriber(mac, fake=True), EchoTranscriber) and isinstance(make_aligner(mac, fake=True), UniformAligner)
+    # wav2vec2 alignment only pays off on CUDA; everything else runs on cpu
+    assert WhisperXAligner(Settings(device="cpu")).device == "cpu"
+    assert isinstance(make_transcriber(cuda, fake=True), EchoTranscriber)
+    assert isinstance(make_aligner(cuda, fake=True), UniformAligner)
 
 
 def test_match_words_to_text_uses_asr_times_and_interpolates_the_rest():
@@ -68,44 +61,13 @@ def test_match_words_to_text_uses_asr_times_and_interpolates_the_rest():
     assert len(match_words_to_text(tokens, [], 2.0)) == len(tokens)
 
 
-def test_mlx_aligner_reads_meta_and_take_loop_persists_it(tmp_path):
-    clip = AudioClip(np.zeros(24000, dtype=np.float32), 24000, meta={"asr_words": [["hallo", 0.1, 0.4], ["wereld", 0.5, 0.9]]})
-    words = MlxWhisperAligner(Settings(whisper_backend="mlx")).align(clip, "Hallo wereld")
-    assert [(w.word, w.start) for w in words] == [("Hallo", 0.1), ("wereld", 0.5)]
-    assert asr_words_from_meta("nope") is None and asr_words_from_meta([["x", "a", 1]]) is None
-
-    class MetaTranscriber(EchoTranscriber):
-        def transcribe(self, clip, language="nl"):
-            text = super().transcribe(clip, language)
-            clip.meta["asr_words"] = [[w, i * 0.3, i * 0.3 + 0.2] for i, w in enumerate(text.split())]
-            return text
-
-    cache = RenderCache(tmp_path / "cache")
-    voice = VoiceSpec(speaker_id="tessa")
-    result = render_with_takes("dit is een test", voice, NullSynth(), cache, transcriber=MetaTranscriber(), exaggeration=0.5, n_takes=1)
-    cached, meta = cache.get(result.take_key)
-    assert meta["asr_words"][1][0] == "is" and cached.meta["asr_words"] == meta["asr_words"]
-    words = MlxWhisperAligner(Settings(whisper_backend="mlx")).align(cached, "dit is een test")
-    assert [round(w.start, 6) for w in words] == [0.0, 0.3, 0.6, 0.9]
-    # a clip without meta and without mlx installed falls back to uniform spacing
-    bare = AudioClip(np.zeros(24000, dtype=np.float32), 24000)
-    assert len(MlxWhisperAligner(Settings(whisper_backend="mlx")).align(bare, "een twee drie")) == 3
-
-
 def test_last_used_fallback_is_tracked_per_call():
     """The render loop reads this flag right after align() to report real-vs-estimated timing on the manifest."""
     assert UniformAligner.last_used_fallback is True  # by definition: always an estimate
 
-    mlx_aligner = MlxWhisperAligner(Settings(whisper_backend="mlx"))
-    with_meta = AudioClip(np.zeros(24000, dtype=np.float32), 24000, meta={"asr_words": [["hallo", 0.1, 0.4]]})
-    mlx_aligner.align(with_meta, "hallo")
-    assert mlx_aligner.last_used_fallback is False
-    without_meta = AudioClip(np.zeros(24000, dtype=np.float32), 24000)  # no mlx installed -> falls back
-    mlx_aligner.align(without_meta, "hallo")
-    assert mlx_aligner.last_used_fallback is True
-
     whisperx_aligner = WhisperXAligner(Settings(device="cpu"))  # whisperx not installed here -> falls back
-    whisperx_aligner.align(with_meta, "hallo")
+    clip = AudioClip(np.zeros(24000, dtype=np.float32), 24000)
+    whisperx_aligner.align(clip, "hallo")
     assert whisperx_aligner.last_used_fallback is True
 
 

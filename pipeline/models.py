@@ -445,7 +445,6 @@ class Host(Contract):
     id: str
     name: str
     role: Literal["explainer", "skeptic"]
-    voice_id_draft: str | None = None
     voice_ref: str | None = None  # path to frozen reference clip (relative to cast dir)
     background: str = ""
     strength: str = ""
@@ -467,7 +466,6 @@ class Guest(Contract):
     id: str
     name: str
     domains: list[str] = Field(default_factory=list)
-    voice_id_draft: str | None = None
     voice_ref: str | None = None
     persona: str = ""
     tics: list[str] = Field(default_factory=list)
@@ -566,7 +564,6 @@ class TurnRender(Contract):
 
 class RenderManifest(Contract):
     episode_id: str
-    tier: Literal["draft", "final"]
     synth: str
     turns: list[TurnRender] = Field(default_factory=list)
     acoustics: dict[str, dict[str, float]] = Field(default_factory=dict)  # prototype: per-speaker EQ correction applied
@@ -577,8 +574,8 @@ class RenderManifest(Contract):
 
     def verification_coverage(self) -> tuple[int, int]:
         """(verified, total) among turns with a chosen take. Meaningless for a deterministic
-        synth (Piper draft), which never runs WER verification by design regardless of whether
-        a transcriber is configured."""
+        synth (the null test stand-in), which never runs WER verification by design regardless
+        of whether a transcriber is configured."""
         with_take = [t for t in self.turns if t.chosen_take is not None and t.chosen_take.reason != "reaction bank"]
         verified = sum(1 for t in with_take if t.chosen_take.wer is not None)
         return verified, len(with_take)
@@ -614,7 +611,6 @@ class BlockSpan(Contract):
 
 class EpisodeTranscript(Contract):
     episode_id: str
-    tier: Literal["draft", "final"]
     duration_s: float
     lines: list[TranscriptLine] = Field(default_factory=list)
     blocks: list[BlockSpan] = Field(default_factory=list)

@@ -16,7 +16,7 @@ def test_untagged_line_picks_up_some_of_the_other_hosts_preceding_mood(settings,
         ]),
     ])
     paths = BookPaths(settings.data_dir, "demo").ensure()
-    _, _, manifest = render_episode(script, None, cast, settings, paths, tier="draft", synth=NullSynth(jitter=0.0),
+    _, _, manifest = render_episode(script, None, cast, settings, paths, synth=NullSynth(jitter=0.0),
                                     transcriber=None, aligner=None)
 
     tessa_take = manifest.turns[0].chosen_take
@@ -35,7 +35,7 @@ def test_first_turn_of_the_episode_has_no_predecessor_to_bleed_from(settings, ca
         Segment(type="cold_open", lines=[Line(id="l001", speaker="tessa", text="We beginnen bij het begin.")]),
     ])
     paths = BookPaths(settings.data_dir, "demo2").ensure()
-    _, _, manifest = render_episode(script, None, cast, settings, paths, tier="draft", synth=NullSynth(jitter=0.0),
+    _, _, manifest = render_episode(script, None, cast, settings, paths, synth=NullSynth(jitter=0.0),
                                     transcriber=None, aligner=None)
     tessa_host = next(h for h in cast.hosts if h.id == "tessa")
     assert manifest.turns[0].chosen_take.exaggeration == tessa_host.exaggeration

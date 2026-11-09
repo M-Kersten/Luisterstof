@@ -2,9 +2,9 @@
 
 Alongside the words, ``fallback`` records whether they came from real forced
 alignment or from UniformAligner's estimate, so that provenance survives a
-cache hit on a later render (without it, fixing a broken WhisperX/MLX
-install would silently keep reporting "aligned" for turns whose cached
-timing was actually only ever estimated).
+cache hit on a later render (without it, fixing a broken WhisperX install
+would silently keep reporting "aligned" for turns whose cached timing was
+actually only ever estimated).
 """
 
 from __future__ import annotations

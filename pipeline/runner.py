@@ -8,23 +8,19 @@ from __future__ import annotations
 
 import logging
 import shutil
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from pipeline.audio.render_draft import render_draft
 from pipeline.audio.render_final import render_final
-from pipeline.audio.synth import NullSynth, Synth
+from pipeline.audio.synth import Synth
 from pipeline.cancel import Cancelled
 from pipeline.config import Settings
-from pipeline.ingest.figures import LLMCaptioner
 from pipeline.ingest.run import ingest_book
 from pipeline.llm import LLM, make_llm
 from pipeline.models import Approval, AuditResult, Book, Cast, ContentPlan, Glossary, RenderManifest, Script
 from pipeline.paths import BookPaths, list_books
-from pipeline.plan.content_plan import plan_chapter
-from pipeline.plan.glossary import load_or_create_glossary, propose_lexicon
+from pipeline.plan.glossary import load_or_create_glossary
 from pipeline.script.audit import audit_script
 from pipeline.script.cast import append_continuity, load_banned, load_cast, load_continuity
 from pipeline.script.continuity import extract_continuity
@@ -33,10 +29,6 @@ from pipeline.script.writer import Writer, naturalness_issues
 log = logging.getLogger(__name__)
 
 EventFn = Callable[[str, str, dict[str, Any]], None]  # (stage, status, data)
-
-STAGES = ["ingest", "plan", "glossary", "script", "audit", "draft", "approve", "render", "mix"]
-AUTO_STAGES = ["plan", "glossary", "script", "draft"]
-
 
 class StageError(RuntimeError):
     pass
@@ -130,20 +122,13 @@ class Pipeline:
 
     # ------------------------------------------------------------------
     # Stage 1
-    def ingest(self, pdf_path: Path | str, book_id: str, *, method: str = "auto", captions: bool = True,
-               title: str | None = None) -> Book:
+    def ingest(self, pdf_path: Path | str, book_id: str, *, method: str = "auto", title: str | None = None) -> Book:
         paths = self.paths(book_id).ensure()
         src = Path(pdf_path)
         if src.resolve() != paths.source_pdf.resolve():
             shutil.copyfile(src, paths.source_pdf)
         self.emit("ingest", "start", book_id=book_id, pdf=str(src))
-        if captions and not getattr(self.llm, "supports_images", True):
-            self.emit("ingest", "note", book_id=book_id,
-                      message="figure captions skipped: the OpenCode generate/text endpoint is text-only")
-            captions = False
-        captioner = LLMCaptioner(self.llm) if captions else None
-        book = ingest_book(paths.source_pdf, book_id, llm=self.llm, captioner=captioner, figures_dir=paths.figures_dir,
-                           method=method, title=title)
+        book = ingest_book(paths.source_pdf, book_id, llm=self.llm, method=method, title=title)
         book.save(paths.book_json)
         self.emit("ingest", "done", book_id=book_id, chapters=len(book.episode_chapters()), method=book.structure_method,
                   warnings=book.warnings)
@@ -165,59 +150,30 @@ class Pipeline:
         return spent
 
     # Stage 2
-    def make_plan(self, book: Book, chapter_id: str, mode: str | None = None) -> ContentPlan:
-        mode = mode or self.settings.plan_mode
-        if mode == "thorough":
-            from pipeline.plan.thorough import plan_chapter_thorough
-
-            return plan_chapter_thorough(book, chapter_id, self.llm, self.cast, review_rounds=self.settings.plan_review_rounds,
-                                         part_chars=self.settings.plan_part_chars, progress=lambda kind, data: self.emit("plan", kind, chapter=chapter_id, **data))
-        if mode != "single":
-            raise StageError(f"STUDIEPODCAST_PLAN_MODE must be single or thorough, not {mode!r}")
-        return plan_chapter(book, chapter_id, self.llm, self.cast)
-
     def plan(self, book_id: str, chapter_id: str) -> ContentPlan:
+        from pipeline.plan.thorough import plan_chapter_thorough
+
         book = self.load_book(book_id)
-        self.emit("plan", "start", book_id=book_id, chapter=chapter_id, mode=self.settings.plan_mode)
+        self.emit("plan", "start", book_id=book_id, chapter=chapter_id)
         before = self._llm_usage()
-        plan = self.make_plan(book, chapter_id)
+        plan = plan_chapter_thorough(book, chapter_id, self.llm, self.cast, review_rounds=self.settings.plan_review_rounds,
+                                     part_chars=self.settings.plan_part_chars, progress=lambda kind, data: self.emit("plan", kind, chapter=chapter_id, **data))
         plan.save(self.paths(book_id).plan(chapter_id))
         self.emit("plan", "done", book_id=book_id, chapter=chapter_id, claims=len(plan.key_claims),
                   needs_expert=plan.needs_expert, warnings=plan.warnings, **self._llm_spent(before))
         return plan
 
-    def compare_plans(self, book_id: str, chapter_id: str) -> Path:
-        """Both plan modes for one chapter, side by side. The configured mode's plan becomes the chapter's plan."""
-        from pipeline.plan.compare import compare_report
-
-        book = self.load_book(book_id)
-        paths = self.paths(book_id)
-        plans = {}
-        for mode in ("single", "thorough"):
-            self.emit("plan", "start", book_id=book_id, chapter=chapter_id, mode=mode)
-            started = time.monotonic()
-            plans[mode] = (self.make_plan(book, chapter_id, mode), time.monotonic() - started)
-            plans[mode][0].save(paths.plans_dir / f"{chapter_id}.plan.{mode}.json")
-        plans[self.settings.plan_mode][0].save(paths.plan(chapter_id))
-        report = paths.plans_dir / f"{chapter_id}.plan-compare.md"
-        report.write_text(compare_report(book.chapter(chapter_id), plans), encoding="utf-8")
-        self.emit("plan", "compared", book_id=book_id, chapter=chapter_id, report=str(report))
-        return report
-
     # Stage 2b
     def glossary(self, book_id: str, chapter_id: str) -> Glossary:
+        from pipeline.plan.thorough import propose_lexicon_thorough
+
         book = self.load_book(book_id)
         glossary = self.load_glossary(book_id)
         self.emit("glossary", "start", book_id=book_id, chapter=chapter_id)
         before = self._llm_usage()
         chapter = book.chapter(chapter_id)
-        if self.settings.plan_mode == "thorough":
-            from pipeline.plan.thorough import propose_lexicon_thorough
-
-            entries = propose_lexicon_thorough(chapter, glossary, self.llm, part_chars=self.settings.plan_part_chars,
-                                               progress=lambda kind, data: self.emit("glossary", kind, chapter=chapter_id, **data))
-        else:
-            entries = propose_lexicon(chapter, glossary, self.llm)
+        entries = propose_lexicon_thorough(chapter, glossary, self.llm, part_chars=self.settings.plan_part_chars,
+                                           progress=lambda kind, data: self.emit("glossary", kind, chapter=chapter_id, **data))
         added = glossary.merge(entries)
         glossary.save(self.paths(book_id).glossary_json)
         self.emit("glossary", "done", book_id=book_id, chapter=chapter_id, added=added, total=len(glossary.entries),
@@ -305,22 +261,6 @@ class Pipeline:
         return script
 
     # Stage 4
-    def _draft_synth(self, synth: Synth | None) -> Synth | None:
-        if synth is not None:
-            return synth
-        if self.fake_audio:
-            return NullSynth(sample_rate=22050, chars_per_second=self.settings.chars_per_second)
-        return None
-
-    def draft(self, book_id: str, chapter_id: str, *, synth: Synth | None = None) -> tuple[Path, Path, RenderManifest]:
-        script = self.load_script(book_id, chapter_id)
-        glossary = self.load_glossary(book_id)
-        self.emit("draft", "start", book_id=book_id, chapter=chapter_id)
-        result = render_draft(script, glossary, self.cast, self.settings, self.paths(book_id), synth=self._draft_synth(synth),
-                              on_event=lambda kind, data: self.emit("draft", kind, **data))
-        self.emit("draft", "done", book_id=book_id, chapter=chapter_id, audio=str(result[0]))
-        return result
-
     def approve(self, book_id: str, chapter_id: str, *, note: str | None = None, force: bool = False) -> Approval:
         script = self.load_script(book_id, chapter_id)
         audit = AuditResult.load_or_none(self.paths(book_id).audit(chapter_id))
@@ -341,7 +281,7 @@ class Pipeline:
     def render(self, book_id: str, chapter_id: str, *, force: bool = False, synth: Synth | None = None,
                transcriber=None, aligner=None) -> tuple[Path, Path, RenderManifest]:
         if not force and not self.is_approved(book_id, chapter_id):
-            raise StageError("script is not approved for this revision; listen to the draft and approve first")
+            raise StageError("script is not approved for this revision; read the script and audit, then approve first")
         script = self.load_script(book_id, chapter_id)
         glossary = self.load_glossary(book_id)
         self.release_llm()
@@ -354,12 +294,17 @@ class Pipeline:
         return result
 
     # ------------------------------------------------------------------
-    def run_chapter(self, book_id: str, chapter_id: str, *, upto: str = "draft", llm_checks: bool = True) -> dict[str, Any]:
-        order = ["plan", "glossary", "script", "draft", "approve", "render"]
+    def run_chapter(self, book_id: str, chapter_id: str, *, upto: str = "script", llm_checks: bool = True) -> dict[str, Any]:
+        """Everything that does not need a human or hours of GPU, up to ``upto``.
+
+        ``upto="render"`` approves on its own authority and starts the real
+        Chatterbox render: only ask for that when nobody is going to read first.
+        """
+        order = ["plan", "glossary", "script", "approve", "render"]
         if upto not in order:
             raise ValueError(f"upto must be one of {order}")
         stop = order.index(upto)
-        names = {"plan": "plan", "glossary": "lexicon", "script": "script en audit", "draft": "Piper draft",
+        names = {"plan": "plan", "glossary": "lexicon", "script": "script en audit",
                  "approve": "goedkeuren", "render": "Chatterbox render"}
 
         def step(name: str) -> None:
@@ -377,17 +322,14 @@ class Pipeline:
             step("script")
             out["script"], out["audit"] = self.script(book_id, chapter_id, llm_checks=llm_checks)
         if stop >= 3:
-            step("draft")
-            out["draft"] = self.draft(book_id, chapter_id)[0]
-        if stop >= 4:
             step("approve")
             out["approve"] = self.approve(book_id, chapter_id, force=upto == "render" and not out["audit"].passed)
-        if stop >= 5:
+        if stop >= 4:
             step("render")
             out["render"] = self.render(book_id, chapter_id)[0]
         return out
 
-    def run_book(self, book_id: str, *, upto: str = "draft", chapters: list[str] | None = None, llm_checks: bool = True) -> dict[str, dict]:
+    def run_book(self, book_id: str, *, upto: str = "script", chapters: list[str] | None = None, llm_checks: bool = True) -> dict[str, dict]:
         book = self.load_book(book_id)
         results = {}
         todo = [ch for ch in book.episode_chapters() if not chapters or ch.id in chapters]
@@ -404,16 +346,15 @@ class Pipeline:
             for ch in book.episode_chapters():
                 audit = AuditResult.load_or_none(paths.audit(ch.id))
                 script = Script.load_or_none(paths.script(ch.id))
-                manifest = RenderManifest.load_or_none(paths.manifest(ch.id, "final"))
+                manifest = RenderManifest.load_or_none(paths.manifest(ch.id))
                 chapters.append({
                     "id": ch.id, "title": ch.title, "pages": list(ch.pages), "chars": ch.char_count,
                     "plan": paths.plan(ch.id).is_file(),
                     "script": script is not None, "script_revision": script.revision if script else None,
                     "audit": audit is not None, "audit_passed": audit.passed if audit else None,
                     "audit_blocking": len(audit.blocking()) if audit else None,
-                    "draft": paths.out_audio(ch.id, "draft").is_file(),
                     "approved": self.is_approved(book_id, ch.id),
-                    "final": paths.out_audio(ch.id, "final").is_file(),
+                    "final": paths.out_audio(ch.id).is_file(),
                     "flagged_turns": len(manifest.flagged_turns()) if manifest else 0,
                 })
         return {

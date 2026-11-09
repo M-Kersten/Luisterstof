@@ -180,7 +180,6 @@ def build_transcript(
     timeline: Timeline,
     script: Script,
     *,
-    tier: str,
     offset: float,
     duration_s: float,
     blocks: list[Block] | None = None,
@@ -218,7 +217,7 @@ def build_transcript(
                 continue
             spans.append(BlockSpan(block_id=b.id, line_ids=b.line_ids, start=min(l.start for l in present),
                                    end=max(l.end for l in present), path=(block_paths or {}).get(b.id)))
-    return EpisodeTranscript(episode_id=script.episode_id, tier=tier, duration_s=round(duration_s, 3), lines=lines,  # type: ignore[arg-type]
+    return EpisodeTranscript(episode_id=script.episode_id, duration_s=round(duration_s, 3), lines=lines,
                              blocks=spans, qa=list(timeline.qa))
 
 

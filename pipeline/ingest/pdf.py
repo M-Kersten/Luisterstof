@@ -21,7 +21,7 @@ try:  # silence the layout-package advertisement
 except Exception:  # pragma: no cover
     pass
 
-from pipeline.ingest.figures import Captioner, caption_kind, figure_to_text, is_caption, table_to_text
+from pipeline.ingest.figures import caption_kind, figure_to_text, is_caption, table_to_text
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +48,6 @@ class Block:
     bbox: tuple[float, float, float, float]
     lines: list[TextLine] = field(default_factory=list)
     text: str = ""  # for figure/table blocks: the spoken text
-    image_path: str | None = None
 
     @property
     def y(self) -> float:
@@ -158,24 +157,18 @@ def _nearest_caption(lines: list[TextLine], bbox: tuple, kind: str, max_dist: fl
     return best
 
 
-def extract_pages(
-    pdf_path: Path | str,
-    *,
-    captioner: Captioner | None = None,
-    figures_dir: Path | None = None,
-    max_pages: int | None = None,
-) -> list[PageData]:
+def extract_pages(pdf_path: Path | str, *, max_pages: int | None = None) -> list[PageData]:
     pages: list[PageData] = []
     with pymupdf.open(pdf_path) as doc:
         for page in doc:
             if max_pages is not None and page.number >= max_pages:
                 break
-            pages.append(_extract_page(page, captioner, figures_dir))
+            pages.append(_extract_page(page))
     _strip_running_headers(pages)
     return pages
 
 
-def _extract_page(page: pymupdf.Page, captioner: Captioner | None, figures_dir: Path | None) -> PageData:
+def _extract_page(page: pymupdf.Page) -> PageData:
     number = page.number + 1
     data = PageData(number=number, width=page.rect.width, height=page.rect.height)
     raw = page.get_text("dict", sort=True)
@@ -207,34 +200,14 @@ def _extract_page(page: pymupdf.Page, captioner: Captioner | None, figures_dir: 
         if text:
             extra_blocks.append(Block(kind="table", page=number, bbox=bbox, text=text))
 
-    for i, bbox in enumerate(figure_boxes):
+    for bbox in figure_boxes:
         cap = _nearest_caption(all_lines, bbox, "figure")
         cap_text = cap.text if cap else None
         if cap:
             used_captions.add(id(cap))
-        description = None
-        image_path = None
-        if captioner is not None or figures_dir is not None:
-            try:
-                pix = page.get_pixmap(clip=pymupdf.Rect(bbox), dpi=110)
-                png = pix.tobytes("png")
-            except Exception as exc:  # pragma: no cover
-                log.warning("could not rasterise figure on page %s: %s", number, exc)
-                png = None
-            if png and figures_dir is not None:
-                figures_dir.mkdir(parents=True, exist_ok=True)
-                out = figures_dir / f"p{number:04d}_f{i + 1}.png"
-                out.write_bytes(png)
-                image_path = str(out)
-            if png and captioner is not None:
-                context = " ".join(ln.text for ln in all_lines if abs(ln.bbox[1] - bbox[1]) < 250)
-                try:
-                    description = captioner.describe(png, cap_text, context)
-                except Exception as exc:
-                    log.warning("captioner failed on page %s: %s", number, exc)
-        text = figure_to_text(cap_text, description)
-        if text and (cap_text or description):
-            extra_blocks.append(Block(kind="figure", page=number, bbox=bbox, text=text, image_path=image_path))
+        text = figure_to_text(cap_text)
+        if text:
+            extra_blocks.append(Block(kind="figure", page=number, bbox=bbox, text=text))
 
     # Drop caption lines that were absorbed into a figure/table block.
     for blk in text_blocks:

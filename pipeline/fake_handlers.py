@@ -42,49 +42,6 @@ def fake_structure(req: LLMRequest) -> dict:
     return {"has_printed_toc": False, "chapters": chapters}
 
 
-def fake_figure_caption(req: LLMRequest) -> dict:
-    return {"carries_meaning": True, "description": "De figuur toont een grafiek met een stijgende lijn."}
-
-
-def fake_plan(req: LLMRequest) -> dict:
-    system = _text_of(req.system)
-    sections = list(_SECTION_RE.finditer(system))
-    claims, definitions, formula_dense = [], [], []
-    for i, m in enumerate(sections):
-        start = m.end()
-        end = sections[i + 1].start() if i + 1 < len(sections) else len(system)
-        body = system[start:end].strip()
-        sents = _sentences(body)
-        for j, sent in enumerate(sents[:3]):
-            quote = sent[:200]
-            claims.append({
-                "claim": sent,
-                "section": m.group("id"),
-                "source_quote": quote,
-                "difficulty": 2 + (j % 3),
-                "exam_relevance": 5 - (j % 3),
-            })
-        if sents:
-            definitions.append({"term": m.group("title"), "definition": sents[0], "section": m.group("id"),
-                                "source_quote": sents[0][:120]})
-        if "=" in body:
-            formula_dense.append(m.group("id"))
-    return {
-        "summary": "Dit hoofdstuk behandelt de kernbegrippen uit de secties, met definities en voorbeelden uit de bron.",
-        "learning_objectives": ["De student kan de kernbegrippen uitleggen.", "De student kan de voorbeelden narekenen.", "De student herkent de veelgemaakte fouten."],
-        "key_claims": claims,
-        "definitions": definitions,
-        "misconceptions": [
-            {"wrong": "Het begrip geldt altijd, ongeacht de voorwaarden.", "right": "Het begrip geldt alleen onder de voorwaarden uit de bron.", "why_tempting": "De voorwaarden staan in een bijzin."},
-            {"wrong": "Twee verwante begrippen zijn hetzelfde.", "right": "Ze verschillen in richting en betekenis.", "why_tempting": "Ze lijken op elkaar in notatie."},
-        ],
-        "worked_example": {"setup": "Neem het voorbeeld uit de bron.", "steps": ["Schrijf de gegevens op.", "Pas de regel toe."], "answer": "Het antwoord volgt uit de bron."},
-        "expert_domain": None,
-        "expert_reason": None,
-        "formula_dense_sections": formula_dense,
-    }
-
-
 def fake_plan_section(req: LLMRequest) -> dict:
     """Candidates from every section in the prompt. Per section the first quote carries an invented prefix
     (a near miss, repaired from the source) and the second is made up entirely (it goes to the quote-fix call,
@@ -286,8 +243,6 @@ def fake_continuity(req: LLMRequest) -> dict:
 def default_fake_llm() -> FakeLLM:
     return FakeLLM({
         "structure": fake_structure,
-        "figure_caption": fake_figure_caption,
-        "plan": fake_plan,
         "plan_section": fake_plan_section,
         "plan_quotes": fake_plan_quotes,
         "plan_merge": fake_plan_merge,

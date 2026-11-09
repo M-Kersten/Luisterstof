@@ -1,12 +1,7 @@
 """Speech recognition (verification) and forced alignment (word timestamps).
 
-Two backends:
-
-* ``faster`` (CUDA box): faster-whisper stays resident for the take-selection
-  loop; WhisperX forced alignment gives the word onsets the timeline needs.
-* ``mlx`` (Apple Silicon): MLX Whisper transcribes on the GPU and returns word
-  timestamps in the same pass; the accepted take's timestamps are matched onto
-  the script tokens, so no second model is needed for alignment.
+One backend: faster-whisper stays resident for the take-selection loop;
+WhisperX forced alignment gives the word onsets the timeline needs.
 
 Both have fakes so the timeline math is testable without models.
 """
@@ -137,92 +132,6 @@ class WhisperXAligner:
         return self.fallback.align(clip, text, language)
 
 
-# ---------------------------------------------------------------------------
-# MLX Whisper (Apple Silicon)
-# ---------------------------------------------------------------------------
-
-def _asr_words_to_meta(words: list[WordTiming]) -> list[list]:
-    return [[w.word, round(w.start, 4), round(w.end, 4)] for w in words]
-
-
-def asr_words_from_meta(raw: object) -> list[WordTiming] | None:
-    if not isinstance(raw, list):
-        return None
-    try:
-        return [WordTiming(str(w[0]), float(w[1]), float(w[2])) for w in raw]
-    except (IndexError, TypeError, ValueError):
-        return None
-
-
-class MlxWhisperTranscriber:
-    """Whisper on the Apple GPU via MLX. Word timestamps ride along in ``clip.meta['asr_words']``.
-
-    Same failure policy as FasterWhisperTranscriber: once transcription fails,
-    stop retrying and return None so the take-selection loop degrades to
-    unverified takes instead of crashing the render."""
-
-    def __init__(self, settings: Settings):
-        self.settings = settings
-        self.model = settings.mlx_whisper_model
-        self._broken: str | None = None
-
-    def transcribe(self, clip: AudioClip, language: str = "nl") -> str | None:
-        if self._broken:
-            return None
-        try:
-            return self._transcribe(clip, language)
-        except Exception as exc:  # noqa: BLE001
-            self._broken = f"{type(exc).__name__}: {exc}"
-            log.error("mlx-whisper is unavailable (%s). Verification is disabled for the rest of this render; "
-                     "takes will be accepted without a WER check.", self._broken)
-            return None
-
-    def _transcribe(self, clip: AudioClip, language: str) -> str:
-        import mlx_whisper  # type: ignore
-
-        result = mlx_whisper.transcribe(
-            to_16k(clip), path_or_hf_repo=self.model, language=language, word_timestamps=True,
-            condition_on_previous_text=False,
-        )
-        words: list[WordTiming] = []
-        for seg in result.get("segments", []):
-            for w in seg.get("words", []) or []:
-                if "start" in w and "end" in w:
-                    words.append(WordTiming(str(w.get("word", "")).strip(), float(w["start"]), float(w["end"])))
-        if words:
-            clip.meta["asr_words"] = _asr_words_to_meta(words)
-        return str(result.get("text", "")).strip()
-
-
-class MlxWhisperAligner:
-    """Uses the word timestamps of the accepted take (already transcribed by the take loop).
-
-    Falls back to a fresh MLX transcription when the clip carries none, and to
-    uniform spacing when no model is available.
-    """
-
-    def __init__(self, settings: Settings, fallback: Aligner | None = None):
-        self.settings = settings
-        self.fallback = fallback or UniformAligner()
-        self._transcriber: MlxWhisperTranscriber | None = None
-        self.last_used_fallback = False  # set on every align() call; check it right after calling
-
-    def align(self, clip: AudioClip, text: str, language: str = "nl") -> list[WordTiming]:
-        self.last_used_fallback = False
-        words = asr_words_from_meta(clip.meta.get("asr_words"))
-        if words is None:
-            try:
-                self._transcriber = self._transcriber or MlxWhisperTranscriber(self.settings)
-                self._transcriber.transcribe(clip, language)
-                words = asr_words_from_meta(clip.meta.get("asr_words"))
-            except Exception as exc:
-                log.warning("mlx alignment failed, using uniform fallback: %s", exc)
-        if not words:
-            self.last_used_fallback = True
-            return self.fallback.align(clip, text, language)
-        return match_words_to_text(tokenize(text), words, clip.duration_s)
-
-
 def _norm_token(word: str) -> str:
     return re.sub(r"[^\w]", "", word.casefold())
 
@@ -337,16 +246,8 @@ class EchoTranscriber:
 
 
 def make_transcriber(settings: Settings, fake: bool = False) -> Transcriber:
-    if fake:
-        return EchoTranscriber()
-    if settings.whisper_backend == "mlx":
-        return MlxWhisperTranscriber(settings)
-    return FasterWhisperTranscriber(settings)
+    return EchoTranscriber() if fake else FasterWhisperTranscriber(settings)
 
 
 def make_aligner(settings: Settings, fake: bool = False) -> Aligner:
-    if fake:
-        return UniformAligner()
-    if settings.whisper_backend == "mlx":
-        return MlxWhisperAligner(settings)
-    return WhisperXAligner(settings)
+    return UniformAligner() if fake else WhisperXAligner(settings)

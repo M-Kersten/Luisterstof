@@ -1,7 +1,7 @@
 """Thorough content plan and lexicon: many small passes instead of one big one.
 
-One call over a whole chapter suits a frontier model. A local model loses
-sections, picks the wrong claims and paraphrases its "verbatim" quotes. So:
+One call over a whole chapter asks a lot of a local model: it loses sections,
+picks the wrong claims and paraphrases its "verbatim" quotes. So:
 
 1. per part (short sections together up to ``PART_CHARS``, long sections in
    pieces): candidate claims, definitions, misconceptions, worked examples,

@@ -55,11 +55,6 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().casefold() in ("1", "true", "yes", "on", "ja")
 
 
-def apple_silicon() -> bool:
-    """True on an M-series Mac: Metal for Chatterbox, MLX for Whisper, one worker."""
-    return platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64")
-
-
 # Quality over speed: what an unhurried run uses. Nothing here is about speed — the point of the mode
 # is that a chapter gets read, checked against the source and rewritten more times, so one run can
 # legitimately take hours and the per-call ceiling has to be comfortable for a slow local model.
@@ -70,10 +65,6 @@ QUALITY_PASSES: dict[str, tuple[int | float, str]] = {
     "script_revise_rounds": (3, "max"),
     "opencode_timeout_s": (3600.0, "max"),
 }
-
-
-def default_device() -> str:
-    return "mps" if apple_silicon() else "cuda"
 
 
 @dataclass(frozen=True)
@@ -93,11 +84,10 @@ class Settings:
     opencode_model: str = "strata/strata"
     opencode_timeout_s: float = 1800.0
 
-    # Content plan and lexicon: "single" = one call per chapter, "thorough" = per section,
-    # quotes checked against the source, then a chapter pass and review rounds (pipeline/plan/thorough.py).
-    plan_mode: str = "thorough"
+    # Content plan and lexicon: per section, quotes checked against the source, then a chapter pass
+    # and review rounds (pipeline/plan/thorough.py).
     plan_review_rounds: int = 1
-    plan_part_chars: int = 8000  # thorough mode: small sections are read together up to this size
+    plan_part_chars: int = 8000  # small sections are read together up to this size
     # How many times a script the audit blocks gets rewritten before it is accepted as it is.
     script_revise_rounds: int = 1
 
@@ -109,16 +99,12 @@ class Settings:
     # their local cache only and send no telemetry.
     offline: bool = False
 
-    # Local synthesis. Defaults follow the platform: CUDA with three workers on a
-    # 24GB GPU box, Metal with one worker and MLX Whisper on an M-series Mac.
-    piper_bin: str = "piper"
-    piper_voices_dir: Path = Path("~/.local/share/piper/voices")
+    # Local synthesis: Chatterbox on the CUDA box, faster-whisper for verification and WhisperX for
+    # word timings. Run `studiepodcast doctor` to see what is actually installed.
     device: str = "cuda"
     chatterbox_workers: int = 3
-    whisper_backend: str = "faster"  # faster (CTranslate2) | mlx (Apple Silicon)
     whisper_model: str = "large-v3"
     whisper_compute_type: str = "int8"
-    mlx_whisper_model: str = "mlx-community/whisper-large-v3-turbo"
 
     # Episode shape.
     target_minutes: int = 25
@@ -148,7 +134,6 @@ class Settings:
             return QUALITY_PASSES[name][0] if quality else getattr(Settings, name)
 
         base = cls(
-            plan_mode=_env_str("STUDIEPODCAST_PLAN_MODE", "thorough").strip().casefold(),
             plan_review_rounds=passes("STUDIEPODCAST_PLAN_REVIEW_ROUNDS", "plan_review_rounds"),
             plan_part_chars=max(2000, int(passes("STUDIEPODCAST_PLAN_PART_CHARS", "plan_part_chars"))),
             script_revise_rounds=max(0, int(passes("STUDIEPODCAST_REVISE_ROUNDS", "script_revise_rounds"))),
@@ -161,14 +146,10 @@ class Settings:
             opencode_timeout_s=float(passes("OPENCODE_TIMEOUT", "opencode_timeout_s")),
             data_dir=Path(_env_str("STUDIEPODCAST_DATA_DIR", "data")),
             cast_dir=Path(_env_str("STUDIEPODCAST_CAST_DIR", "cast")),
-            piper_bin=_env_str("PIPER_BIN", "piper"),
-            piper_voices_dir=Path(_env_str("PIPER_VOICES_DIR", "~/.local/share/piper/voices")).expanduser(),
-            device=_env_str("STUDIEPODCAST_DEVICE", default_device()),
-            chatterbox_workers=_env_int("CHATTERBOX_WORKERS", 1 if apple_silicon() else 3),
-            whisper_backend=_env_str("WHISPER_BACKEND", "mlx" if apple_silicon() else "faster"),
+            device=_env_str("STUDIEPODCAST_DEVICE", "cuda"),
+            chatterbox_workers=_env_int("CHATTERBOX_WORKERS", 3),
             whisper_model=_env_str("WHISPER_MODEL", "large-v3"),
             whisper_compute_type=_env_str("WHISPER_COMPUTE_TYPE", "int8"),
-            mlx_whisper_model=_env_str("MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"),
             target_minutes=_env_int("STUDIEPODCAST_TARGET_MINUTES", 25),
             chars_per_second=_env_float("STUDIEPODCAST_CHARS_PER_SECOND", 15.0),
             takes_per_line=_env_int("STUDIEPODCAST_TAKES", 3),
@@ -177,11 +158,6 @@ class Settings:
         return replace(base, **overrides) if overrides else base
 
     def __post_init__(self) -> None:
-        if self.llm_backend in ("anthropic", "claude", "local", "ollama"):
-            raise ValueError(
-                f"STUDIEPODCAST_LLM_BACKEND={self.llm_backend!r} is gone: the pipeline writes through a local "
-                "OpenCode server. Remove the variable or set it to 'opencode' (the Claude API and Ollama "
-                "options were removed).")
         if self.llm_backend not in ("opencode", "fake"):
             raise ValueError(f"STUDIEPODCAST_LLM_BACKEND must be 'opencode' or 'fake', not {self.llm_backend!r}")
 
@@ -210,16 +186,13 @@ class Settings:
     def profile(self) -> dict[str, object]:
         return {
             "platform": f"{platform.system()} {platform.machine()}",
-            "apple_silicon": apple_silicon(),
             "device": self.device,
             "chatterbox_workers": self.chatterbox_workers,
-            "whisper_backend": self.whisper_backend,
-            "whisper_model": self.mlx_whisper_model if self.whisper_backend == "mlx" else self.whisper_model,
+            "whisper_model": self.whisper_model,
             "takes_per_line": self.takes_per_line,
             "wer_threshold": self.wer_threshold,
             "llm_backend": self.llm_backend,
             "llm_model": self.opencode_model,
-            "plan_mode": self.plan_mode,
             "quality_mode": self.quality_mode,
             "offline": self.offline,
         }

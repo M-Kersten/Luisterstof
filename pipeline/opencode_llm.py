@@ -12,9 +12,9 @@ hands over a prompt. Two endpoints do all the work:
 The JSON schema is written into the prompt and every answer is validated; an
 invalid one goes back once together with the error. Temperature, thinking and
 the token budget are not sent: they belong to the model's configuration in
-OpenCode, not to the caller. The endpoint is text only, so ``supports_images``
-is False and figure captions are skipped (the runner asks before it ever sends
-a picture).
+OpenCode, not to the caller. The endpoint is text only, so prompts are plain
+text: ``pipeline.llm.content_text`` joins the text blocks and nothing sends a
+picture.
 
 The server is discovered in this order: ``OPENCODE_URL``, the ``url`` field of
 ``~/.config/opencode/service.json``, the URL the OpenCode desktop app last
@@ -47,8 +47,8 @@ from pipeline.llm import (
     LLMTruncated,
     SCHEMA_INSTRUCTION,
     Usage,
-    _text_and_images,
     clean_answer,
+    content_text,
     estimate_tokens,
     inline_schema,
     looping,
@@ -147,16 +147,10 @@ class OpenCodeLLM:
         ref = f"{self.provider_id}/{self.model_id}"
         return f"{ref}#{self.variant}" if self.variant else ref
 
-    @property
-    def supports_images(self) -> bool:
-        return False  # generate/text is text-only; the runner skips figure captions on this
-
     # ------------------------------------------------------------------ request
     def _prompt(self, request: LLMRequest, schema: dict) -> str:
-        system_text, system_images = _text_and_images(request.system)
-        user_text, images = _text_and_images(request.user)
-        if images or system_images:
-            raise LLMError(f"task {request.task} sends an image, but the OpenCode generate/text endpoint is text-only")
+        system_text = content_text(request.system)
+        user_text = content_text(request.user)
         return "\n\n".join(part for part in (
             system_text + SCHEMA_INSTRUCTION + json.dumps(schema, ensure_ascii=False), user_text) if part)
 

@@ -36,8 +36,8 @@ class ApproveRequest(BaseModel):
 
 
 class RunRequest(BaseModel):
-    stage: str = "script"  # plan | glossary | script | audit | draft | render | all
-    upto: str = "draft"
+    stage: str = "script"  # plan | glossary | script | audit | render | all
+    upto: str = "script"
     llm_checks: bool = True
     force: bool = False
     # Quality over speed for this one run: more plan review rounds, more script rewrite rounds and a
@@ -83,7 +83,7 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         from pipeline.tags import known_tags
 
         return {"ok": True, "fake_llm": fake_llm, "fake_audio": fake_audio, "model": settings.opencode_model,
-                "llm_backend": settings.llm_backend, "offline": settings.offline, "plan_mode": settings.plan_mode,
+                "llm_backend": settings.llm_backend, "offline": settings.offline,
                 "quality_mode": settings.quality_mode, "writing_passes": settings.writing_passes(),
                 "tags": known_tags()}
 
@@ -93,7 +93,7 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
 
     @app.post("/api/books")
     async def upload_book(file: UploadFile = File(...), book_id: str = Form(""), method: str = Form("auto"),  # noqa: B008
-                          auto: bool = Form(True), upto: str = Form("draft"), quality: bool = Form(False)) -> dict[str, Any]:
+                          auto: bool = Form(True), upto: str = Form("script"), quality: bool = Form(False)) -> dict[str, Any]:
         name = book_id.strip() or re.sub(r"[^A-Za-z0-9_-]+", "-", Path(file.filename or "boek").stem).strip("-").lower()[:40] or "boek"
         try:
             validate_id(name)
@@ -108,7 +108,7 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         def work(p: Pipeline):
             p.ingest(paths.source_pdf, name, method=method)
             if auto:
-                return {ch: {k: str(v) for k, v in out.items() if k in ("draft", "render")} for ch, out in p.run_book(name, upto=upto).items()}
+                return {ch: {k: str(v) for k, v in out.items() if k == "render"} for ch, out in p.run_book(name, upto=upto).items()}
             return {"ingested": True}
 
         job = manager.submit(name, None, "pipeline" if auto else "ingest", work,
@@ -165,9 +165,8 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         script = Script.load_or_none(paths.script(chapter_id))
         audit = AuditResult.load_or_none(paths.audit(chapter_id))
         approval = Approval.load_or_none(paths.approval(chapter_id))
-        manifest = RenderManifest.load_or_none(paths.manifest(chapter_id, "final"))
-        draft_tr = EpisodeTranscript.load_or_none(paths.transcript(chapter_id, "draft"))
-        final_tr = EpisodeTranscript.load_or_none(paths.transcript(chapter_id, "final"))
+        manifest = RenderManifest.load_or_none(paths.manifest(chapter_id))
+        transcript = EpisodeTranscript.load_or_none(paths.transcript(chapter_id))
         blocks = []
         if script is not None:
             from pipeline.audio.chunker import chunk_script
@@ -188,8 +187,7 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
             "approved": reader.is_approved(book_id, chapter_id),
             "manifest": manifest.model_dump() if manifest else None,
             "manifest_quality": manifest_quality,
-            "draft": {"audio": _rel(paths, paths.out_audio(chapter_id, "draft")), "transcript": draft_tr.model_dump() if draft_tr else None},
-            "final": {"audio": _rel(paths, paths.out_audio(chapter_id, "final")), "transcript": final_tr.model_dump() if final_tr else None},
+            "final": {"audio": _rel(paths, paths.out_audio(chapter_id)), "transcript": transcript.model_dump() if transcript else None},
             "blocks": blocks,
         }
 
@@ -215,8 +213,6 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
                 return p.script(book_id, chapter_id, llm_checks=req.llm_checks)[1]
             if stage == "audit":
                 return p.audit(book_id, chapter_id, llm_checks=req.llm_checks)
-            if stage == "draft":
-                return p.draft(book_id, chapter_id)[0]
             if stage == "render":
                 return p.render(book_id, chapter_id, force=req.force)[0]
             if stage == "all":

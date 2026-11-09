@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from pipeline.ingest.figures import Captioner
 from pipeline.ingest.pdf import detect_language, extract_pages, read_meta
 from pipeline.ingest.structure import build_book, detect_structure, flatten
 from pipeline.models import Book
@@ -18,14 +17,12 @@ def ingest_book(
     book_id: str,
     *,
     llm=None,
-    captioner: Captioner | None = None,
-    figures_dir: Path | None = None,
     method: str = "auto",
     title: str | None = None,
     language: str | None = None,
 ) -> Book:
     meta = read_meta(pdf_path)
-    pages = extract_pages(pdf_path, captioner=captioner, figures_dir=figures_dir)
+    pages = extract_pages(pdf_path)
     headings, used = detect_structure(pages, meta.toc, llm=llm, method=method)
     units = flatten(pages)
     book_title = title or meta.title or _title_from_pages(pages) or Path(pdf_path).stem

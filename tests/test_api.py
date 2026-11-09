@@ -26,7 +26,7 @@ def test_upload_run_edit_approve(settings, sample_pdf):
 
         with open(sample_pdf, "rb") as fh:
             r = client.post("/api/books", files={"file": ("sample.pdf", fh, "application/pdf")},
-                            data={"book_id": "demo", "auto": "true", "upto": "draft"})
+                            data={"book_id": "demo", "auto": "true", "upto": "script"})
         assert r.status_code == 200, r.text
         job = _wait(client, r.json()["job"]["id"])
         assert job["status"] == "done", job
@@ -37,14 +37,14 @@ def test_upload_run_edit_approve(settings, sample_pdf):
         assert "event: stage" in body and '"stage": "ingest"' in body and body.rstrip().endswith("}")
 
         status = client.get("/api/books/demo").json()
-        assert status["ingested"] and len(status["chapters"]) == 3 and all(c["draft"] for c in status["chapters"])
+        assert status["ingested"] and len(status["chapters"]) == 3 and all(c["script"] and c["audit"] for c in status["chapters"])
         assert client.get("/api/books/demo/artifacts/../../secret").status_code in (400, 404)
         artifacts = client.get("/api/books/demo/artifacts").json()
         assert any(a["path"] == "scripts/ch01.script.json" for a in artifacts)
         assert client.get("/api/books/demo/artifacts/scripts/ch01.script.json").status_code == 200
 
         chapter = client.get("/api/books/demo/chapters/ch01").json()
-        assert chapter["audit"]["passed"] and chapter["draft"]["audio"] and not chapter["approved"] and chapter["blocks"]
+        assert chapter["audit"]["passed"] and not chapter["final"]["audio"] and not chapter["approved"] and chapter["blocks"]
 
         script = chapter["script"]
         script["segments"][0]["lines"][0]["text"] = "Nee, dat accepteer ik gewoon niet."

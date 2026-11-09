@@ -14,18 +14,17 @@ from pydantic import BaseModel
 from pipeline import fake_handlers as fh
 from pipeline.cancel import Cancelled
 from pipeline.config import Settings
-from pipeline.llm import LLMError, LLMRequest, LLMTruncated, image_block, make_llm, text_block
+from pipeline.llm import LLMError, LLMRequest, LLMTruncated, make_llm, text_block
 from pipeline.offline import OfflineViolation
 from pipeline.opencode_llm import FALLBACK_URL, OpenCodeLLM, discover, split_model
 from pipeline.runner import Pipeline
 
 GENERATE = "/api/experimental/generate/text"
-HANDLERS = {"PlanOut": fh.fake_plan, "LexiconOut": fh.fake_lexicon, "SegmentOut": fh.fake_script_segment,
+HANDLERS = {"LexiconOut": fh.fake_lexicon, "SegmentOut": fh.fake_script_segment,
             "PerformanceSegmentOut": fh.fake_script_scene, "SupportOut": fh.fake_support,
             "ContinuityOut": fh.fake_continuity, "SectionPlanOut": fh.fake_plan_section,
             "QuoteFixOut": fh.fake_plan_quotes, "PlanMergeOut": fh.fake_plan_merge,
-            "PlanReviewOut": fh.fake_plan_review, "LintOut": fh.fake_lint, "StructureGuess": fh.fake_structure,
-            "FigureDescription": fh.fake_figure_caption}
+            "PlanReviewOut": fh.fake_plan_review, "LintOut": fh.fake_lint, "StructureGuess": fh.fake_structure}
 
 
 class Answer(BaseModel):
@@ -124,13 +123,12 @@ def test_a_variant_and_a_bare_model_name_reach_the_server_as_openencode_wants_th
     assert split_model("gemma") == ("gemma", "gemma", None)  # the local single-model provider spells it like that
 
 
-def test_the_text_only_endpoint_refuses_an_image_before_sending_anything():
-    server = FakeServer()
+def test_the_prompt_is_plain_text_and_a_stray_image_block_is_never_sent():
+    server = FakeServer(['{"verdict": "ok", "score": 4}'])
     llm = OpenCodeLLM(_settings(), transport=httpx.MockTransport(server))
-    assert llm.supports_images is False
-    with pytest.raises(LLMError, match="text-only"):
-        llm.generate(_request(user=[text_block("Beschrijf."), image_block("aW1n")]))
-    assert server.prompts() == []
+    llm.generate(_request(user=[text_block("Beschrijf."), {"type": "image", "source": {"data": "aW1n"}}]))
+    prompt = server.prompts()[0]
+    assert prompt.rstrip().endswith("Beschrijf.") and "aW1n" not in prompt
 
 
 def test_an_invalid_answer_comes_back_once_with_the_error_attached():
@@ -255,7 +253,7 @@ def test_settings_pick_the_backend_and_offline_keeps_the_server_on_this_machine(
 def test_whole_script_chain_runs_over_the_opencode_endpoint(tmp_path, cast_dir, sample_pdf):
     """Plan, lexicon, script, audit and continuity through one text endpoint, with captions skipped."""
     settings = Settings(data_dir=tmp_path / "data", cast_dir=cast_dir, target_minutes=25, llm_backend="opencode",
-                        opencode_url="http://127.0.0.1:4096", opencode_password="geheim", plan_mode="thorough")
+                        opencode_url="http://127.0.0.1:4096", opencode_password="geheim")
     server = FakeServer()
     p = Pipeline(settings, llm=OpenCodeLLM(settings, transport=httpx.MockTransport(server)), fake_audio=True)
     p.ingest(sample_pdf, "demo")

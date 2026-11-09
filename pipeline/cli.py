@@ -47,7 +47,7 @@ def main(
     data_dir: Annotated[Path | None, typer.Option(help="Where data/books lives.")] = None,
     cast_dir: Annotated[Path | None, typer.Option(help="Where hosts.yaml, guests.yaml, continuity.jsonl live.")] = None,
     fake_llm: Annotated[bool, typer.Option("--fake-llm", help="Canned model output, no API key needed.")] = False,
-    fake_audio: Annotated[bool, typer.Option("--fake-audio", help="Shaped noise instead of Piper/Chatterbox.")] = False,
+    fake_audio: Annotated[bool, typer.Option("--fake-audio", help="Shaped noise instead of Chatterbox.")] = False,
     quality: Annotated[bool, _quality_option()] = False,
     verbose: Annotated[bool, typer.Option("-v", "--verbose")] = False,
 ):
@@ -70,10 +70,9 @@ def main(
 @app.command()
 def ingest(pdf: Path, book_id: Annotated[str, typer.Option(help="Identifier, e.g. statistiek1")],
            method: Annotated[str, typer.Option(help="auto | fonts | toc | llm")] = "auto",
-           captions: Annotated[bool, typer.Option(help="Describe figures with the model.")] = True,
            title: str | None = None):
     """Stage 1: PDF -> book.json with chapter boundaries."""
-    book = _pipeline().ingest(pdf, book_id, method=method, captions=captions, title=title)
+    book = _pipeline().ingest(pdf, book_id, method=method, title=title)
     for ch in book.chapters:
         typer.echo(f"  {ch.id} [{ch.level}] p{ch.pages[0]}-{ch.pages[1]} {ch.title} ({len(ch.sections)} secties, {ch.char_count} tekens)")
 
@@ -98,15 +97,10 @@ REVISE_HELP = "How many times a script the audit blocks may be rewritten before 
 
 @app.command()
 def plan(book_id: str, chapter: Annotated[str | None, typer.Argument()] = None,
-         compare: Annotated[bool, typer.Option(help="Make the plan both ways (single call and thorough) and write a comparison.")] = False,
          reviews: Annotated[int | None, typer.Option(help=REVIEWS_HELP)] = None,
          part_chars: Annotated[int | None, typer.Option(help=PART_CHARS_HELP)] = None):
     """Stage 2: content plan (claims, definitions, misconceptions) for one or all chapters."""
     p = _pipeline(**_pass_overrides(reviews=reviews, part_chars=part_chars))
-    if compare:
-        for ch in _chapters(p, book_id, chapter):
-            typer.echo(f"  {ch}: {p.compare_plans(book_id, ch)}")
-        return
     for ch in _chapters(p, book_id, chapter):
         result = p.plan(book_id, ch)
         typer.echo(f"  {ch}: {len(result.key_claims)} beweringen, expert={result.needs_expert} ({result.expert_domain})")
@@ -139,13 +133,6 @@ def audit(book_id: str, chapter: str, llm_checks: bool = True):
 
 
 @app.command()
-def draft(book_id: str, chapter: str):
-    """Piper draft render: seconds, free, for a first listen."""
-    audio, transcript, _ = _pipeline().draft(book_id, chapter)
-    typer.echo(f"  {audio}\n  {transcript}")
-
-
-@app.command()
 def approve(book_id: str, chapter: str, note: str | None = None, force: bool = False):
     """The approval gate: commit the GPU minutes for this script revision."""
     a = _pipeline().approve(book_id, chapter, note=note, force=force)
@@ -172,7 +159,7 @@ def render(book_id: str, chapter: str, force: bool = False):
 
 
 @app.command()
-def run(book_id: str, pdf: Path | None = None, upto: str = "draft", chapters: str | None = None,
+def run(book_id: str, pdf: Path | None = None, upto: str = "script", chapters: str | None = None,
         method: str = "auto", llm_checks: bool = True,
         reviews: Annotated[int | None, typer.Option(help=REVIEWS_HELP)] = None,
         part_chars: Annotated[int | None, typer.Option(help=PART_CHARS_HELP)] = None,
@@ -185,7 +172,7 @@ def run(book_id: str, pdf: Path | None = None, upto: str = "draft", chapters: st
     results = p.run_book(book_id, upto=upto, chapters=wanted, llm_checks=llm_checks)
     for ch, out in results.items():
         a = out.get("audit")
-        typer.echo(f"  {ch}: audit={'ok' if a and a.passed else 'open'} draft={out.get('draft', '-')} final={out.get('render', '-')}")
+        typer.echo(f"  {ch}: audit={'ok' if a and a.passed else 'open'} final={out.get('render', '-')}")
 
 
 @app.command()
@@ -196,13 +183,13 @@ def status(book_id: Annotated[str | None, typer.Argument()] = None):
         s = p.status(bid)
         typer.echo(f"{bid}: {s['title']} (structure: {s['structure_method']}, lexicon: {s['glossary_entries']})")
         for ch in s["chapters"]:
-            flags = " ".join(k for k in ("plan", "script", "audit", "draft", "approved", "final") if ch[k])
+            flags = " ".join(k for k in ("plan", "script", "audit", "approved", "final") if ch[k])
             aud = "" if ch["audit_passed"] is None else (" audit=ok" if ch["audit_passed"] else f" audit={ch['audit_blocking']} blocking")
             typer.echo(f"  {ch['id']} {ch['title'][:40]:<40} {flags}{aud}")
 
 
 @app.command()
-def inspect(book_id: str, chapter: str, tier: str = "final",
+def inspect(book_id: str, chapter: str,
            only_suspect: Annotated[bool, typer.Option(help="Only turns that are flagged, unverified, or fallback-aligned.")] = False):
     """Per-turn audit: WER, acceptance, the exaggeration actually used, alignment method and the audio file for every rendered turn.
 
@@ -212,7 +199,7 @@ def inspect(book_id: str, chapter: str, tier: str = "final",
     p = _pipeline()
     from pipeline.models import RenderManifest
 
-    manifest_path = p.paths(book_id).manifest(chapter, tier)
+    manifest_path = p.paths(book_id).manifest(chapter)
     manifest = RenderManifest.load_or_none(manifest_path)
     if manifest is None:
         typer.echo(f"  geen manifest gevonden op {manifest_path}; eerst renderen.")
@@ -220,7 +207,7 @@ def inspect(book_id: str, chapter: str, tier: str = "final",
 
     verified, verifiable = manifest.verification_coverage()
     fallback = manifest.alignment_fallback_count()
-    typer.echo(f"  {book_id}/{chapter} ({tier}): {len(manifest.turns)} beurten, "
+    typer.echo(f"  {book_id}/{chapter}: {len(manifest.turns)} beurten, "
               f"verificatie {verified}/{verifiable}, {fallback} met geschatte uitlijning, "
               f"{len(manifest.flagged_turns())} gevlagd.")
     if verifiable and verified < verifiable:
@@ -285,7 +272,6 @@ def audition(text_file: Path,
 def doctor():
     """Show the platform profile and which optional pieces are installed (run this first on a new machine)."""
     import importlib
-    import shutil
     import sys
 
     settings = state["settings"]
@@ -296,7 +282,7 @@ def doctor():
             "for yet. If chatterbox crashes with something like \"'NoneType' object is not callable\" in "
             "perth, recreate the venv on 3.11-3.13, e.g.:\n"
             "    uv python install 3.12 && uv venv --python 3.12 .venv && source .venv/bin/activate && "
-            'uv pip install -e ".[dev,mac]"'
+            'uv pip install -e ".[dev]"'
         )
     typer.echo("profile:")
     for k, v in settings.profile().items():
@@ -304,16 +290,8 @@ def doctor():
     typer.echo("writing passes" + (" (quality mode)" if settings.quality_mode else "") + ":")
     for k, v in settings.writing_passes().items():
         typer.echo(f"  {k}: {v}")
-    from pipeline.config import apple_silicon
-
     typer.echo("packages:")
-    # faster-whisper/whisperx (the CUDA path) and mlx_whisper (the Apple Silicon path) are mutually
-    # exclusive by design; only check the pair that's actually meant to be installed here, so a
-    # correctly-absent package on the other platform isn't reported as if something were missing.
-    on_mac = apple_silicon()
-    common = ("torch", "chatterbox", "perth", "piper", "soxr", "pyloudnorm")
-    tier_specific = ("mlx_whisper",) if on_mac else ("faster_whisper", "whisperx")
-    for name in common + tier_specific:
+    for name in ("torch", "chatterbox", "perth", "soxr", "pyloudnorm", "faster_whisper", "whisperx"):
         try:
             mod = importlib.import_module(name)
             version = getattr(mod, "__version__", "")
@@ -344,13 +322,9 @@ def doctor():
     try:
         import torch  # type: ignore
 
-        mps = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
-        typer.echo(f"torch devices: cuda={torch.cuda.is_available()} mps={mps}")
+        typer.echo(f"torch devices: cuda={torch.cuda.is_available()}")
     except Exception:  # noqa: BLE001
         typer.echo("torch devices: torch not installed")
-    typer.echo(f"piper binary: {shutil.which(settings.piper_bin) or 'not on PATH (python package is enough)'}")
-    voices = sorted(p.stem for p in settings.piper_voices_dir.glob("*.onnx")) if settings.piper_voices_dir.exists() else []
-    typer.echo(f"piper voices in {settings.piper_voices_dir}: {', '.join(voices) or 'none'}")
     _doctor_chatterbox(settings)
     from pipeline.script.cast import load_cast
 
@@ -367,7 +341,7 @@ def doctor():
 
 
 def _doctor_chatterbox(settings: Settings) -> None:
-    """Whether the V3 weights the final tier loads are on disk (offline mode can only use what is there)."""
+    """Whether the V3 weights the render loads are on disk (offline mode can only use what is there)."""
     import os
 
     from pipeline.audio.synth import T3_CHECKPOINT, chatterbox_required

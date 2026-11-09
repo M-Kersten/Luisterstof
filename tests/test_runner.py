@@ -10,12 +10,12 @@ def test_run_book_to_render_with_fakes(ingested):
     results = p.run_book("demo", upto="render", chapters=["ch01", "ch02"])
     assert set(results) == {"ch01", "ch02"}
     for ch, out in results.items():
-        assert out["audit"].passed and out["draft"].is_file() and out["render"].is_file()
+        assert out["audit"].passed and out["render"].is_file()
         paths = p.paths("demo")
         assert paths.plan(ch).is_file() and paths.script(ch).is_file() and paths.audit(ch).is_file()
-        transcript = EpisodeTranscript.load(paths.transcript(ch, "final"))
+        transcript = EpisodeTranscript.load(paths.transcript(ch))
         assert transcript.duration_s > 60 and transcript.blocks and all(b.path for b in transcript.blocks)
-        manifest = RenderManifest.load(paths.manifest(ch, "final"))
+        manifest = RenderManifest.load(paths.manifest(ch))
         assert manifest.turns and not manifest.flagged_turns()
     # continuity: episode 2 was written with episode 1's log available
     entries = load_continuity(p.settings.cast_dir)
@@ -32,7 +32,7 @@ def test_run_book_to_render_with_fakes(ingested):
 
 def test_approval_gate(ingested):
     p = ingested
-    p.run_chapter("demo", "ch03", upto="draft")
+    p.run_chapter("demo", "ch03", upto="script")
     with pytest.raises(StageError):
         p.render("demo", "ch03")
     p.approve("demo", "ch03")
@@ -55,7 +55,7 @@ def test_render_manifest_tracks_alignment_fallback_per_turn(ingested):
     """End-to-end: a flaky aligner's per-call fallback flag ends up correctly attributed to
     each turn in the saved manifest, and survives an all-cached re-render without re-aligning."""
     p = ingested
-    p.run_chapter("demo", "ch01", upto="draft")
+    p.run_chapter("demo", "ch01", upto="script")
     p.approve("demo", "ch01")
 
     class AlternatingAligner:

@@ -136,11 +136,11 @@ def test_render_phrasing_applies_on_real_timing_and_skips_on_estimated(settings,
                          {"text": "Dus zo werkt het eigenlijk.", "delivery": "realize"}])
     paths = BookPaths(settings.data_dir, "demo").ensure()
     opts = PerformanceOptions(delivery=True, phrasing=True)
-    _, _, estimated = render_episode(_scene([line]), None, cast, settings, paths, tier="draft", synth=NullSynth(jitter=0.0),
+    _, _, estimated = render_episode(_scene([line]), None, cast, settings, paths, synth=NullSynth(jitter=0.0),
                                      transcriber=None, aligner=None, performance=opts)
     assert str(estimated.turns[0].performance["phrasing"]).startswith("skipped: estimated")
     other = _scene([line]).model_copy(update={"episode_id": "ch02"})
-    _, _, real = render_episode(other, None, cast, settings, paths, tier="draft", synth=NullSynth(jitter=0.0),
+    _, _, real = render_episode(other, None, cast, settings, paths, synth=NullSynth(jitter=0.0),
                                 transcriber=None, aligner=RealTimingAligner(), performance=opts)
     phrasing = real.turns[0].performance["phrasing"]
     assert isinstance(phrasing, list) and len(phrasing) == 2 and 0.35 <= phrasing[0]["pause_after_s"] <= 0.55
@@ -157,7 +157,7 @@ def test_reaction_bank_clip_replaces_synthesis(settings, cast):
     lines = [Line(id="l001", speaker="tessa", text="En toen viel hij van zijn stoel."),
              Line(id="l002", speaker="joris", text="Haha.", reaction="laugh", overlap={"mode": "backchannel", "target": "l001"})]
     paths = BookPaths(settings.data_dir, "demo").ensure()
-    _, _, manifest = render_episode(_scene(lines), None, cast, settings, paths, tier="draft", synth=NullSynth(),
+    _, _, manifest = render_episode(_scene(lines), None, cast, settings, paths, synth=NullSynth(),
                                     transcriber=None, aligner=None, performance=PerformanceOptions(reactions=True))
     laugh = manifest.turns[1]
     assert laugh.performance == {"reaction": "laugh", "source": "bank"} and laugh.chosen_take.reason == "reaction bank"
@@ -230,7 +230,7 @@ def test_reaction_bank_never_replaces_a_labelled_sentence(settings, cast):
     AudioClip(np.full(4800, 0.1, dtype=np.float32), 24000).write(folder / "hehe.wav")
     lines = [Line(id="l001", speaker="tessa", text="Dat is nergens waar je naar op zoek moet zijn.", reaction="chuckle")]
     paths = BookPaths(settings.data_dir, "demo").ensure()
-    _, _, manifest = render_episode(_scene(lines), None, cast, settings, paths, tier="draft", synth=NullSynth(),
+    _, _, manifest = render_episode(_scene(lines), None, cast, settings, paths, synth=NullSynth(),
                                     transcriber=None, aligner=None, performance=PerformanceOptions(reactions=True))
     take = manifest.turns[0].chosen_take
     assert take.reason != "reaction bank" and manifest.turns[0].text_spoken.startswith("Dat is nergens")

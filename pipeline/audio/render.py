@@ -1,4 +1,4 @@
-"""Shared render flow for both tiers: turns -> audio -> timeline -> mix -> files."""
+"""The render flow: turns -> audio -> timeline -> mix -> files."""
 
 from __future__ import annotations
 
@@ -57,7 +57,6 @@ def render_episode(
     settings: Settings,
     paths: BookPaths,
     *,
-    tier: str,
     synth: Synth,
     transcriber: Transcriber | None,
     aligner: Aligner | None,
@@ -78,13 +77,13 @@ def render_episode(
         from pipeline.audio.reactions import ReactionBank
 
         bank = ReactionBank(settings.cast_dir)
-    manifest = RenderManifest(episode_id=script.episode_id, tier=tier, synth=synth.name)  # type: ignore[arg-type]
+    manifest = RenderManifest(episode_id=script.episode_id, synth=synth.name)
 
     rendered: dict[str, tuple[AudioClip, list[WordTiming]]] = {}
     state: dict[str, float] = {}
     last_speaker: str | None = None
     last_exaggeration: float | None = None
-    _emit(on_event, "render_start", tier=tier, turns=len(turns))
+    _emit(on_event, "render_start", turns=len(turns))
     for i, turn in enumerate(turns):
         voice = voices.get(turn.speaker)
         if voice is None:
@@ -118,7 +117,7 @@ def render_episode(
         last_speaker, last_exaggeration = turn.speaker, exaggeration
         result = render_with_takes(
             turn.text, voice, synth, cache,
-            transcriber=transcriber, exaggeration=exaggeration, n_takes=1 if tier == "draft" else settings.takes_per_line,
+            transcriber=transcriber, exaggeration=exaggeration, n_takes=settings.takes_per_line,
             wer_threshold=settings.wer_threshold, chars_per_second=settings.chars_per_second, glossary=glossary,
             seed_base=1000 + i * 10,
             on_take=lambda rec, t=turn: _emit(on_event, "take", turn=t.turn_id, wer=rec.wer, accepted=rec.accepted),
@@ -151,7 +150,7 @@ def render_episode(
     timing = turn_timing_gap(tables, seed) if performance and performance.timing and tables is not None else None
     timeline = assemble(turns, rendered, sr=synth.sample_rate, seed=seed, max_unwritten_gap=settings.max_unwritten_gap_s,
                         timing_gap=timing)
-    sr = settings.sample_rate if tier == "final" else synth.sample_rate
+    sr = settings.sample_rate
     intro = load_sting(settings.cast_dir / "stings" / "intro.wav")
     outro = load_sting(settings.cast_dir / "stings" / "outro.wav")
     acoustics = _fit_acoustics(timeline, cast, settings, sr) if performance and performance.acoustics else None
@@ -160,21 +159,20 @@ def render_episode(
     mixed, offset = mix(timeline, sr=sr, target_lufs=settings.target_lufs, line_lufs=settings.line_lufs, intro=intro, outro=outro,
                         acoustics=acoustics)
 
-    audio_path = paths.out_audio(script.episode_id, tier)
+    audio_path = paths.out_audio(script.episode_id)
     mixed.write(audio_path)
     blocks = chunk_script(script)
-    transcript = build_transcript(timeline, script, tier=tier, offset=offset, duration_s=mixed.duration_s, blocks=blocks)
-    if tier == "final":
-        export_blocks(mixed, transcript, paths.blocks_dir(script.episode_id))
-    transcript_path = paths.transcript(script.episode_id, tier)
+    transcript = build_transcript(timeline, script, offset=offset, duration_s=mixed.duration_s, blocks=blocks)
+    export_blocks(mixed, transcript, paths.blocks_dir(script.episode_id))
+    transcript_path = paths.transcript(script.episode_id)
     transcript.save(transcript_path)
-    manifest.save(paths.manifest(script.episode_id, tier))
+    manifest.save(paths.manifest(script.episode_id))
     verified, verifiable = manifest.verification_coverage()
     fallback_count = manifest.alignment_fallback_count()
-    _emit(on_event, "render_done", tier=tier, audio=str(audio_path), duration_s=round(mixed.duration_s, 1),
+    _emit(on_event, "render_done", audio=str(audio_path), duration_s=round(mixed.duration_s, 1),
           flagged=len(manifest.flagged_turns()), qa=list(timeline.qa),
           verified_turns=verified, verifiable_turns=verifiable, alignment_fallback_turns=fallback_count)
-    if tier == "final" and not synth.deterministic:
+    if not synth.deterministic:
         if verifiable and verified < verifiable:
             log.warning("WER verification ran for only %d/%d turns; the rest were accepted unverified "
                        "(a broken transcriber degrades this way rather than crashing - see the transcribe() "

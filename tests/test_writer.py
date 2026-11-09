@@ -1,12 +1,12 @@
 from pipeline.models import AuditIssue, AuditResult, Guest
-from pipeline.plan.content_plan import plan_chapter
+from pipeline.plan.thorough import plan_chapter_thorough
 from pipeline.script.cast import pick_guest
 from pipeline.script.writer import Writer, build_blueprint
 
 
 def test_blueprint_shape(book, fake_llm, cast, settings):
-    plan1 = plan_chapter(book, "ch01", fake_llm, cast)
-    plan2 = plan_chapter(book, "ch02", fake_llm, cast)
+    plan1 = plan_chapter_thorough(book, "ch01", fake_llm, cast)
+    plan2 = plan_chapter_thorough(book, "ch02", fake_llm, cast)
     briefs = build_blueprint(plan2, cast, guest=None, previous_plan=plan1, next_chapter_title="X", target_minutes=25, chars_per_second=15)
     types = [b.type for b in briefs]
     assert types[0] == "cold_open" and types[1] == "recap" and types[-1] == "outro"
@@ -28,7 +28,7 @@ def test_blueprint_shape(book, fake_llm, cast, settings):
 
 
 def test_write_produces_valid_script(book, fake_llm, cast, settings):
-    plan = plan_chapter(book, "ch01", fake_llm, cast)
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
     script = Writer(fake_llm, cast, settings).write(plan, book, None, next_chapter_title="Verdelingen")
     ids = [l.id for l in script.lines()]
     assert ids == [f"l{i:03d}" for i in range(1, len(ids) + 1)]
@@ -43,7 +43,7 @@ def test_write_produces_valid_script(book, fake_llm, cast, settings):
 
 
 def test_revise_only_touches_flagged_segments(book, fake_llm, cast, settings):
-    plan = plan_chapter(book, "ch01", fake_llm, cast)
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
     writer = Writer(fake_llm, cast, settings)
     script = writer.write(plan, book, None)
     quiz = next(s for s in script.segments if s.type == "quiz")

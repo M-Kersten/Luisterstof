@@ -1,7 +1,7 @@
 """Job queue and state machine on SQLite, with a single background worker.
 
-Stages run one at a time on purpose: the GPU is shared and the frontier API
-calls for one episode already run in parallel where it matters.
+Stages run one at a time on purpose: the GPU is shared and the model calls
+for one episode already run in parallel where it matters.
 """
 
 from __future__ import annotations

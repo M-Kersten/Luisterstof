@@ -43,7 +43,7 @@ def test_mix_and_transcript(tmp_path):
     assert abs(measure_lufs(mixed.samples, SR) + 16.0) < 1.0
     assert offset > 0.3 and mixed.duration_s > tl.duration + offset
     assert float(np.max(np.abs(mixed.samples))) <= 0.985
-    transcript = build_transcript(tl, script, tier="draft", offset=offset, duration_s=mixed.duration_s, blocks=chunk_script(script))
+    transcript = build_transcript(tl, script, offset=offset, duration_s=mixed.duration_s, blocks=chunk_script(script))
     assert [l.line_id for l in transcript.lines] == ["l001", "l002", "l003"]
     assert all(l.words for l in transcript.lines) and transcript.lines[0].start >= offset
     assert transcript.lines[1].start > transcript.lines[0].end

@@ -1,6 +1,5 @@
 """Text-to-speech adapters behind one small protocol.
 
-* ``PiperSynth``: local, deterministic, flat delivery, seconds per episode.
 * ``ChatterboxSynth``: local zero-shot cloning from a frozen Dutch reference
   (Multilingual V3 weights, hardcoded: one model per project, ever).
 * ``NullSynth``: shaped noise with plausible durations, for tests and dry runs.
@@ -16,9 +15,6 @@ import io
 import logging
 import math
 import os
-import shutil
-import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -90,7 +86,6 @@ def resample(samples: np.ndarray, sr: int, target_sr: int) -> np.ndarray:
 class VoiceSpec:
     speaker_id: str
     ref_path: Path | None = None
-    draft_voice: str | None = None
     base_exaggeration: float = 0.5
     cfg_weight: float = 0.5
     speech_rate: float = 1.0
@@ -105,7 +100,7 @@ class VoiceSpec:
             if self.ref_path and Path(self.ref_path).is_file():
                 self._ref_hash = hashlib.sha256(Path(self.ref_path).read_bytes()).hexdigest()[:16]
             else:
-                self._ref_hash = "noref:" + (self.draft_voice or self.speaker_id)
+                self._ref_hash = "noref:" + self.speaker_id
         return self._ref_hash
 
 
@@ -114,7 +109,6 @@ def voice_spec_for(speaker: Host | Guest, cast_dir: Path | str) -> VoiceSpec:
     return VoiceSpec(
         speaker_id=speaker.id,
         ref_path=ref,
-        draft_voice=speaker.voice_id_draft or None,
         base_exaggeration=speaker.exaggeration,
         cfg_weight=speaker.cfg_weight,
         speech_rate=speaker.speech_rate,
@@ -128,7 +122,7 @@ class Synth(Protocol):
 
     A synth may also carry a `cache_tag`: takes.py folds it into the render cache key, which is
     how the Chatterbox synths keep one T3 checkpoint's takes out of another checkpoint's cache.
-    Synths without one (piper, null) are keyed as before.
+    Synths without one (null) are keyed as before.
     """
 
     name: str
@@ -168,65 +162,7 @@ class NullSynth:
 
 
 # ---------------------------------------------------------------------------
-# Piper (draft tier)
-# ---------------------------------------------------------------------------
-
-class PiperSynth:
-    name = "piper"
-    deterministic = True
-
-    def __init__(self, settings: Settings, sample_rate: int = 22050):
-        self.settings = settings
-        self.sample_rate = sample_rate
-        self._voices: dict[str, Any] = {}
-
-    def model_path(self, voice: VoiceSpec) -> Path:
-        name = voice.draft_voice
-        if not name:
-            raise RuntimeError(f"speaker {voice.speaker_id} has no voice_id_draft")
-        candidates = [Path(name), self.settings.piper_voices_dir / f"{name}.onnx", self.settings.piper_voices_dir / name / f"{name}.onnx"]
-        for c in candidates:
-            if c.is_file():
-                return c
-        raise FileNotFoundError(f"Piper voice {name} not found under {self.settings.piper_voices_dir}")
-
-    def _load(self, voice: VoiceSpec):
-        path = self.model_path(voice)
-        key = str(path)
-        if key not in self._voices:
-            from piper import PiperVoice  # type: ignore
-
-            self._voices[key] = PiperVoice.load(str(path))
-        return self._voices[key]
-
-    def render(self, text: str, voice: VoiceSpec, *, exaggeration: float, seed: int) -> AudioClip:
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "out.wav"
-            try:
-                model = self._load(voice)
-                import wave
-
-                with wave.open(str(out), "wb") as wav_file:
-                    if hasattr(model, "synthesize_wav"):
-                        model.synthesize_wav(text, wav_file)
-                    else:  # piper-tts < 1.3
-                        model.synthesize(text, wav_file)
-            except ImportError:
-                self._render_cli(text, voice, out)
-            clip = AudioClip.read(out)
-        clip.meta = {"text": text, "speaker": voice.speaker_id}
-        return clip
-
-    def _render_cli(self, text: str, voice: VoiceSpec, out: Path) -> None:
-        binary = shutil.which(self.settings.piper_bin) or self.settings.piper_bin
-        cmd = [binary, "--model", str(self.model_path(voice)), "--output_file", str(out)]
-        proc = subprocess.run(cmd, input=text.encode("utf-8"), capture_output=True, timeout=600)
-        if proc.returncode != 0 or not out.is_file():
-            raise RuntimeError(f"piper failed: {proc.stderr.decode('utf-8', 'ignore')[:500]}")
-
-
-# ---------------------------------------------------------------------------
-# Chatterbox Multilingual (final tier)
+# Chatterbox Multilingual
 # ---------------------------------------------------------------------------
 
 def resolve_torch_device(requested: str) -> str:
@@ -271,7 +207,7 @@ def apply_speech_rate(clip: AudioClip, rate: float) -> AudioClip:
     """
     if abs(rate - 1.0) < 1e-6 or len(clip.samples) == 0:
         return clip
-    import librosa  # lazy: only the chatterbox tier needs this, already a transitive dependency there
+    import librosa  # lazy: only the real synth needs this, already a transitive dependency there
 
     stretched = librosa.effects.time_stretch(clip.samples, rate=rate)
     return AudioClip(np.asarray(stretched, dtype=np.float32), clip.sr, meta=dict(clip.meta))
@@ -450,13 +386,12 @@ class SynthPool:
         self._pool.shutdown(wait=True)
 
 
-def make_synth(tier: str, settings: Settings, *, pool: bool = True) -> Synth:
-    if tier == "null":
+def make_synth(kind: str, settings: Settings, *, pool: bool = True) -> Synth:
+    """``"final"`` is the real Chatterbox render; ``"null"`` is the test stand-in."""
+    if kind == "null":
         return NullSynth(sample_rate=settings.sample_rate, chars_per_second=settings.chars_per_second)
-    if tier == "draft":
-        return PiperSynth(settings)
-    if tier == "final":
+    if kind == "final":
         if pool and settings.chatterbox_workers > 1 and os.environ.get("STUDIEPODCAST_NO_POOL") != "1":
             return SynthPool(ChatterboxSynth, settings.chatterbox_workers, "chatterbox", 24000, settings=settings)
         return ChatterboxSynth(settings)
-    raise ValueError(f"unknown synth tier {tier}")
+    raise ValueError(f"unknown synth kind {kind}")

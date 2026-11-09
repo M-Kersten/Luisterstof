@@ -1,9 +1,5 @@
 """Thorough content plan and lexicon: per section, quotes verified, merged, reviewed."""
 
-import pytest
-from typer.testing import CliRunner
-
-from pipeline.config import Settings
 from pipeline.fake_handlers import default_fake_llm
 from pipeline.models import Chapter, Glossary, Section
 from pipeline.plan.thorough import (
@@ -115,34 +111,8 @@ def test_thorough_lexicon_asks_per_section_and_later_sections_see_earlier_entrie
     assert len(surfaces) == len({s.casefold() for s in surfaces})  # one entry per term
 
 
-def test_plan_mode_defaults_to_thorough_and_can_be_overridden(monkeypatch):
-    for key in ("STUDIEPODCAST_PLAN_MODE", "STUDIEPODCAST_OFFLINE", "STUDIEPODCAST_LLM_BACKEND"):
-        monkeypatch.delenv(key, raising=False)
-    assert Settings.from_env(dotenv=None).plan_mode == "thorough"  # one backend, one honest default
-    monkeypatch.setenv("STUDIEPODCAST_PLAN_MODE", "single")
-    assert Settings.from_env(dotenv=None).plan_mode == "single"
-
-
-def test_pipeline_uses_thorough_mode_and_compare_writes_both_plans(tmp_path, sample_pdf, cast_dir):
-    from pipeline import cli
-
-    cli.state.clear()
-    common = ["--data-dir", str(tmp_path / "data"), "--cast-dir", str(cast_dir), "--fake-llm", "--fake-audio"]
-    runner = CliRunner()
-    assert runner.invoke(cli.app, [*common, "ingest", str(sample_pdf), "--book-id", "demo"]).exit_code == 0
-    result = runner.invoke(cli.app, [*common, "plan", "demo", "ch01", "--compare"])
-    assert result.exit_code == 0, result.output
-    plans = tmp_path / "data" / "books" / "demo" / "plans"
-    assert (plans / "ch01.plan.single.json").is_file() and (plans / "ch01.plan.thorough.json").is_file()
-    assert (plans / "ch01.plan.json").is_file()
-    report = (plans / "ch01.plan-compare.md").read_text(encoding="utf-8")
-    assert "| | single | thorough |" in report and "quotes exact / fuzzy / not in source" in report
-
-
-@pytest.mark.parametrize("mode", ["thorough"])
-def test_run_chapter_with_thorough_plan_reaches_a_script(ingested, mode):
+def test_run_chapter_reaches_a_script_through_the_thorough_plan(ingested):
     p = ingested
-    p.settings = p.settings.with_(plan_mode=mode)
-    out = p.run_chapter("demo", "ch01", upto="script")
+    out = p.run_chapter("demo", "ch01")
     assert out["plan"].key_claims and out["script"].segments
     assert any(c.task == "plan_section" for c in p.llm.calls)
