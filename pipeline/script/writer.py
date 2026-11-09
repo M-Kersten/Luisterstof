@@ -21,6 +21,7 @@ from pipeline.config import Settings
 from pipeline.cues import cue_reaction, pure_reaction, speakable, strip_cues
 from pipeline.llm import LLM, LLMRequest, text_block
 from pipeline.models import (
+    AuditIssue,
     AuditResult,
     Book,
     Cast,
@@ -386,6 +387,27 @@ def _lines_text(script: Script, limit_chars: int = 30000) -> str:
     return text[-limit_chars:] if len(text) > limit_chars else text
 
 
+# Warnings about how the dialogue *speaks* rather than what it says. A script can pass the audit and
+# still read as two monologues next to each other, and the render cannot fix that: an interruption
+# that is not in the script is not in the audio. Quality mode hands these back to the writer as well,
+# so a flat stretch costs a rewrite round instead of a line in the audit json.
+NATURALNESS_RULES = frozenset({
+    "too_few_overlaps",          # not enough interruptions and backchannels for the length
+    "flat_emotional_reaction",   # nobody reacts when something surprising lands
+    "cut_word_missing",          # an interruption that breaks off mid-word cannot be staged
+    "quiz_pause",                # a quiz question nobody waits for
+})
+
+# How many of the flattest body segments a script-wide note is handed to. Rewriting everything to
+# please one warning would put the whole episode at the model's mercy.
+FLAT_SEGMENT_TARGETS = 3
+
+
+def naturalness_issues(audit: AuditResult) -> list[AuditIssue]:
+    """The warnings worth a rewrite in quality mode: overlap, reactions, cut words, quiz beats."""
+    return [i for i in audit.warnings() if i.rule in NATURALNESS_RULES]
+
+
 class Writer:
     def __init__(self, llm: LLM, cast: Cast, settings: Settings, continuity: list[ContinuityEntry] | None = None,
                  *, performance: bool = False):
@@ -532,14 +554,23 @@ class Writer:
     def _interrupt_budget(self, target_minutes: int) -> int:
         return int(math.ceil(target_minutes / 10 * self.settings.max_interrupts_per_10min))
 
-    def revise(self, script: Script, audit: AuditResult, plan: ContentPlan, glossary: Glossary | None) -> Script:
-        """Rewrite only the segments with blocking issues, feeding the issues back to the model."""
-        blocking = audit.blocking()
-        if not blocking:
+    def revise(self, script: Script, audit: AuditResult, plan: ContentPlan, glossary: Glossary | None,
+               *, also_naturalness: bool = False) -> Script:
+        """Rewrite only the segments with problems, feeding the problems back to the model.
+
+        Blocking issues always go back to the writer. With ``also_naturalness`` the warnings about the
+        shape of the dialogue go along, which is the only place interruptions and reactions can still
+        come from: the mixer cannot overlap two lines the script never marked.
+        """
+        issues = audit.blocking()
+        if also_naturalness:
+            issues = issues + naturalness_issues(audit)
+        if not issues:
             return script
         guest = self.cast.guest(script.guest_id) if script.guest_id else None
         per_segment: dict[int, list[str]] = {}
-        for issue in blocking:
+        episode_notes: list[str] = []
+        for issue in issues:
             idx = None
             if issue.line_id:
                 for i, seg in enumerate(script.segments):
@@ -553,10 +584,16 @@ class Writer:
                         break
                 if idx is None:
                     idx = next((i for i, s in enumerate(script.segments) if s.type == "body"), 0)
-            if idx is None:
-                continue
             where = f"regel {issue.line_id}: " if issue.line_id else ""
-            per_segment.setdefault(idx, []).append(f"- {where}{issue.message}" + (f" (suggestie: {issue.suggestion})" if issue.suggestion else ""))
+            note = f"- {where}{issue.message}" + (f" (suggestie: {issue.suggestion})" if issue.suggestion else "")
+            if idx is None:
+                episode_notes.append(note)  # about the episode as a whole, so no single segment owns it
+                continue
+            per_segment.setdefault(idx, []).append(note)
+        if episode_notes:
+            for idx in self._flat_segments(script):
+                notes = per_segment.setdefault(idx, [])
+                notes += [n for n in episode_notes if n not in notes]
 
         briefs = [SegmentBrief(type=s.type, title=s.title or s.type, covers=list(s.covers), target_chars=max(200, s.char_count),
                                instructions=s.brief or "", speakers=self._segment_speakers(s)) for s in script.segments]
@@ -594,6 +631,21 @@ class Writer:
         if seg.type == "guest":
             ids += [g.id for g in self.cast.guests]
         return ids
+
+    def _flat_segments(self, script: Script) -> list[int]:
+        """The body segments with the least overlapping speech, emptiest first.
+
+        Where an episode-wide note about the shape of the dialogue gets delivered. Longest segments
+        among the flat ones go first: they have room for a reaction between the sentences.
+        """
+        scored = []
+        for i, seg in enumerate(script.segments):
+            if seg.type != "body" or not seg.lines:
+                continue
+            overlaps = sum(1 for line in seg.lines if line.overlap.mode != "none")
+            scored.append((overlaps, -len(seg.lines), i))
+        scored.sort()
+        return [i for _, _, i in scored[:FLAT_SEGMENT_TARGETS]]
 
 
 def _label(value: str | None, allowed: tuple[str, ...]) -> str | None:

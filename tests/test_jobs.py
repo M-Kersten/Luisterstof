@@ -31,7 +31,8 @@ def _wait(store, job_id, statuses=("done", "failed", "cancelled"), timeout=20):
 
 def test_stop_drops_a_queued_job_and_halts_a_running_one(tmp_path, settings):
     store = JobStore(tmp_path / "jobs.sqlite")
-    manager = JobManager(store, lambda on_event: Pipeline(settings, fake_llm=True, fake_audio=True, on_event=on_event))
+    manager = JobManager(store, lambda on_event, job_settings=None: Pipeline(
+        job_settings or settings, fake_llm=True, fake_audio=True, on_event=on_event))
     release = threading.Event()
 
     def endless(p):
@@ -56,6 +57,22 @@ def test_stop_drops_a_queued_job_and_halts_a_running_one(tmp_path, settings):
     after = events[-3]["seq"]
     replay = "".join(manager.stream(running["id"], after=after))
     assert replay.count("event: stage") == 2 and f"id: {events[-1]['seq']}" in replay
+
+
+def test_one_run_can_ask_for_quality_mode_without_the_server_having_it(tmp_path, settings):
+    assert not settings.quality_mode  # the server itself is in a hurry
+    store = JobStore(tmp_path / "jobs.sqlite")
+    seen = []
+    manager = JobManager(store, lambda on_event, job_settings=None: Pipeline(
+        job_settings or settings, fake_llm=True, fake_audio=True, on_event=on_event))
+    job = manager.submit("demo", "ch01", "script", lambda p: seen.append(p.settings.quality_mode),
+                         settings=settings.with_quality(True))
+    assert _wait(store, job["id"])["status"] == "done"
+    assert seen == [True]
+    # and the run without it still gets the server's own settings
+    job = manager.submit("demo", "ch02", "script", lambda p: seen.append(p.settings.quality_mode))
+    assert _wait(store, job["id"])["status"] == "done"
+    assert seen == [True, False]
 
 
 def _opencode() -> OpenCodeLLM:

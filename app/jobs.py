@@ -120,7 +120,10 @@ class JobStore:
 class JobManager:
     """Runs submitted callables on one worker thread, streaming their events."""
 
-    def __init__(self, store: JobStore, pipeline_factory: Callable[[Callable[[str, str, dict], None]], Any]):
+    def __init__(self, store: JobStore,
+                 pipeline_factory: Callable[..., Any]):
+        """``pipeline_factory(on_event, settings)`` builds the Pipeline one job runs on. ``settings`` is
+        the per-job copy submitted with it, or None when the job should use the server's own."""
         self.store = store
         self.pipeline_factory = pipeline_factory
         self._queue: queue.Queue[tuple[str, Callable[[Any], Any]] | None] = queue.Queue()
@@ -139,9 +142,12 @@ class JobManager:
         if self._started:
             self._queue.put(None)
 
-    def submit(self, book_id: str, chapter_id: str | None, stage: str, fn: Callable[[Any], Any]) -> dict[str, Any]:
+    def submit(self, book_id: str, chapter_id: str | None, stage: str, fn: Callable[[Any], Any],
+               settings: Any = None) -> dict[str, Any]:
+        """Queue a stage. ``settings`` is handed to the pipeline factory instead of the server's own,
+        which is how one run gets quality mode while the server as a whole does not."""
         job = self.store.create(book_id, chapter_id, stage)
-        self._queue.put((job["id"], fn))
+        self._queue.put((job["id"], fn, settings))
         self.start()
         return job
 
@@ -165,7 +171,7 @@ class JobManager:
             item = self._queue.get()
             if item is None:
                 return
-            job_id, fn = item
+            job_id, fn, job_settings = item
             if self.store.get(job_id)["status"] == "cancelled":
                 continue
             self.store.update(job_id, "running")
@@ -174,7 +180,7 @@ class JobManager:
                 self.store.add_event(job_id, stage, status, data)
 
             try:
-                pipeline = self.pipeline_factory(on_event)
+                pipeline = self.pipeline_factory(on_event, job_settings)
                 with self._lock:
                     self._current = (job_id, pipeline)
                     stop_now = job_id in self._stop_requested

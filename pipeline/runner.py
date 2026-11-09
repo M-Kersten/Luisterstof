@@ -28,7 +28,7 @@ from pipeline.plan.glossary import load_or_create_glossary, propose_lexicon
 from pipeline.script.audit import audit_script
 from pipeline.script.cast import append_continuity, load_banned, load_cast, load_continuity
 from pipeline.script.continuity import extract_continuity
-from pipeline.script.writer import Writer
+from pipeline.script.writer import Writer, naturalness_issues
 
 log = logging.getLogger(__name__)
 
@@ -229,7 +229,8 @@ class Pipeline:
         return glossary
 
     # Stage 3 + 3b
-    def script(self, book_id: str, chapter_id: str, *, revise_rounds: int = 1, llm_checks: bool = True) -> tuple[Script, AuditResult]:
+    def script(self, book_id: str, chapter_id: str, *, revise_rounds: int | None = None,
+               llm_checks: bool = True) -> tuple[Script, AuditResult]:
         book = self.load_book(book_id)
         plan = self.load_plan(book_id, chapter_id)
         glossary = self.load_glossary(book_id)
@@ -241,21 +242,35 @@ class Pipeline:
         writer = Writer(self.llm, self.cast, self.settings, continuity)
         writer.progress = lambda n, total, title: self.emit("script", "segment", chapter=chapter_id, index=n, total=total,
                                                             label=title)
-        self.emit("script", "start", book_id=book_id, chapter=chapter_id, guest=plan.needs_expert)
+        rounds_left = max(0, self.settings.script_revise_rounds if revise_rounds is None else revise_rounds)
+        self.emit("script", "start", book_id=book_id, chapter=chapter_id, guest=plan.needs_expert,
+                  revise_rounds=rounds_left)
         script = writer.write(plan, book, glossary, previous_plan=previous_plan, next_chapter_title=nxt.title if nxt else None)
         script.save(self.paths(book_id).script(chapter_id))
         self.emit("script", "done", book_id=book_id, chapter=chapter_id, lines=sum(len(s.lines) for s in script.segments),
                   estimated_minutes=round(script.estimated_seconds(self.settings.chars_per_second) / 60, 1))
         audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks)
         rounds = 0
-        while not audit.passed and rounds < revise_rounds:
+        while rounds < rounds_left and self._needs_rewrite(audit):
             rounds += 1
-            self.emit("script", "revise", book_id=book_id, chapter=chapter_id, round=rounds, blocking=len(audit.blocking()))
-            script = writer.revise(script, audit, plan, glossary)
+            self.emit("script", "revise", book_id=book_id, chapter=chapter_id, round=rounds,
+                      blocking=len(audit.blocking()), naturalness=len(naturalness_issues(audit)))
+            script = writer.revise(script, audit, plan, glossary, also_naturalness=self.settings.quality_mode)
             script.save(self.paths(book_id).script(chapter_id))
             audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks)
         self.continuity(book_id, chapter_id, script=script)
         return script, audit
+
+    def _needs_rewrite(self, audit: AuditResult) -> bool:
+        """Whether another rewrite round is warranted.
+
+        A blocking issue always is. In quality mode a script that passes but speaks flat is not done
+        either: interruptions and reactions have to be written in, and a run that may take all night
+        should spend some of it on the part the listener actually hears.
+        """
+        if not audit.passed:
+            return True
+        return self.settings.quality_mode and bool(naturalness_issues(audit))
 
     def audit(self, book_id: str, chapter_id: str, *, script: Script | None = None, llm_checks: bool = True) -> AuditResult:
         book = self.load_book(book_id)

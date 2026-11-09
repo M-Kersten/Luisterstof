@@ -17,9 +17,16 @@ app = typer.Typer(help="Studiepodcast: PDF -> content plan -> script -> audio, o
 state: dict[str, Any] = {}
 
 
-def _pipeline():
+def _pipeline(**setting_overrides: Any):
+    """The one Pipeline for this command. Passing settings here (what --reviews and --revise-rounds
+    do) rebuilds it, so a one-off run can spend more passes without touching .env."""
     from pipeline.runner import Pipeline
 
+    if setting_overrides:
+        updated = state["settings"].with_(**setting_overrides)
+        if updated != state["settings"]:
+            state["settings"] = updated
+            state.pop("pipeline", None)
     if "pipeline" not in state:
         def on_event(stage: str, status: str, data: dict) -> None:
             detail = " ".join(f"{k}={v}" for k, v in data.items() if k not in ("book_id",))
@@ -29,12 +36,19 @@ def _pipeline():
     return state["pipeline"]
 
 
+def _quality_option():
+    return typer.Option("--quality", "-Q", help="Quality over speed: more plan review rounds, smaller "
+                       "source parts, more script rewrite rounds and a longer per-call timeout. "
+                       "Same as STUDIEPODCAST_QUALITY_MODE=1; a run like this may take hours.")
+
+
 @app.callback()
 def main(
     data_dir: Annotated[Path | None, typer.Option(help="Where data/books lives.")] = None,
     cast_dir: Annotated[Path | None, typer.Option(help="Where hosts.yaml, guests.yaml, continuity.jsonl live.")] = None,
     fake_llm: Annotated[bool, typer.Option("--fake-llm", help="Canned model output, no API key needed.")] = False,
     fake_audio: Annotated[bool, typer.Option("--fake-audio", help="Shaped noise instead of Piper/Chatterbox.")] = False,
+    quality: Annotated[bool, _quality_option()] = False,
     verbose: Annotated[bool, typer.Option("-v", "--verbose")] = False,
 ):
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
@@ -43,6 +57,8 @@ def main(
         overrides["data_dir"] = data_dir
     if cast_dir is not None:
         overrides["cast_dir"] = cast_dir
+    if quality:
+        overrides["quality_mode"] = True
     state["settings"] = Settings.from_env(**overrides)
     from pipeline.offline import apply_env
 
@@ -62,11 +78,31 @@ def ingest(pdf: Path, book_id: Annotated[str, typer.Option(help="Identifier, e.g
         typer.echo(f"  {ch.id} [{ch.level}] p{ch.pages[0]}-{ch.pages[1]} {ch.title} ({len(ch.sections)} secties, {ch.char_count} tekens)")
 
 
+def _pass_overrides(reviews: int | None = None, part_chars: int | None = None,
+                    revise_rounds: int | None = None) -> dict[str, int]:
+    """The per-run form of the writing-pass knobs; leave one out and the setting stands."""
+    out: dict[str, int] = {}
+    if reviews is not None:
+        out["plan_review_rounds"] = max(0, reviews)
+    if part_chars is not None:
+        out["plan_part_chars"] = max(2000, part_chars)
+    if revise_rounds is not None:
+        out["script_revise_rounds"] = max(0, revise_rounds)
+    return out
+
+
+REVIEWS_HELP = "Review rounds over the plan or lexicon: each one adds what is missing, removes what is double."
+PART_CHARS_HELP = "Characters one thorough call reads. Smaller reads more carefully and costs more calls."
+REVISE_HELP = "How many times a script the audit blocks may be rewritten before it is accepted as it is."
+
+
 @app.command()
 def plan(book_id: str, chapter: Annotated[str | None, typer.Argument()] = None,
-         compare: Annotated[bool, typer.Option(help="Make the plan both ways (single call and thorough) and write a comparison.")] = False):
+         compare: Annotated[bool, typer.Option(help="Make the plan both ways (single call and thorough) and write a comparison.")] = False,
+         reviews: Annotated[int | None, typer.Option(help=REVIEWS_HELP)] = None,
+         part_chars: Annotated[int | None, typer.Option(help=PART_CHARS_HELP)] = None):
     """Stage 2: content plan (claims, definitions, misconceptions) for one or all chapters."""
-    p = _pipeline()
+    p = _pipeline(**_pass_overrides(reviews=reviews, part_chars=part_chars))
     if compare:
         for ch in _chapters(p, book_id, chapter):
             typer.echo(f"  {ch}: {p.compare_plans(book_id, ch)}")
@@ -77,18 +113,22 @@ def plan(book_id: str, chapter: Annotated[str | None, typer.Argument()] = None,
 
 
 @app.command()
-def glossary(book_id: str, chapter: Annotated[str | None, typer.Argument()] = None):
+def glossary(book_id: str, chapter: Annotated[str | None, typer.Argument()] = None,
+             reviews: Annotated[int | None, typer.Option(help=REVIEWS_HELP)] = None,
+             part_chars: Annotated[int | None, typer.Option(help=PART_CHARS_HELP)] = None):
     """Stage 2b: extend the book lexicon from one or all chapters."""
-    p = _pipeline()
+    p = _pipeline(**_pass_overrides(reviews=reviews, part_chars=part_chars))
     for ch in _chapters(p, book_id, chapter):
         g = p.glossary(book_id, ch)
     typer.echo(f"  lexicon: {len(g.entries)} entries -> {p.paths(book_id).glossary_json}")
 
 
 @app.command()
-def script(book_id: str, chapter: str, revise_rounds: int = 1, llm_checks: bool = True):
-    """Stage 3 + 3b: write the script, audit it, revise once if needed, log continuity."""
-    s, a = _pipeline().script(book_id, chapter, revise_rounds=revise_rounds, llm_checks=llm_checks)
+def script(book_id: str, chapter: str,
+           revise_rounds: Annotated[int | None, typer.Option(help=REVISE_HELP)] = None,
+           llm_checks: bool = True):
+    """Stage 3 + 3b: write the script, audit it, revise it while the audit blocks, log continuity."""
+    s, a = _pipeline(**_pass_overrides(revise_rounds=revise_rounds)).script(book_id, chapter, llm_checks=llm_checks)
     _print_audit(a)
 
 
@@ -133,9 +173,12 @@ def render(book_id: str, chapter: str, force: bool = False):
 
 @app.command()
 def run(book_id: str, pdf: Path | None = None, upto: str = "draft", chapters: str | None = None,
-        method: str = "auto", llm_checks: bool = True):
+        method: str = "auto", llm_checks: bool = True,
+        reviews: Annotated[int | None, typer.Option(help=REVIEWS_HELP)] = None,
+        part_chars: Annotated[int | None, typer.Option(help=PART_CHARS_HELP)] = None,
+        revise_rounds: Annotated[int | None, typer.Option(help=REVISE_HELP)] = None):
     """Everything up to the approval gate (or further with --upto render)."""
-    p = _pipeline()
+    p = _pipeline(**_pass_overrides(reviews=reviews, part_chars=part_chars, revise_rounds=revise_rounds))
     if pdf is not None:
         p.ingest(pdf, book_id, method=method)
     wanted = [c.strip() for c in chapters.split(",")] if chapters else None
@@ -258,10 +301,13 @@ def doctor():
     typer.echo("profile:")
     for k, v in settings.profile().items():
         typer.echo(f"  {k}: {v}")
+    typer.echo("writing passes" + (" (quality mode)" if settings.quality_mode else "") + ":")
+    for k, v in settings.writing_passes().items():
+        typer.echo(f"  {k}: {v}")
     from pipeline.config import apple_silicon
 
     typer.echo("packages:")
-    # faster-whisper/whisperx (CUDA tier) and mlx_whisper (Apple Silicon tier) are mutually
+    # faster-whisper/whisperx (the CUDA path) and mlx_whisper (the Apple Silicon path) are mutually
     # exclusive by design; only check the pair that's actually meant to be installed here, so a
     # correctly-absent package on the other platform isn't reported as if something were missing.
     on_mac = apple_silicon()

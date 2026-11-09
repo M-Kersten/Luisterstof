@@ -70,3 +70,21 @@ def test_upload_run_edit_approve(settings, sample_pdf):
         assert client.get("/api/books/nope").status_code == 404
         assert client.post("/api/jobs/nope/cancel").status_code == 404
         assert client.post(f"/api/jobs/{job['id']}/cancel").json()["status"] == "done"  # finished jobs stay as they are
+
+
+def test_health_shows_the_passes_and_one_run_can_ask_for_quality(settings, sample_pdf):
+    app = create_app(settings, fake_llm=True, fake_audio=True)
+    with TestClient(app) as client:
+        health = client.get("/api/health").json()
+        assert health["quality_mode"] is False
+        assert health["writing_passes"]["script_revise_rounds"] == 1
+
+        with open(sample_pdf, "rb") as fh:
+            r = client.post("/api/books", files={"file": ("sample.pdf", fh, "application/pdf")},
+                            data={"book_id": "demo", "auto": "false", "quality": "true"})
+        assert _wait(client, r.json()["job"]["id"])["status"] == "done"
+
+        # a single run takes the unhurried settings even though the server itself is in a hurry
+        r = client.post("/api/books/demo/chapters/ch01/run", json={"stage": "plan", "quality": True})
+        assert _wait(client, r.json()["id"])["status"] == "done"
+        assert client.get("/api/health").json()["quality_mode"] is False

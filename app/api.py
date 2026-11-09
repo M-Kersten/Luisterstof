@@ -40,6 +40,9 @@ class RunRequest(BaseModel):
     upto: str = "draft"
     llm_checks: bool = True
     force: bool = False
+    # Quality over speed for this one run: more plan review rounds, more script rewrite rounds and a
+    # longer per-call ceiling. A chapter written like this can take hours. See Settings.with_quality.
+    quality: bool = False
 
 
 def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None, fake_audio: bool | None = None) -> FastAPI:
@@ -51,8 +54,9 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
     store.requeue_stale()
     cast = load_cast(settings.cast_dir)
 
-    def factory(on_event):
-        return Pipeline(settings, fake_llm=fake_llm, fake_audio=fake_audio, cast=cast, on_event=on_event)
+    def factory(on_event, job_settings: Settings | None = None):
+        return Pipeline(job_settings or settings, fake_llm=fake_llm, fake_audio=fake_audio, cast=cast,
+                        on_event=on_event)
 
     manager = JobManager(store, factory)
     reader = Pipeline(settings, fake_llm=fake_llm, fake_audio=fake_audio, cast=cast)  # read-only helper, no LLM calls
@@ -80,6 +84,7 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
 
         return {"ok": True, "fake_llm": fake_llm, "fake_audio": fake_audio, "model": settings.opencode_model,
                 "llm_backend": settings.llm_backend, "offline": settings.offline, "plan_mode": settings.plan_mode,
+                "quality_mode": settings.quality_mode, "writing_passes": settings.writing_passes(),
                 "tags": known_tags()}
 
     @app.get("/api/books")
@@ -88,7 +93,7 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
 
     @app.post("/api/books")
     async def upload_book(file: UploadFile = File(...), book_id: str = Form(""), method: str = Form("auto"),  # noqa: B008
-                          auto: bool = Form(True), upto: str = Form("draft")) -> dict[str, Any]:
+                          auto: bool = Form(True), upto: str = Form("draft"), quality: bool = Form(False)) -> dict[str, Any]:
         name = book_id.strip() or re.sub(r"[^A-Za-z0-9_-]+", "-", Path(file.filename or "boek").stem).strip("-").lower()[:40] or "boek"
         try:
             validate_id(name)
@@ -106,7 +111,8 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
                 return {ch: {k: str(v) for k, v in out.items() if k in ("draft", "render")} for ch, out in p.run_book(name, upto=upto).items()}
             return {"ingested": True}
 
-        job = manager.submit(name, None, "pipeline" if auto else "ingest", work)
+        job = manager.submit(name, None, "pipeline" if auto else "ingest", work,
+                             settings=settings.with_quality(True) if quality else None)
         return {"book_id": name, "job": job}
 
     @app.get("/api/books/{book_id}")
@@ -217,7 +223,8 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
                 return {k: str(v) if isinstance(v, Path) else True for k, v in p.run_chapter(book_id, chapter_id, upto=req.upto, llm_checks=req.llm_checks).items()}
             raise StageError(f"unknown stage {stage}")
 
-        return manager.submit(book_id, chapter_id, stage, work)
+        return manager.submit(book_id, chapter_id, stage, work,
+                              settings=settings.with_quality(True) if req.quality else None)
 
 
     @app.post("/api/books/{book_id}/chapters/{chapter_id}/approve")

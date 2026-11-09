@@ -60,6 +60,18 @@ def apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64")
 
 
+# Quality over speed: what an unhurried run uses. Nothing here is about speed — the point of the mode
+# is that a chapter gets read, checked against the source and rewritten more times, so one run can
+# legitimately take hours and the per-call ceiling has to be comfortable for a slow local model.
+# max means "at least this many", min means "read no more than this many characters per call".
+QUALITY_PASSES: dict[str, tuple[int | float, str]] = {
+    "plan_review_rounds": (3, "max"),
+    "plan_part_chars": (4000, "min"),
+    "script_revise_rounds": (3, "max"),
+    "opencode_timeout_s": (3600.0, "max"),
+}
+
+
 def default_device() -> str:
     return "mps" if apple_silicon() else "cuda"
 
@@ -86,6 +98,12 @@ class Settings:
     plan_mode: str = "thorough"
     plan_review_rounds: int = 1
     plan_part_chars: int = 8000  # thorough mode: small sections are read together up to this size
+    # How many times a script the audit blocks gets rewritten before it is accepted as it is.
+    script_revise_rounds: int = 1
+
+    # Quality over speed. On, the four passes above go to the values in QUALITY_PASSES and a script
+    # that merely passes the audit but speaks flat gets rewritten too. See Settings.with_quality().
+    quality_mode: bool = False
 
     # Nothing leaves this machine: Hugging Face libraries (Chatterbox, Whisper weights) run from
     # their local cache only and send no telemetry.
@@ -119,16 +137,28 @@ class Settings:
     def from_env(cls, dotenv: Path | str | None = ".env", **overrides) -> Settings:
         if dotenv is not None:
             load_dotenv(dotenv)
+        quality = _env_bool("STUDIEPODCAST_QUALITY_MODE", False) or bool(overrides.pop("quality_mode", False))
+
+        def passes(env: str, name: str) -> int | float:
+            """How much work a writing stage may spend. A value you set on the environment always
+            wins, so quality mode only fills in the passes you left alone."""
+            raw = _env_str(env)
+            if raw is not None:
+                return float(raw) if isinstance(getattr(Settings, name), float) else int(raw)
+            return QUALITY_PASSES[name][0] if quality else getattr(Settings, name)
+
         base = cls(
             plan_mode=_env_str("STUDIEPODCAST_PLAN_MODE", "thorough").strip().casefold(),
-            plan_review_rounds=_env_int("STUDIEPODCAST_PLAN_REVIEW_ROUNDS", 1),
-            plan_part_chars=max(2000, _env_int("STUDIEPODCAST_PLAN_PART_CHARS", 8000)),
+            plan_review_rounds=passes("STUDIEPODCAST_PLAN_REVIEW_ROUNDS", "plan_review_rounds"),
+            plan_part_chars=max(2000, int(passes("STUDIEPODCAST_PLAN_PART_CHARS", "plan_part_chars"))),
+            script_revise_rounds=max(0, int(passes("STUDIEPODCAST_REVISE_ROUNDS", "script_revise_rounds"))),
+            quality_mode=quality,
             offline=_env_bool("STUDIEPODCAST_OFFLINE", False),
             llm_backend=_env_str("STUDIEPODCAST_LLM_BACKEND", "opencode").strip().casefold(),
             opencode_url=_env_str("OPENCODE_URL"),
             opencode_password=_env_str("OPENCODE_PASSWORD"),
             opencode_model=_env_str("OPENCODE_MODEL", "strata/strata"),
-            opencode_timeout_s=_env_float("OPENCODE_TIMEOUT", 1800.0),
+            opencode_timeout_s=float(passes("OPENCODE_TIMEOUT", "opencode_timeout_s")),
             data_dir=Path(_env_str("STUDIEPODCAST_DATA_DIR", "data")),
             cast_dir=Path(_env_str("STUDIEPODCAST_CAST_DIR", "cast")),
             piper_bin=_env_str("PIPER_BIN", "piper"),
@@ -156,7 +186,26 @@ class Settings:
             raise ValueError(f"STUDIEPODCAST_LLM_BACKEND must be 'opencode' or 'fake', not {self.llm_backend!r}")
 
     def with_(self, **overrides) -> Settings:
-        return replace(self, **overrides)
+        quality = overrides.pop("quality_mode", None)
+        out = self.with_quality(bool(quality)) if quality is not None else self
+        return replace(out, **overrides) if overrides else out
+
+    def with_quality(self, on: bool = True) -> Settings:
+        """The settings an unhurried run should use.
+
+        More review rounds over the plan and lexicon, a smaller piece of source per call so it is
+        really read, more rewrite rounds over the script, and a per-call ceiling a thinking local model
+        will not bump into. The dialogue-shape warnings (interruptions, reactions, cut words) count as
+        work to fix in that mode rather than as a note in the audit file. It only ever moves a number
+        towards the values in QUALITY_PASSES, so a run you already made more thorough stays as it is.
+        """
+        changes: dict[str, object] = {}
+        for name, (value, direction) in QUALITY_PASSES.items():
+            current = getattr(self, name)
+            wants_more = value > current if direction == "max" else value < current
+            if wants_more:
+                changes[name] = value
+        return replace(self, quality_mode=on, **changes)
 
     def profile(self) -> dict[str, object]:
         return {
@@ -171,5 +220,18 @@ class Settings:
             "llm_backend": self.llm_backend,
             "llm_model": self.opencode_model,
             "plan_mode": self.plan_mode,
+            "quality_mode": self.quality_mode,
             "offline": self.offline,
+        }
+
+    def writing_passes(self) -> dict[str, object]:
+        """How much work the text side may spend on one chapter, for doctor and the API health page.
+        Quality mode changes these numbers and nothing else: it is the difference between a chapter
+        that gets read once and one that gets read, checked against the source, merged, reviewed and
+        rewritten until the audit is quiet."""
+        return {
+            "plan_review_rounds": self.plan_review_rounds,
+            "plan_part_chars": self.plan_part_chars,
+            "script_revise_rounds": self.script_revise_rounds,
+            "seconds_per_llm_call": self.opencode_timeout_s,
         }

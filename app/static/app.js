@@ -416,12 +416,16 @@ function showTab(name) {
   document.querySelectorAll(".tab").forEach(t => t.hidden = t.id !== `tab-${name}`);
 }
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
-document.querySelectorAll("[data-run]").forEach(b => b.onclick = () => runStage(b.dataset.run));
+document.querySelectorAll("[data-run]").forEach(b => b.onclick = () => {
+  const box = document.querySelector("#quality");
+  runStage(b.dataset.run, box && box.checked ? { quality: true } : {});
+});
 
 $("#upload").onsubmit = async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
   fd.set("auto", fd.get("auto") ? "true" : "false");
+  fd.set("quality", fd.get("quality") ? "true" : "false");
   const r = await fetch("/api/books", { method: "POST", body: fd });
   if (!r.ok) { log("upload mislukt: " + await r.text()); return; }
   const out = await r.json();
@@ -480,7 +484,14 @@ function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":
       (h.offline ? ", offline: niets verlaat het netwerk" : "");
     const plan = h.plan_mode === "thorough" ? "plan per sectie (grondig)" : "plan in één keer";
     const fake = [h.fake_llm && "nep-LLM", h.fake_audio && "nep-audio"].filter(Boolean);
-    $("#health").textContent = `tekst: ${where} · ${plan}${fake.length ? ` · testmodus: ${fake.join(", ")}` : ""}`;
+    const p = h.writing_passes || {};
+    const passes = h.quality_mode
+      ? ` · grondig: ${p.plan_review_rounds}× planreview, ${p.script_revise_rounds}× herschrijven, ${Math.round(p.seconds_per_llm_call / 60)} min per modelruf`
+      : "";
+    $("#health").textContent = `tekst: ${where} · ${plan}${passes}${fake.length ? ` · testmodus: ${fake.join(", ")}` : ""}`;
+    const box = document.querySelector("#quality");
+    if (box) box.checked = !!h.quality_mode;   // the server already runs thorough: show that
+    if (box) box.disabled = !!h.quality_mode;  // and don't pretend you can turn it off per run
     if (h.tags && h.tags.length) $("#tag-list").textContent = h.tags.join(", ");
   } catch {}
   await loadBooks();

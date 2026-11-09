@@ -29,6 +29,8 @@
         </select>
         <label title="Leest het boek in en maakt voor elk hoofdstuk plan, lexicon, script, audit en een Piper-draft. Daarna stopt het bij de goedkeuring; er wordt nog niets met Chatterbox gerenderd.">
           <input type="checkbox" name="auto" checked> direct doorlopen tot de Piper-draft</label>
+        <label title="Kwaliteit boven snelheid: het plan en het lexicon worden vaker nagekeken, het boek wordt in kleinere stukken gelezen, een plat script wordt vaker herschreven en een modelruf krijgt een uur in plaats van dertig minuten. Elk hoofdstuk kan hier uren over doen; een run van een weekend is hiermee normaal.">
+          <input type="checkbox" name="quality"> grondig (kan uren per hoofdstuk duren)</label>
         <button type="submit">Upload</button>
       </form>
       <details class="help">
@@ -91,11 +93,14 @@
         <div class="actions">
           <button data-run="plan" title="Stap 1. Maakt het inhoudsplan opnieuw: beweringen, definities en misvattingen met citaten uit het boek. Overschrijft het bestaande plan.">1 Plan</button>
           <button data-run="glossary" title="Stap 2. Zoekt leenwoorden, formules en afkortingen in dit hoofdstuk en voegt hun uitspraak toe aan het lexicon van het boek. Bestaande termen blijven staan.">2 Lexicon</button>
-          <button data-run="script" title="Stap 3. Schrijft het script opnieuw vanuit het plan, controleert het meteen (audit) en herschrijft één keer wat blokkeert. Overschrijft je handmatige wijzigingen.">3 Script</button>
+          <button data-run="script" title="Stap 3. Schrijft het script opnieuw vanuit het plan, controleert het meteen (audit) en herschrijft wat blokkeert. Overschrijft je handmatige wijzigingen.">3 Script</button>
           <button data-run="audit" title="Stap 4. Controleert het huidige script opnieuw, bijvoorbeeld na je eigen aanpassingen. Verandert niets aan het script.">4 Audit</button>
           <button data-run="draft" title="Stap 5. Snelle voorleesversie met Piper: vlak, maar genoeg om inhoud, lengte en tempo te beoordelen. Kost seconden.">5 Piper draft</button>
           <button id="approve" title="Stap 6. Jouw akkoord op deze scriptversie. Kan alleen als de audit van precies deze versie geslaagd is.">6 Goedkeuren</button>
           <button data-run="render" id="render" title="Stap 7. De echte aflevering met Chatterbox: meerdere opnames per beurt, gecontroleerd en gemonteerd. Kost uren GPU-tijd.">7 Chatterbox render</button>
+          <label class="muted" title="Kwaliteit boven snelheid voor deze run: het plan en het lexicon worden vaker nagekeken, elk deel van het boek wordt in kleinere stukken gelezen, een plat script wordt vaker herschreven en een modelruf krijgt een uur. Een hoofdstuk kan hier uren over doen. Zet STUDIEPODCAST_QUALITY_MODE=1 in .env om het altijd te doen.">
+            <input type="checkbox" id="quality"> grondig
+          </label>
         </div>
       </div>
       <p id="next-step" class="help next"></p>

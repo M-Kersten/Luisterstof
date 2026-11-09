@@ -125,6 +125,38 @@ What this means in practice:
 - **Before a render the pipeline lets go of the writing model**; what OpenCode keeps loaded is
   OpenCode's business.
 
+### Quality over speed
+
+The defaults aim at a usable episode in reasonable time. Quality mode aims at the best episode your
+model can write, for runs that may take all night: set `STUDIEPODCAST_QUALITY_MODE=1` in `.env`,
+pass `--quality` (or `-Q`) to any CLI command, or tick "grondig" in the web app for a single run.
+It changes exactly four numbers and one rule.
+
+| Pass | Normal | Quality mode |
+|---|---|---|
+| `STUDIEPODCAST_PLAN_REVIEW_ROUNDS` | 1 | 3 |
+| `STUDIEPODCAST_PLAN_PART_CHARS` | 8000 | 4000 — smaller pieces of the book, read better |
+| `STUDIEPODCAST_REVISE_ROUNDS` | 1 | 3 |
+| `OPENCODE_TIMEOUT` | 1800 | 3600 — a thinking local model is never cut off mid-answer |
+
+And the rule: in quality mode the rewrite loop does not stop at "the audit no longer blocks". A
+script that passes but speaks flat goes back to the writer as well — too few interruptions and
+backchannels (`too_few_overlaps`), nobody reacting when something surprising lands
+(`flat_emotional_reaction`), an interruption that breaks off mid-word (`cut_word_missing`), a quiz
+question nobody waits for (`quiz_pause`). The notes are handed to the flattest body segments, which
+get rewritten with the warning as instruction. This is the only place those fixes can come from:
+the mixer cannot overlap two lines the script never marked, and no render setting adds a reaction
+that was never written.
+
+A value you set yourself always wins over the mode: quality mode only fills in the passes you left
+alone (upwards only — it never relaxes a setting you already made more thorough), and `--reviews`,
+`--part-chars` and `--revise-rounds` override single runs without touching `.env`.
+`studiepodcast doctor` prints the passes currently in effect.
+
+Budget for it: a chapter that takes ten minutes normally can take an hour or more this way. Running
+a whole book overnight or over a weekend is the intended use; a Stop still ends the job cleanly once
+the model call in flight gets its answer.
+
 ### Keeping book content on your machine
 
 The audio side (Chatterbox, Whisper, Piper) is always local. For the text side, honesty matters:
@@ -226,11 +258,11 @@ studiepodcast continuity                           # what the writer sees from e
 studiepodcast serve            # http://127.0.0.1:8000
 ```
 
-Upload a PDF, watch the stages stream over SSE, browse and download every artifact, edit the script line by line (text, speaker, tags, covers, overlap, pause), re-audit, approve and render. Saving a script bumps its revision and clears the approval, so an edited script is always re-audited before it renders.
+Upload a PDF, watch the stages stream over SSE, browse and download every artifact, edit the script line by line (text, speaker, tags, covers, overlap, pause), re-audit, approve and render. Saving a script bumps its revision and clears the approval, so an edited script is always re-audited before it renders. The "grondig" checkbox (on upload and next to the stage buttons) runs just that job in quality mode, hours-per-chapter thoroughness included, without changing the server's own settings.
 
 While a job runs, a panel at the top shows the stage, a progress bar and the time left. The bar counts plan parts, script segments, audit segments or rendered turns; the line under it adds the chapter step and the tokens the model has written so far. **Stop** ends the job at the next checkpoint: the next take of a render, the next step, or, in a stage that makes several model calls, the next call. The OpenCode endpoint does not stream, so a call already in flight gets its answer first and nothing after it runs. What was saved before the stop stays; the interrupted stage starts over when you run it again. A reloaded page picks up running jobs.
 
-API summary: `POST /api/books` (upload), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|draft|render|all"}`, `POST .../approve`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`.
+API summary: `POST /api/books` (upload, `quality=true` for thorough), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|draft|render|all", "quality": false}`, `POST .../approve`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`. `GET /api/health` reports the model, the plan mode and the writing passes in effect.
 
 ## The cast
 
@@ -262,14 +294,14 @@ you can see which voice you are actually rendering with before an overnight run 
 The timeline tightening above is a mixing-level fix and applies on the *next* `render`, it rebuilds the timeline from whatever takes are already cached, so it does not by itself require re-synthesizing anything or a long run. Three things to check, roughly in order of effort:
 
 1. **Re-run `render` on an already-approved episode.** If the audio you're unhappy with predates this fix, this alone often measurably improves it, and finishes in seconds to minutes since every turn is a cache hit.
-2. **Check the script has enough connective tissue.** `studiepodcast audit` now warns (`too_few_overlaps`, non-blocking) when a script has fewer interrupt/backchannel moments than `min_connective_per_10min` (default 2 per 10 minutes) calls for. No amount of mixing fixes a script that never has the hosts react to each other; if this warning fires, the fix is in the script, not the audio, edit in a few more short reactions and re-audit.
+2. **Check the script has enough connective tissue.** `studiepodcast audit` now warns (`too_few_overlaps`, non-blocking) when a script has fewer interrupt/backchannel moments than `min_connective_per_10min` (default 2 per 10 minutes) calls for. No amount of mixing fixes a script that never has the hosts react to each other; if this warning fires, the fix is in the script, not the audio, edit in a few more short reactions and re-audit. Or let the writer do it: in quality mode these warnings are fed back into the rewrite loop (see *Quality over speed*).
 3. **Push take quality further.** This is the one actually worth an overnight run: raise `STUDIEPODCAST_TAKES` (default 3) to 6-8 and re-render. Since take count is part of the cache key, this forces fresh Chatterbox generation for every turn, giving the take-selection loop a better shot at picking a delivery that already sounds natural at the source, on top of the timeline fix.
 
 ### Emotional continuity between hosts
 
 Overlap and gap timing make the *rhythm* of a conversation; a script where the hosts never react to each other's mood still sounds like two monologues however tight the handoffs are. Two things address this, one in the writing, one in the render:
 
-- The writer prompt (`WRITER_RULES` in `pipeline/script/writer.py`) has a rule that a host's emotion tag on one line is not isolated: the other host, replying, should pick it up in the next line, either by mirroring it (both getting more enthusiastic, or both turning serious together) or by deliberately countering it (staying calm, reining it in), whichever the topic calls for. `studiepodcast audit` checks this is actually happening: `flat_emotional_reaction` (non-blocking, needs at least 4 tagged-then-replied moments in the episode before it fires) warns when the other host picks up on a tag in fewer than `min_emotional_reaction_rate` (default 30%) of the opportunities. If it fires, the fix is the same as `too_few_overlaps`: edit the script, not the audio.
+- The writer prompt (`WRITER_RULES` in `pipeline/script/writer.py`) has a rule that a host's emotion tag on one line is not isolated: the other host, replying, should pick it up in the next line, either by mirroring it (both getting more enthusiastic, or both turning serious together) or by deliberately countering it (staying calm, reining it in), whichever the topic calls for. `studiepodcast audit` checks this is actually happening: `flat_emotional_reaction` (non-blocking, needs at least 4 tagged-then-replied moments in the episode before it fires) warns when the other host picks up on a tag in fewer than `min_emotional_reaction_rate` (default 30%) of the opportunities. If it fires, the fix is the same as `too_few_overlaps`: edit the script, not the audio, or run the script stage in quality mode and let the rewrite loop chase it (see *Quality over speed*).
 - The render itself now also carries a *little* of this even when the script doesn't tag the reacting line explicitly: 20% of the immediately preceding turn's exaggeration bleeds across into the next turn regardless of speaker (see Audio details above). This is a safety net under imperfect script compliance, not a replacement for the writer actually reacting, it is deliberately a light touch (20%, versus 60% for a speaker's own carry) so an untagged neutral reply doesn't get pulled into an emotion it was never written to have.
 
 Together these are what let `exaggeration` and `temperature` (see below) run higher for a genuinely lively episode without every scene reading as one host performing next to a mannequin.
@@ -341,7 +373,9 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 | Variable | Default | Purpose |
 |---|---|---|
 | `STUDIEPODCAST_OFFLINE` | `0` | `1`: nothing leaves the local network (see above) |
+| `STUDIEPODCAST_QUALITY_MODE` | `0` | `1`: quality over speed (see above); raises the passes below and rewrites flat scripts |
 | `STUDIEPODCAST_PLAN_MODE`, `STUDIEPODCAST_PLAN_REVIEW_ROUNDS`, `STUDIEPODCAST_PLAN_PART_CHARS` | `thorough`, `1`, `8000` | How the content plan and lexicon are made; how much text one thorough call reads (`single` is the cheap-and-quick plan) |
+| `STUDIEPODCAST_REVISE_ROUNDS` | `1` | How often a script the audit blocks is rewritten before it is accepted as it is |
 | `OPENCODE_URL`, `OPENCODE_PASSWORD` | service.json, then the desktop app's log, then `http://127.0.0.1:4096` | OpenCode server (backend `opencode`) and its Basic-auth password |
 | `OPENCODE_MODEL` | `strata/strata` | `provider/id` (optionally `#variant`) as OpenCode lists them |
 | `OPENCODE_TIMEOUT` | `1800` | Seconds per OpenCode call; a long chapter takes minutes |
