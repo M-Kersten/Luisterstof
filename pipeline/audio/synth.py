@@ -1,7 +1,8 @@
 """Text-to-speech adapters behind one small protocol.
 
 * ``PiperSynth``: local, deterministic, flat delivery, seconds per episode.
-* ``ChatterboxSynth``: local zero-shot cloning from a frozen Dutch reference.
+* ``ChatterboxSynth``: local zero-shot cloning from a frozen Dutch reference
+  (Multilingual V3 weights, CHATTERBOX_MODEL=v2 for the old ones).
 * ``ElevenLabsDialogue``: cloud accent tier, per block, real overlapping speech.
 * ``NullSynth``: shaped noise with plausible durations, for tests and dry runs.
 
@@ -126,6 +127,13 @@ def voice_spec_for(speaker: Host | Guest, cast_dir: Path | str) -> VoiceSpec:
 
 
 class Synth(Protocol):
+    """One TTS engine.
+
+    A synth may also carry a `cache_tag`: takes.py folds it into the render cache key, which is
+    how the Chatterbox synths keep the T3 checkpoint (CHATTERBOX_MODEL) out of other checkpoints'
+    cached takes. Synths without one (piper, null) are keyed as before.
+    """
+
     name: str
     sample_rate: int
     deterministic: bool
@@ -272,6 +280,111 @@ def apply_speech_rate(clip: AudioClip, rate: float) -> AudioClip:
     return AudioClip(np.asarray(stretched, dtype=np.float32), clip.sr, meta=dict(clip.meta))
 
 
+def chatterbox_required(checkpoint: str) -> list[str]:
+    """The files a load really opens. conds.pt (a built-in voice) and the Chinese dictionary
+    come along with the download but are only read for some generations."""
+    return ["ve.pt", checkpoint, "s3gen.pt", "grapheme_mtl_merged_expanded_v1.json"]
+
+
+def chatterbox_files(checkpoint: str) -> list[str]:
+    """Everything one checkpoint needs from ResembleAI/chatterbox (the tokenizer, encoder and
+    vocoder are shared between V2 and V3; only the T3 weights differ)."""
+    return chatterbox_required(checkpoint) + ["conds.pt", "Cangjie5_TC.json"]
+
+
+def t3_checkpoint(model: str | None) -> str:
+    """CHATTERBOX_MODEL -> the T3 weights file to load.
+
+    Multilingual V3 (June 2026) is the same 0.5B architecture with less hallucination and better
+    speaker similarity than V2; the chatterbox-tts on PyPI (0.1.7) still hardcodes V2, so
+    load_multilingual_model below loads V3 itself.
+    """
+    model = (model or "v3").strip().casefold()
+    if model in ("", "v2", "t3_mtl23ls_v2", "t3_mtl23ls_v2.safetensors"):
+        return "t3_mtl23ls_v2.safetensors"
+    if model in ("v3", "t3_mtl23ls_v3", "t3_mtl23ls_v3.safetensors"):
+        return "t3_mtl23ls_v3.safetensors"
+    if model.endswith(".safetensors"):
+        return model
+    raise ValueError(f"CHATTERBOX_MODEL must be 'v2', 'v3' or a .safetensors filename, not {model!r}")
+
+
+def chatterbox_cache_tag(settings: Settings) -> str:
+    """What the render cache keys on to tell one checkpoint's takes from another's.
+
+    Without this in the key, switching CHATTERBOX_MODEL would keep serving the old
+    checkpoint's cached takes: same text, same seed, different weights.
+    """
+    return f"t3={t3_checkpoint(settings.chatterbox_model)}"
+
+
+def chatterbox_checkpoint_dir(checkpoint: str) -> "Path":
+    """Where the weights live: CHATTERBOX_CKPT_DIR if set, else the Hugging Face cache (offline-safe)."""
+    from chatterbox.mtl_tts import REPO_ID, snapshot_download  # type: ignore
+
+    local = os.environ.get("CHATTERBOX_CKPT_DIR")
+    if local:
+        return Path(local).expanduser()
+    return Path(snapshot_download(repo_id=REPO_ID, repo_type="model", revision="main",
+                                  allow_patterns=chatterbox_files(checkpoint), token=os.environ.get("HF_TOKEN") or None))
+
+
+def _multilingual_from_local(ckpt_dir, device: str, checkpoint: str):
+    """ChatterboxMultilingualTTS.from_local with the caller's T3 file instead of the hardcoded V2."""
+    import torch  # type: ignore
+    from chatterbox.mtl_tts import (ChatterboxMultilingualTTS, Conditionals, MTLTokenizer, S3Gen, T3,  # type: ignore
+                                    T3Config, VoiceEncoder, load_safetensors)
+
+    ckpt_dir = Path(ckpt_dir)
+    map_location = torch.device("cpu") if device in ("cpu", "mps") else None
+
+    ve = VoiceEncoder()
+    ve.load_state_dict(torch.load(ckpt_dir / "ve.pt", map_location=map_location, weights_only=True))
+    ve.to(device).eval()
+
+    t3 = T3(T3Config.multilingual())
+    t3_state = load_safetensors(str(ckpt_dir / checkpoint))
+    if "model" in t3_state:
+        t3_state = t3_state["model"][0]
+    t3.load_state_dict(t3_state)
+    t3.to(device).eval()
+
+    s3gen = S3Gen()
+    s3gen.load_state_dict(torch.load(ckpt_dir / "s3gen.pt", map_location=map_location, weights_only=True))
+    s3gen.to(device).eval()
+
+    tokenizer = MTLTokenizer(str(ckpt_dir / "grapheme_mtl_merged_expanded_v1.json"))
+    conds = None
+    if (builtin_voice := ckpt_dir / "conds.pt").exists():
+        conds = Conditionals.load(builtin_voice, map_location=map_location).to(device)
+    return ChatterboxMultilingualTTS(t3, s3gen, ve, tokenizer, device, conds=conds)
+
+
+def load_multilingual_model(device: str, model: str):
+    """A ChatterboxMultilingualTTS with the chosen T3 weights.
+
+    Every pool worker loads the same checkpoint, so one model in the episode always sounds the
+    same; a failed V3 load is an error, not a silent fallback to V2 (mixing the two in one render
+    would give the same host two voices).
+    """
+    import inspect
+
+    from chatterbox.mtl_tts import ChatterboxMultilingualTTS  # type: ignore
+
+    checkpoint = t3_checkpoint(model)
+    if checkpoint == "t3_mtl23ls_v2.safetensors":
+        return ChatterboxMultilingualTTS.from_pretrained(device=device)  # the shipped V2 path
+    if "t3_model" in inspect.signature(ChatterboxMultilingualTTS.from_pretrained).parameters:
+        return ChatterboxMultilingualTTS.from_pretrained(device=device, t3_model=checkpoint)  # newer chatterbox
+    ckpt_dir = chatterbox_checkpoint_dir(checkpoint)
+    try:
+        return _multilingual_from_local(ckpt_dir, device, checkpoint)
+    except Exception as exc:
+        raise RuntimeError(f"could not load Chatterbox {checkpoint} from {ckpt_dir} ({type(exc).__name__}: {exc}). "
+                           "Run once with STUDIEPODCAST_OFFLINE=0 to download it, put the files in "
+                           "CHATTERBOX_CKPT_DIR, or set CHATTERBOX_MODEL=v2.") from exc
+
+
 class ChatterboxSynth:
     name = "chatterbox"
     deterministic = False
@@ -282,13 +395,12 @@ class ChatterboxSynth:
         self._model = None
         self.sample_rate = 24000
         self.device = settings.device
+        self.cache_tag = chatterbox_cache_tag(settings)
 
     def _load(self):
         if self._model is None:
             self.device = resolve_torch_device(self.settings.device)
-            from chatterbox.mtl_tts import ChatterboxMultilingualTTS  # type: ignore
-
-            self._model = ChatterboxMultilingualTTS.from_pretrained(device=self.device)
+            self._model = load_multilingual_model(self.device, self.settings.chatterbox_model)
             self.sample_rate = int(getattr(self._model, "sr", 24000))
         return self._model
 
@@ -338,13 +450,15 @@ def _pool_render(text: str, voice: VoiceSpec, exaggeration: float, seed: int):
 class SynthPool:
     """Runs renders on a process pool; the caller keeps the Synth protocol."""
 
-    def __init__(self, factory, workers: int, name: str, sample_rate: int, deterministic: bool = False, **kwargs):
+    def __init__(self, factory, workers: int, name: str, sample_rate: int, deterministic: bool = False,
+                 *, cache_tag: str = "", **kwargs):
         import multiprocessing as mp
         from concurrent.futures import ProcessPoolExecutor
 
         self.name = name
         self.sample_rate = sample_rate
         self.deterministic = deterministic
+        self.cache_tag = cache_tag
         ctx = mp.get_context("spawn")
         self._pool = ProcessPoolExecutor(max_workers=max(1, workers), mp_context=ctx, initializer=_pool_init,
                                          initargs=(factory, kwargs))
@@ -412,7 +526,8 @@ def make_synth(tier: str, settings: Settings, *, pool: bool = True) -> Synth:
         return PiperSynth(settings)
     if tier == "final":
         if pool and settings.chatterbox_workers > 1 and os.environ.get("STUDIEPODCAST_NO_POOL") != "1":
-            return SynthPool(ChatterboxSynth, settings.chatterbox_workers, "chatterbox", 24000, settings=settings)
+            return SynthPool(ChatterboxSynth, settings.chatterbox_workers, "chatterbox", 24000,
+                             cache_tag=chatterbox_cache_tag(settings), settings=settings)
         return ChatterboxSynth(settings)
     if tier == "elevenlabs":
         return ElevenLabsDialogue(settings)

@@ -60,8 +60,12 @@ def render_with_takes(
     verify = transcriber is not None and not synth.deterministic
     if synth.deterministic:
         n_takes = 1
+    # the checkpoint tag ("" for piper/null) keeps a CHATTERBOX_MODEL switch from handing back
+    # the other checkpoint's cached takes: same text and seed, different weights
+    tag = getattr(synth, "cache_tag", "")
     params = (f"n={n_takes};wer={wer_threshold};cps={cps:.1f};verify={verify};"
-              f"cfg={voice.cfg_weight:.3f};rate={voice.speech_rate:.3f};temp={voice.temperature:.3f}")
+              f"cfg={voice.cfg_weight:.3f};rate={voice.speech_rate:.3f};temp={voice.temperature:.3f}"
+              + (f";{tag}" if tag else ""))
     sel_key = cache.selection_key(text, voice.ref_hash, exaggeration, synth.name, params)
     cached = cache.get_selection(sel_key)
     if cached:
@@ -83,7 +87,8 @@ def render_with_takes(
         nonlocal verify
         exag = max(0.1, min(0.95, exag))
         key = cache.take_key(text, voice.ref_hash, exag, seed, synth.name,
-                            extra=f"cfg={voice.cfg_weight:.3f};rate={voice.speech_rate:.3f};temp={voice.temperature:.3f}")
+                            extra=f"cfg={voice.cfg_weight:.3f};rate={voice.speech_rate:.3f};"
+                                  f"temp={voice.temperature:.3f}" + (f";{tag}" if tag else ""))
         hit = cache.get(key)
         if hit:
             clip, meta = hit
@@ -97,7 +102,10 @@ def render_with_takes(
                 failures.append(f"{type(exc).__name__}: {exc}")
                 return
             transcript = None
-            cache.put(key, clip, {"text": text, "speaker": voice.speaker_id, "seed": seed, "exaggeration": exag, "synth": synth.name})
+            meta = {"text": text, "speaker": voice.speaker_id, "seed": seed, "exaggeration": exag, "synth": synth.name}
+            if tag:
+                meta["model_tag"] = tag
+            cache.put(key, clip, meta)
         if verify and transcript is None:
             # A transcriber that raises (rather than returning None on a known failure, as
             # FasterWhisperTranscriber/MlxWhisperTranscriber now do) must still not take the

@@ -90,6 +90,14 @@ class Settings:
     local_llm_vision: bool = True  # False: skip figure captions (a model without vision is detected on Ollama anyway)
     local_llm_api_key: str | None = None  # only for servers started with a key (vLLM --api-key, ...)
 
+    # OpenCode backend (backend opencode): the OpenCode app writes with whatever model its own opencode.json
+    # configures; the pipeline only hands over prompts. Leave url/password empty to find the local desktop
+    # server via ~/.config/opencode/service.json and its logs. Model is "provider/model", optionally "#variant".
+    opencode_url: str | None = None
+    opencode_password: str | None = None
+    opencode_model: str = "strata/strata"
+    opencode_timeout_s: float = 1800.0
+
     # Content plan and lexicon: "single" = one call per chapter (suits a frontier model), "thorough" = per
     # section, quotes checked against the source, then a chapter pass and review rounds (pipeline/plan/thorough.py).
     plan_mode: str = "single"
@@ -110,6 +118,7 @@ class Settings:
     piper_voices_dir: Path = Path("~/.local/share/piper/voices")
     device: str = "cuda"
     chatterbox_workers: int = 3
+    chatterbox_model: str = "v3"  # "v2", "v3" or a T3 .safetensors filename from ResembleAI/chatterbox
     whisper_backend: str = "faster"  # faster (CTranslate2) | mlx (Apple Silicon)
     whisper_model: str = "large-v3"
     whisper_compute_type: str = "int8"
@@ -135,7 +144,7 @@ class Settings:
         offline = _env_bool("STUDIEPODCAST_OFFLINE", False)
         backend = _env_str("STUDIEPODCAST_LLM_BACKEND", "local" if offline else "anthropic").strip().casefold()
         base = cls(
-            plan_mode=_env_str("STUDIEPODCAST_PLAN_MODE", "thorough" if backend == "local" else "single").strip().casefold(),
+            plan_mode=_env_str("STUDIEPODCAST_PLAN_MODE", "thorough" if backend in ("local", "opencode") else "single").strip().casefold(),
             plan_review_rounds=_env_int("STUDIEPODCAST_PLAN_REVIEW_ROUNDS", 1),
             plan_part_chars=max(2000, _env_int("STUDIEPODCAST_PLAN_PART_CHARS", 8000)),
             offline=offline,
@@ -150,6 +159,10 @@ class Settings:
             local_llm_timeout_s=_env_float("LOCAL_LLM_TIMEOUT", 1800.0),
             local_llm_vision=_env_bool("LOCAL_LLM_VISION", True),
             local_llm_api_key=_env_str("LOCAL_LLM_API_KEY"),
+            opencode_url=_env_str("OPENCODE_URL"),
+            opencode_password=_env_str("OPENCODE_PASSWORD"),
+            opencode_model=_env_str("OPENCODE_MODEL", "strata/strata"),
+            opencode_timeout_s=_env_float("OPENCODE_TIMEOUT", 1800.0),
             data_dir=Path(_env_str("STUDIEPODCAST_DATA_DIR", "data")),
             cast_dir=Path(_env_str("STUDIEPODCAST_CAST_DIR", "cast")),
             llm_model=_env_str("STUDIEPODCAST_LLM_MODEL", "claude-opus-5"),
@@ -162,6 +175,7 @@ class Settings:
             piper_voices_dir=Path(_env_str("PIPER_VOICES_DIR", "~/.local/share/piper/voices")).expanduser(),
             device=_env_str("STUDIEPODCAST_DEVICE", default_device()),
             chatterbox_workers=_env_int("CHATTERBOX_WORKERS", 1 if apple_silicon() else 3),
+            chatterbox_model=_env_str("CHATTERBOX_MODEL", "v3").strip(),
             whisper_backend=_env_str("WHISPER_BACKEND", "mlx" if apple_silicon() else "faster"),
             whisper_model=_env_str("WHISPER_MODEL", "large-v3"),
             whisper_compute_type=_env_str("WHISPER_COMPUTE_TYPE", "int8"),
@@ -177,6 +191,7 @@ class Settings:
         return replace(self, **overrides)
 
     def profile(self) -> dict[str, object]:
+        llm_models = {"local": self.local_llm_model, "opencode": self.opencode_model}
         return {
             "platform": f"{platform.system()} {platform.machine()}",
             "apple_silicon": apple_silicon(),
@@ -187,7 +202,7 @@ class Settings:
             "takes_per_line": self.takes_per_line,
             "wer_threshold": self.wer_threshold,
             "llm_backend": self.llm_backend,
-            "llm_model": self.local_llm_model if self.llm_backend == "local" else self.llm_model,
+            "llm_model": llm_models.get(self.llm_backend, self.llm_model),
             "plan_mode": self.plan_mode,
             "offline": self.offline,
         }

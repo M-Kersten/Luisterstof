@@ -71,11 +71,11 @@ def on_this_machine(url: str) -> bool:
     return bool(addresses) and all(ipaddress.ip_address(a).is_loopback or a in own for a in addresses)
 
 
-def check_local_url(url: str) -> list[str]:
+def check_local_url(url: str, label: str = "LOCAL_LLM_URL") -> list[str]:
     """Raise unless the URL points at this machine or the private network. Returns its addresses."""
     host = urlparse(url).hostname
     if not host:
-        raise OfflineViolation(f"LOCAL_LLM_URL {url!r} has no host")
+        raise OfflineViolation(f"{label} {url!r} has no host")
     local, addresses = resolve_local(host)
     if not local:
         if not addresses:
@@ -85,6 +85,6 @@ def check_local_url(url: str) -> list[str]:
         else:
             where = f"{host} is {', '.join(addresses)}"
         raise OfflineViolation(
-            f"LOCAL_LLM_URL {url!r} is not on the local network ({where}); in offline mode the model "
+            f"{label} {url!r} is not on the local network ({where}); in offline mode the model "
             "server must be localhost or a private address (10.x, 172.16-31.x, 192.168.x, fc00::/7)")
     return addresses

@@ -28,7 +28,10 @@ def sample_pdf_notoc(tmp_path_factory) -> Path:
 @pytest.fixture
 def cast_dir(tmp_path) -> Path:
     target = tmp_path / "cast"
-    shutil.copytree(REPO / "cast", target, ignore=shutil.ignore_patterns("continuity.jsonl", "refs", "stings"))
+    # The scratch reaction pool and the voice refs are machine state, not cast fixtures: a copy
+    # of someone's local _candidates would decide how many clips `reactions generate` adds.
+    shutil.copytree(REPO / "cast", target,
+                    ignore=shutil.ignore_patterns("continuity.jsonl", "refs", "stings", "_candidates"))
     (target / "refs").mkdir()
     return target
 

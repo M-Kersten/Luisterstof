@@ -312,6 +312,7 @@ def doctor():
     typer.echo(f"piper binary: {shutil.which(settings.piper_bin) or 'not on PATH (python package is enough)'}")
     voices = sorted(p.stem for p in settings.piper_voices_dir.glob("*.onnx")) if settings.piper_voices_dir.exists() else []
     typer.echo(f"piper voices in {settings.piper_voices_dir}: {', '.join(voices) or 'none'}")
+    _doctor_chatterbox(settings)
     from pipeline.script.cast import load_cast
 
     try:
@@ -328,13 +329,56 @@ def doctor():
     typer.echo(f"stings: {', '.join(stings) or 'none'}")
 
 
+def _doctor_chatterbox(settings: Settings) -> None:
+    """Which T3 weights the final tier will load, and whether they are on disk (offline mode needs them there)."""
+    import os
+
+    from pipeline.audio.synth import chatterbox_required, t3_checkpoint
+
+    try:
+        checkpoint = t3_checkpoint(settings.chatterbox_model)
+    except ValueError as exc:
+        typer.echo(f"chatterbox: !! {exc}")
+        return
+    wanted = chatterbox_required(checkpoint)
+    local = os.environ.get("CHATTERBOX_CKPT_DIR")
+    if local:
+        roots = [Path(local).expanduser()]
+    else:
+        cache = os.environ.get("HF_HUB_CACHE")
+        hub = Path(cache) if cache else Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+        hub = hub if hub.name == "hub" else hub / "hub"
+        roots = sorted(hub.glob("models--ResembleAI--chatterbox/snapshots/*"))
+    complete = [r for r in roots if all((r / f).is_file() for f in wanted)]
+    if complete:
+        typer.echo(f"chatterbox: ok, T3 {checkpoint} (CHATTERBOX_MODEL={settings.chatterbox_model}) from {complete[-1]}")
+        return
+    missing = [f for f in wanted if not (roots[-1] / f).is_file()] if roots else wanted
+    typer.echo(f"chatterbox: T3 {checkpoint} (CHATTERBOX_MODEL={settings.chatterbox_model}) is not complete on disk: "
+               f"missing {', '.join(missing)}")
+    typer.echo("  run once with STUDIEPODCAST_OFFLINE=0 to download it, point CHATTERBOX_CKPT_DIR at a folder that "
+               "has the files, or set CHATTERBOX_MODEL=v2 if the older weights are already in the cache")
+
+
 def _doctor_llm(settings: Settings) -> None:
     """Where script-side data goes, and whether the local model server is ready."""
     import os
 
     from pipeline.offline import resolve_local
 
-    if settings.llm_backend == "local":
+    if settings.llm_backend == "opencode":
+        from pipeline.opencode_llm import OpenCodeLLM
+
+        llm = OpenCodeLLM(settings)
+        typer.echo(f"llm: OpenCode ({llm.base_url}) model={llm.model_ref}: book text, plans and scripts stay on this machine")
+        try:
+            ok, detail = llm.check()
+            typer.echo(f"  server: {'ok' if ok else '!!'} {detail}")
+            if settings.offline:
+                typer.echo("  offline: ok, the OpenCode server runs on this machine")
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"  server: !! {type(exc).__name__}: {exc}")
+    elif settings.llm_backend == "local":
         from urllib.parse import urlparse
 
         typer.echo(f"llm: local ({settings.local_llm_api}) {settings.local_llm_url} model={settings.local_llm_model} "

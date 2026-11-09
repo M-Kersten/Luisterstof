@@ -24,6 +24,13 @@ cast/refs/*
 cast/stings/*
 !cast/stings/.gitkeep
 
+# Same reason: the reaction bank is cloned from those references, and the
+# candidate pool is throwaway renders of them.
+cast/reactions/
+
+# Appended after every episode: per-user state, and full of book content.
+cast/continuity.jsonl
+
 # Editor
 .vscode/
 .idea/

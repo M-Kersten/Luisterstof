@@ -1,7 +1,9 @@
 """Content-hash cache so unchanged turns never re-render.
 
 Two layers:
-* takes: keyed on sha256(text + voice_ref + exaggeration + seed + synth)
+* takes: keyed on sha256(text + voice_ref + exaggeration + seed + synth + extra),
+  where extra carries the per-voice knobs and the T3 checkpoint a Chatterbox render
+  used, so a CHATTERBOX_MODEL switch re-renders instead of reusing old takes
 * selections: keyed on the turn (text + voice_ref + base exaggeration + synth
   + loop parameters), pointing at the chosen take.
 """

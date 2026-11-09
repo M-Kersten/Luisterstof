@@ -9,6 +9,8 @@ schema, so the stages never see raw text. Two implementations:
 * ``LocalLLM`` (pipeline/local_llm.py) talks to a model server on your own
   machine or network (Ollama, llama.cpp, vLLM, LM Studio), for books whose
   content must not leave it.
+* ``OpenCodeLLM`` (pipeline/opencode_llm.py) asks a running OpenCode server to
+  generate with the model configured in its own opencode.json.
 * ``FakeLLM`` answers from canned handlers and records every request. Tests
   and the CLI ``--fake-llm`` flag use it.
 """
@@ -232,8 +234,12 @@ def make_llm(settings: Settings, fake: bool = False) -> LLM:
         from pipeline.local_llm import LocalLLM
 
         return LocalLLM(settings)
+    if settings.llm_backend == "opencode":
+        from pipeline.opencode_llm import OpenCodeLLM
+
+        return OpenCodeLLM(settings)
     if settings.llm_backend != "anthropic":
-        raise ValueError(f"STUDIEPODCAST_LLM_BACKEND must be 'anthropic' or 'local', not {settings.llm_backend!r}")
+        raise ValueError(f"STUDIEPODCAST_LLM_BACKEND must be 'anthropic', 'local' or 'opencode', not {settings.llm_backend!r}")
     from pipeline.offline import block_if_offline
 
     block_if_offline(settings, "the Claude API (STUDIEPODCAST_LLM_BACKEND=anthropic)")

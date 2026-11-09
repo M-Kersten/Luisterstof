@@ -127,6 +127,25 @@ Any model that follows a JSON schema works. Run one chapter with two of them and
 - **Robustness.** Every answer is validated against its schema, and an invalid answer goes back to the model once with the error. A model that gets stuck repeating itself gets one retry, then an error that says so, rather than "raise the limit".
 - **Quality.** The audit's support check, which catches lines the source doesn't back up, runs on the same local model. A weaker model means a weaker safety net as well as weaker writing. Read the audit output for the first chapters more carefully than you would with Claude.
 
+## Writing with your own model, through OpenCode
+
+If you already run the model you want to write with inside [OpenCode](https://opencode.ai) — a quantised local checkpoint, a provider you've configured in `opencode.json` — you don't need a second model server. `STUDIEPODCAST_LLM_BACKEND=opencode` hands every text stage (plan, lexicon, script, audit, continuity) to the OpenCode server's HTTP API instead:
+
+```
+STUDIEPODCAST_LLM_BACKEND=opencode
+OPENCODE_MODEL=strata/strata        # provider/id, optionally #variant
+```
+
+No key, no port to configure: the pipeline finds the server through `OPENCODE_URL`, the `url` in `~/.config/opencode/service.json`, the URL the OpenCode desktop app last logged (`%APPDATA%/ai.opencode.desktop/logs/*/main.log`), and finally `http://127.0.0.1:4096`, the `opencode serve` default. The Basic-auth password comes from that same `service.json`, or from `OPENCODE_PASSWORD`. `studiepodcast doctor` prints which URL and model it settled on and checks the model against the server's own list.
+
+What this means in practice:
+
+- **The model's settings belong to OpenCode.** Temperature, reasoning effort and the token budget are not sent per request; whatever that model does in `opencode.json` is what the pipeline gets. `OPENCODE_MODEL` takes `provider/id` (as `studiepodcast doctor` lists them) with an optional `#variant`.
+- **Content plan and lexicon run in thorough mode**, as with the local backend: per section, quotes checked against the source, merged and reviewed. See [Keeping book content on your own network](#keeping-book-content-on-your-own-network) — everything there about part sizes, review rounds and `plan --compare` applies here too.
+- **Figure captions are skipped.** The text endpoint takes text only, so the pipeline asks before sending a picture and goes without one. Nothing else changes; the same schema validation, repair round and repetition guard protect every answer.
+- **A long chapter takes minutes per call**, so `OPENCODE_TIMEOUT` defaults to 1800 seconds. Lower it if you want a stalled server noticed sooner.
+- **Offline mode treats it like any other model server**: `OPENCODE_URL` must resolve to localhost or a private address, and requests never go through an `HTTP(S)_PROXY`. Note that this only keeps *this machine* from reaching out — if the model OpenCode is configured with is a hosted one, your book text goes to that provider. For confidential material, point OpenCode at a local model and run with `STUDIEPODCAST_OFFLINE=1`.
+
 ## Milestones, in order
 
 The brief says not to build around a voice you have not heard, and not to build the UI before the script is good. The CLI follows that order.
@@ -219,6 +238,19 @@ API summary: `POST /api/books` (upload), `GET /api/books/{id}`, `GET /api/books/
 `cast/hosts.yaml` defines two hosts with different epistemic roles: Tessa explains with analogies and pushes them too far, Joris refuses hand-waves and asks the question the listener has. `tic_markers` are phrases only that host may use; the linter blocks a script in which anyone else uses them. `cast/guests.yaml` is a small pool picked by domain when a chapter's plan sets `needs_expert`. `cast/banned_phrases.yaml` is the zero-tolerance list, editable.
 
 ## Audio details
+
+The voice comes from Resemble AI's Chatterbox Multilingual. `CHATTERBOX_MODEL` picks the T3 weights
+inside it: `v3` (default) is the June 2026 release, `v2` the original one the `chatterbox-tts`
+package on PyPI hardcodes; both read the same reference clip, so switching is free and both stay in
+the Hugging Face cache side by side. Only the T3 weights differ, so the same `VoiceSpec`, the same
+`exaggeration`/`cfg_weight`/`temperature` and the same cache keys apply — but the cache key includes
+the checkpoint name, so switching models re-renders rather than silently mixing voices in one episode.
+Every worker in the pool loads the same checkpoint: a failed load is an error instead of a quiet
+fallback, because two hosts rendering on two different checkpoints would sound like two different
+people mid-episode. Point `CHATTERBOX_CKPT_DIR` at a folder of weights (yours or a fine-tune) to skip
+the download entirely. `studiepodcast doctor` prints which T3 file the final tier will load and whether
+the weights around it are all on disk, so you can see which voice you are actually rendering with
+before an overnight run rather than after one.
 
 - Speaker turns (consecutive lines by one speaker) render in one call for prosody continuity; the emotional state carries forward so exaggeration moves gradually. It carries two ways: mostly within a speaker's own successive turns (60% of the previous value survives into the next), and more lightly across speakers, 20% of the other host's immediately preceding turn bleeds into this one, so a line the script didn't explicitly tag still picks up some of the other host's mood instead of resetting to a flat baseline the instant the turn changes.
 - Inter-turn gaps are sampled from 180 to 420 ms. Interrupts start 250 ms before the cut word's onset, duck the interrupted line 12 dB with an 80 ms fade and let the buried fragment run 400 to 600 ms. Backchannels sit at the first word boundary past 60% of the target line at -8 dB and do not advance the timeline.
@@ -321,8 +353,13 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 | `LOCAL_LLM_THINK_EXTRACT` | empty (off on a reasoning model) | Reasoning for plan sections, quote fixes and the lexicon |
 | `LOCAL_LLM_THINK` | model's own default | `off` to answer without reasoning first; `on`; `low`/`medium`/`high` where supported |
 | `LOCAL_LLM_VISION`, `LOCAL_LLM_API_KEY` | `1`, | Image input for figure captions; key for servers started with one |
+| `OPENCODE_URL`, `OPENCODE_PASSWORD` | service.json, then the desktop app's log, then `http://127.0.0.1:4096` | OpenCode server (backend `opencode`) and its Basic-auth password |
+| `OPENCODE_MODEL` | `strata/strata` | `provider/id` (optionally `#variant`) as OpenCode lists them |
+| `OPENCODE_TIMEOUT` | `1800` | Seconds per OpenCode call; a long chapter takes minutes |
 | `PIPER_BIN`, `PIPER_VOICES_DIR` | `piper`, `~/.local/share/piper/voices` | Draft tier |
 | `STUDIEPODCAST_DEVICE` | `cuda`, `mps` on Apple Silicon | Chatterbox device |
+| `CHATTERBOX_MODEL` | `v3` | Chatterbox T3 weights: `v2`, `v3`, or your own `*.safetensors` |
+| `CHATTERBOX_CKPT_DIR` | the Hugging Face cache | Use a local folder of Chatterbox weights instead of downloading |
 | `CHATTERBOX_WORKERS` | `3`, `1` on Apple Silicon | Parallel model instances (a few GB each) |
 | `WHISPER_BACKEND` | `faster`, `mlx` on Apple Silicon | Verification and alignment backend |
 | `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE` | `large-v3`, `int8` | faster-whisper model |
