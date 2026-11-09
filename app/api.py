@@ -30,10 +30,6 @@ from pipeline.script.cast import continuity_text, load_cast, load_continuity
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-class ElevenRequest(BaseModel):
-    blocks: list[str]
-
-
 class ApproveRequest(BaseModel):
     note: str | None = None
     force: bool = False
@@ -80,10 +76,9 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
     # ------------------------------------------------------------------ books
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        model = settings.local_llm_model if settings.llm_backend == "local" else settings.llm_model
         from pipeline.tags import known_tags
 
-        return {"ok": True, "fake_llm": fake_llm, "fake_audio": fake_audio, "model": model,
+        return {"ok": True, "fake_llm": fake_llm, "fake_audio": fake_audio, "model": settings.opencode_model,
                 "llm_backend": settings.llm_backend, "offline": settings.offline, "plan_mode": settings.plan_mode,
                 "tags": known_tags()}
 
@@ -233,18 +228,6 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         except StageError as exc:
             raise HTTPException(409, str(exc)) from exc
         return approval.model_dump()
-
-
-    @app.post("/api/books/{book_id}/chapters/{chapter_id}/eleven")
-    def eleven(book_id: str, chapter_id: str, req: ElevenRequest) -> dict[str, Any]:
-        book_or_404(book_id)
-        blocks = list(req.blocks)
-
-        def work(p: Pipeline):
-            p.eleven(book_id, chapter_id, blocks)
-            return p.render(book_id, chapter_id, force=True)[0]
-
-        return manager.submit(book_id, chapter_id, "eleven", work)
 
     # ------------------------------------------------------------------- jobs
     @app.get("/api/jobs")

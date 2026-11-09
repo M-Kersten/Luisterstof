@@ -311,9 +311,6 @@ def check_support(script: Script, plan: ContentPlan, book: Book, llm: LLM, plan_
             system=SUPPORT_SYSTEM,
             user="\n\n".join(rows) + "\n\nGeef een oordeel voor elke regel: " + ", ".join(ids),
             schema=SupportOut,
-            effort="high",
-            max_tokens=8000,
-            cache_system=False,
         )
         out = llm.generate(request)
         assert isinstance(out, SupportOut)
@@ -336,9 +333,6 @@ def lint_llm(script: Script, llm: LLM) -> list[AuditIssue]:
         system=LINT_SYSTEM,
         user="\n".join(rows),
         schema=LintOut,
-        effort="medium",
-        max_tokens=6000,
-        cache_system=False,
     )
     out = llm.generate(request)
     assert isinstance(out, LintOut)

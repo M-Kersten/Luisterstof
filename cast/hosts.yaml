@@ -25,7 +25,6 @@ hosts:
   - id: tessa
     name: Tessa
     role: explainer
-    voice_id_final: ""
     voice_id_draft: "nl_NL-mls-medium"
     voice_ref: "refs/tessa.wav"
     background: >-
@@ -55,7 +54,6 @@ hosts:
   - id: joris
     name: Joris
     role: skeptic
-    voice_id_final: ""
     voice_id_draft: "nl_NL-pim-medium"
     voice_ref: "refs/joris.wav"
     background: >-

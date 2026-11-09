@@ -109,9 +109,6 @@ class LLMCaptioner:
             system=self.SYSTEM,
             user=[image_block(base64.standard_b64encode(png).decode("ascii")), text_block(prompt)],
             schema=FigureDescription,
-            max_tokens=1024,
-            effort="low",
-            cache_system=False,
         )
         result = self.llm.generate(request)
         assert isinstance(result, FigureDescription)

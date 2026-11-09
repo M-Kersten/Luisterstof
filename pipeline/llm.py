@@ -3,22 +3,23 @@
 Every stage that needs a model goes through ``LLM.generate`` with a pydantic
 schema, so the stages never see raw text. Two implementations:
 
-* ``AnthropicLLM`` calls the Claude API with structured outputs, adaptive
-  thinking, prompt caching on the stable system prefix and server-side
-  refusal fallbacks.
-* ``LocalLLM`` (pipeline/local_llm.py) talks to a model server on your own
-  machine or network (Ollama, llama.cpp, vLLM, LM Studio), for books whose
-  content must not leave it.
 * ``OpenCodeLLM`` (pipeline/opencode_llm.py) asks a running OpenCode server to
-  generate with the model configured in its own opencode.json.
+  generate with the model configured in its own opencode.json. This is the
+  normal path: the model runs on your own machine and book text stays there.
 * ``FakeLLM`` answers from canned handlers and records every request. Tests
   and the CLI ``--fake-llm`` flag use it.
+
+The OpenCode endpoint takes a prompt and returns text, so the JSON schema
+travels inside the prompt (``SCHEMA_INSTRUCTION``, ``inline_schema``) and the
+answer is cleaned of thinking blocks (``clean_answer``), checked for loops
+(``looping``) and parsed here.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -39,10 +40,6 @@ class LLMError(RuntimeError):
     pass
 
 
-class LLMRefusal(LLMError):
-    pass
-
-
 class LLMTruncated(LLMError):
     pass
 
@@ -53,9 +50,6 @@ class LLMRequest:
     system: ContentBlocks
     user: ContentBlocks
     schema: type[BaseModel]
-    max_tokens: int | None = None
-    effort: str | None = None
-    cache_system: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -64,8 +58,6 @@ class Usage:
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
     seconds: float = 0.0
 
     def add(self, usage: Any, seconds: float) -> None:
@@ -75,16 +67,12 @@ class Usage:
             return
         self.input_tokens += getattr(usage, "input_tokens", 0) or 0
         self.output_tokens += getattr(usage, "output_tokens", 0) or 0
-        self.cache_read_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
-        self.cache_write_tokens += getattr(usage, "cache_creation_input_tokens", 0) or 0
 
     def as_dict(self) -> dict[str, float | int]:
         return {
             "calls": self.calls,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
-            "cache_read_tokens": self.cache_read_tokens,
-            "cache_write_tokens": self.cache_write_tokens,
             "seconds": round(self.seconds, 1),
         }
 
@@ -96,11 +84,8 @@ class LLM(Protocol):
     def generate(self, request: LLMRequest) -> BaseModel: ...
 
 
-def text_block(text: str, cache: bool = False) -> dict[str, Any]:
-    block: dict[str, Any] = {"type": "text", "text": text}
-    if cache:
-        block["cache_control"] = {"type": "ephemeral"}
-    return block
+def text_block(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text}
 
 
 def image_block(data_b64: str, media_type: str = "image/png") -> dict[str, Any]:
@@ -113,65 +98,68 @@ def _as_blocks(content: ContentBlocks) -> list[dict[str, Any]]:
     return [text_block(b) if isinstance(b, str) else dict(b) for b in content]
 
 
-class AnthropicLLM:
-    """Claude via the official SDK. Structured output is the only output mode."""
+# ---------------------------------------------------------------------------
+# prompt and answer helpers, shared by the OpenCode backend
+# ---------------------------------------------------------------------------
 
-    name = "anthropic"
+CHARS_PER_TOKEN = 3.2  # conservative for Dutch: overestimating fails loudly, underestimating truncates silently
+_THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
-    FALLBACK_BETA = "server-side-fallback-2026-07-01"
+SCHEMA_INSTRUCTION = (
+    "\n\n## Antwoordformaat\nAntwoord uitsluitend met één JSON-object dat voldoet aan dit JSON-schema. "
+    "Geen uitleg, geen markdown, geen tekst ervoor of erna.\n"
+)
 
-    def __init__(self, settings: Settings, client: Any | None = None, *, fallbacks: bool | None = None):
-        from pipeline.offline import block_if_offline
 
-        block_if_offline(settings, "the Claude API")
-        self.settings = settings
-        self.usage = Usage()
-        if client is None:
-            import anthropic
+def inline_schema(schema: dict) -> dict:
+    """Resolve pydantic's ``$defs``/``$ref``: not every model follows references when it writes JSON by hand."""
+    defs = schema.get("$defs", {})
 
-            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        self.client = client
-        self.model = settings.llm_model
-        if fallbacks is None:
-            fallbacks = self.model.startswith(("claude-opus-5", "claude-fable", "claude-mythos"))
-        self.fallbacks = fallbacks
+    def resolve(node: Any, seen: frozenset[str]) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node:
+                name = node["$ref"].rsplit("/", 1)[-1]
+                if name in seen:
+                    raise ValueError(f"recursive schema through {name}")
+                target = resolve(defs[name], seen | {name})
+                return {**target, **{k: resolve(v, seen) for k, v in node.items() if k != "$ref"}}
+            return {k: resolve(v, seen) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [resolve(x, seen) for x in node]
+        return node
 
-    def _system_blocks(self, request: LLMRequest) -> list[dict[str, Any]]:
-        blocks = _as_blocks(request.system)
-        if request.cache_system and blocks:
-            blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
-        return blocks
+    return resolve(schema, frozenset())
 
-    def generate(self, request: LLMRequest) -> BaseModel:
-        kwargs: dict[str, Any] = dict(
-            model=self.model,
-            max_tokens=request.max_tokens or self.settings.llm_max_tokens,
-            system=self._system_blocks(request),
-            messages=[{"role": "user", "content": _as_blocks(request.user)}],
-            output_format=request.schema,
-            thinking={"type": "adaptive"},
-            output_config={"effort": request.effort or self.settings.llm_effort},
-        )
-        if self.fallbacks:
-            kwargs["betas"] = [self.FALLBACK_BETA]
-            kwargs["fallbacks"] = "default"
-        started = time.monotonic()
-        log.info("llm %s task=%s model=%s", self.name, request.task, self.model)
-        with self.client.beta.messages.stream(**kwargs) as stream:
-            message = stream.get_final_message()
-        self.usage.add(getattr(message, "usage", None), time.monotonic() - started)
 
-        if message.stop_reason == "refusal":
-            details = getattr(message, "stop_details", None)
-            raise LLMRefusal(f"model refused task {request.task}: {getattr(details, 'explanation', '')}")
-        if message.stop_reason == "max_tokens":
-            raise LLMTruncated(f"task {request.task} hit max_tokens={kwargs['max_tokens']}")
+def estimate_tokens(text: str) -> int:
+    return int(len(text) / CHARS_PER_TOKEN) + 1
 
-        parsed = getattr(message, "parsed_output", None)
-        if parsed is not None:
-            return parsed
-        text = "".join(getattr(b, "text", "") for b in message.content if getattr(b, "type", "") == "text")
-        return parse_json_into(text, request.schema)
+
+def _text_and_images(content: ContentBlocks) -> tuple[str, list[tuple[str, str]]]:
+    texts: list[str] = []
+    images: list[tuple[str, str]] = []
+    for block in _as_blocks(content):
+        if block.get("type") == "image":
+            source = block.get("source", {})
+            images.append((source.get("media_type", "image/png"), source.get("data", "")))
+        elif block.get("type") == "text" and block.get("text"):
+            texts.append(block["text"])
+    return "\n\n".join(texts), images
+
+
+def looping(text: str, window: int = 2500, repeats: int = 6) -> bool:
+    """True when the tail of an answer is one fragment over and over (numbers ignored)."""
+    tail = re.sub(r"\d+", "#", text[-window:])
+    parts = [p.strip(' \t"[],{}') for p in re.split(r"[\n,]", tail)]
+    parts = [p for p in parts if len(p) >= 25]  # short key/value pairs repeat in any healthy answer
+    if len(parts) < repeats:
+        return False
+    return max(parts.count(p) for p in set(parts)) >= repeats
+
+
+def clean_answer(text: str) -> str:
+    """Drop the reasoning block some models (Qwen3, R1 distills) put before the answer."""
+    return _THINK.sub("", text or "").strip()
 
 
 def parse_json_into(text: str, schema: type[SchemaT]) -> SchemaT:
@@ -226,21 +214,10 @@ class FakeLLM:
 
 
 def make_llm(settings: Settings, fake: bool = False) -> LLM:
-    if fake:
+    if fake or settings.llm_backend == "fake":
         from pipeline.fake_handlers import default_fake_llm
 
         return default_fake_llm()
-    if settings.llm_backend == "local":
-        from pipeline.local_llm import LocalLLM
+    from pipeline.opencode_llm import OpenCodeLLM
 
-        return LocalLLM(settings)
-    if settings.llm_backend == "opencode":
-        from pipeline.opencode_llm import OpenCodeLLM
-
-        return OpenCodeLLM(settings)
-    if settings.llm_backend != "anthropic":
-        raise ValueError(f"STUDIEPODCAST_LLM_BACKEND must be 'anthropic', 'local' or 'opencode', not {settings.llm_backend!r}")
-    from pipeline.offline import block_if_offline
-
-    block_if_offline(settings, "the Claude API (STUDIEPODCAST_LLM_BACKEND=anthropic)")
-    return AnthropicLLM(settings)
+    return OpenCodeLLM(settings)

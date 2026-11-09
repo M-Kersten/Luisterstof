@@ -1,21 +1,20 @@
-"""Your own model, through the OpenCode app instead of a model server.
+"""Your own model, through the OpenCode server instead of a model server.
 
-Where ``LocalLLM`` talks to Ollama or llama.cpp directly, this backend asks a
-running OpenCode server to generate on its behalf: the model, its context
-window and its quantisation live in OpenCode's own configuration
-(``opencode.json``), and the pipeline just hands over a prompt. One endpoint
-does all the work:
+This is the pipeline's only writing backend. It asks a running OpenCode server
+to generate on its behalf: the model, its context window and its quantisation
+live in OpenCode's own configuration (``opencode.json``), and the pipeline just
+hands over a prompt. Two endpoints do all the work:
 
 * ``POST /api/experimental/generate/text`` with ``{prompt, model}`` answers
   with ``{data: {text}}``, stateless, in OpenCode's Basic-auth HTTP API.
 * ``GET /api/model`` lists what the server can reach (used by ``doctor``).
 
-Like LocalLLM, the JSON schema is written into the prompt and every answer is
-validated; an invalid one goes back once together with the error. Unlike it,
-temperature, thinking and the token budget are not sent: they belong to the
-model's configuration in OpenCode, not to the caller. The endpoint is text
-only, so ``supports_images`` is False and figure captions are skipped (the
-runner asks before it ever sends a picture).
+The JSON schema is written into the prompt and every answer is validated; an
+invalid one goes back once together with the error. Temperature, thinking and
+the token budget are not sent: they belong to the model's configuration in
+OpenCode, not to the caller. The endpoint is text only, so ``supports_images``
+is False and figure captions are skipped (the runner asks before it ever sends
+a picture).
 
 The server is discovered in this order: ``OPENCODE_URL``, the ``url`` field of
 ``~/.config/opencode/service.json``, the URL the OpenCode desktop app last
@@ -42,8 +41,19 @@ from pydantic import BaseModel
 
 from pipeline.cancel import Cancelled
 from pipeline.config import Settings
-from pipeline.llm import LLMError, LLMRequest, LLMTruncated, Usage, parse_json_into
-from pipeline.local_llm import SCHEMA_INSTRUCTION, _text_and_images, clean_answer, estimate_tokens, inline_schema, looping
+from pipeline.llm import (
+    LLMError,
+    LLMRequest,
+    LLMTruncated,
+    SCHEMA_INSTRUCTION,
+    Usage,
+    _text_and_images,
+    clean_answer,
+    estimate_tokens,
+    inline_schema,
+    looping,
+    parse_json_into,
+)
 from pipeline.offline import check_local_url
 
 log = logging.getLogger(__name__)
@@ -111,7 +121,7 @@ def split_model(ref: str) -> tuple[str, str, str | None]:
 # ---------------------------------------------------------------------------
 
 class OpenCodeLLM:
-    """Same contract as AnthropicLLM and LocalLLM: a request with a pydantic schema in, a validated instance out."""
+    """The one LLM backend: a request with a pydantic schema in, a validated instance out."""
 
     name = "opencode"
 
@@ -123,6 +133,7 @@ class OpenCodeLLM:
             check_local_url(self.base_url, label="OPENCODE_URL")
         self.provider_id, self.model_id, self.variant = split_model(settings.opencode_model)
         self._abort = threading.Event()
+        self.on_tokens = None  # set by the runner: (task, answer tokens, seconds), for the progress display
         headers = {}
         if password:
             token = base64.b64encode(f"{AUTH_USERNAME}:{password}".encode()).decode()
@@ -186,10 +197,12 @@ class OpenCodeLLM:
                 raise Cancelled()
             answer = clean_answer(self._post(prompt))
             seconds = time.monotonic() - started
-            self.usage.add(SimpleNamespace(input_tokens=estimate_tokens(prompt), output_tokens=estimate_tokens(answer)),
-                           seconds)
+            out_tokens = estimate_tokens(answer)
+            self.usage.add(SimpleNamespace(input_tokens=estimate_tokens(prompt), output_tokens=out_tokens), seconds)
+            if self.on_tokens:
+                self.on_tokens(request.task, out_tokens, seconds)
             log.info("llm %s task=%s: ~%d prompt + ~%d answer tokens in %.0f s", self.name, request.task,
-                     estimate_tokens(prompt), estimate_tokens(answer), seconds)
+                     estimate_tokens(prompt), out_tokens, seconds)
             if looping(answer):
                 if attempt < RETRIES:
                     log.warning("model repeated itself on %s until the limit; retrying once", request.task)

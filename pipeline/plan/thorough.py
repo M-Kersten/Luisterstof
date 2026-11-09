@@ -243,7 +243,6 @@ def _section_request(book: Book, chapter: Chapter, part: Part, fix: str | None =
                 text_block(f"# Boek: {book.title}\n# Hoofdstuk {chapter.id}: {chapter.title}\n\n{part.text()}")],
         user=user,
         schema=SectionPlanOut,
-        effort="high",
     )
 
 
@@ -287,7 +286,6 @@ def _fix_quotes(llm: LLM, part: Part, failed: list[tuple[str, str, str]]) -> dic
                 text_block(part.text())],
         user=f"Deze citaten staan niet letterlijk in de tekst:\n{listing}",
         schema=QuoteFixOut,
-        effort="medium",
     )
     out = llm.generate(request)
     assert isinstance(out, QuoteFixOut)
@@ -425,7 +423,6 @@ def plan_chapter_thorough(book: Book, chapter_id: str, llm: LLM, cast: Cast | No
                 text_block(f"# Boek: {book.title}\n# Hoofdstuk {chapter.id}: {chapter.title}\n\n{pool_text}")],
         user=f"Stel het inhoudsplan samen voor hoofdstuk {chapter.id} ({chapter.title}).",
         schema=PlanMergeOut,
-        effort="high",
     ))
     assert isinstance(merged, PlanMergeOut)
     selected = _clean_selection(merged.key_claims, pool)
@@ -439,7 +436,6 @@ def plan_chapter_thorough(book: Book, chapter_id: str, llm: LLM, cast: Cast | No
             system=[text_block(REVIEW_SYSTEM), text_block(pool_text)],
             user=_selection_text(selected, pool, chapter),
             schema=PlanReviewOut,
-            effort="high",
         ))
         assert isinstance(review, PlanReviewOut)
         remove = {r.strip().strip("[]") for r in review.remove}

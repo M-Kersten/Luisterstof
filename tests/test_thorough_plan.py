@@ -115,12 +115,10 @@ def test_thorough_lexicon_asks_per_section_and_later_sections_see_earlier_entrie
     assert len(surfaces) == len({s.casefold() for s in surfaces})  # one entry per term
 
 
-def test_plan_mode_defaults_follow_the_backend(monkeypatch):
+def test_plan_mode_defaults_to_thorough_and_can_be_overridden(monkeypatch):
     for key in ("STUDIEPODCAST_PLAN_MODE", "STUDIEPODCAST_OFFLINE", "STUDIEPODCAST_LLM_BACKEND"):
         monkeypatch.delenv(key, raising=False)
-    assert Settings.from_env(dotenv=None).plan_mode == "single"
-    monkeypatch.setenv("STUDIEPODCAST_LLM_BACKEND", "local")
-    assert Settings.from_env(dotenv=None).plan_mode == "thorough"
+    assert Settings.from_env(dotenv=None).plan_mode == "thorough"  # one backend, one honest default
     monkeypatch.setenv("STUDIEPODCAST_PLAN_MODE", "single")
     assert Settings.from_env(dotenv=None).plan_mode == "single"
 

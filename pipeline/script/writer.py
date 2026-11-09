@@ -506,7 +506,6 @@ class Writer:
                 system=system,
                 user=self._user(brief, script, max(0, budget - used)),
                 schema=SegmentOut,
-                effort="high",
                 metadata={"segment": brief.type},
             )
             out = self.llm.generate(request)
@@ -524,7 +523,6 @@ class Writer:
             system=self._system(plan, glossary, None, [brief]),
             user=self._user(brief, script, 2, fix=fix),
             schema=PerformanceSegmentOut if self.performance else SegmentOut,
-            effort="high",
             metadata={"segment": brief.type},
         )
         out = self.llm.generate(request)
@@ -582,7 +580,6 @@ class Writer:
                 system=system,
                 user=self._user(briefs[i], new_script, max(0, budget - used), fix=fix),
                 schema=SegmentOut,
-                effort="high",
                 metadata={"segment": seg.type, "revision": True},
             )
             out = self.llm.generate(request)

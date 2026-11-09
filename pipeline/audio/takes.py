@@ -60,7 +60,7 @@ def render_with_takes(
     verify = transcriber is not None and not synth.deterministic
     if synth.deterministic:
         n_takes = 1
-    # the checkpoint tag ("" for piper/null) keeps a CHATTERBOX_MODEL switch from handing back
+    # the checkpoint tag ("" for piper/null) keeps a checkpoint switch from handing back
     # the other checkpoint's cached takes: same text and seed, different weights
     tag = getattr(synth, "cache_tag", "")
     params = (f"n={n_takes};wer={wer_threshold};cps={cps:.1f};verify={verify};"

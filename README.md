@@ -16,7 +16,6 @@ upload PDF
   -> piper draft       out/chXX.draft.mp3 seconds, free, for a first listen
   === APPROVAL GATE ===
   -> chatterbox render out/chXX.mp3       take selection, WhisperX alignment, timeline assembly, mix
-  -> elevenlabs blocks (optional)         per block, cents, real overlapping speech
 ```
 
 Every stage writes a file under `data/books/<book_id>/`, every file is inspectable in the web UI, and no stage reaches into another stage's internals. Content (stage 2) and comedy (stage 3) are generated separately on purpose.
@@ -28,7 +27,7 @@ Python 3.11, 3.12 or 3.13. Not 3.14 yet: torch commonly lags a new Python releas
 ```bash
 uv venv --python 3.12 .venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
-cp .env.example .env        # fill in ANTHROPIC_API_KEY; the rest is optional
+cp .env.example .env        # everything has a default; see OpenCode below
 ```
 
 Local synthesis is a separate install because torch is large and platform-specific. Pick one:
@@ -75,76 +74,76 @@ studiepodcast --fake-llm --fake-audio run demo --pdf data/sample_book.pdf --upto
 studiepodcast status demo
 ```
 
-## Keeping book content on your own network
-
-By default the text side (plan, lexicon, script, audit, continuity, figure captions) runs on the Claude API, which means book text leaves your network. The audio side (Chatterbox, Whisper, Piper) is always local. For confidential material, run the text side on a model server you control and turn on offline mode:
-
-```powershell
-winget install Ollama.Ollama          # or the installer from ollama.com
-ollama pull gemma4:31b
-```
-
-In `.env`:
-
-```
-STUDIEPODCAST_OFFLINE=1
-LOCAL_LLM_MODEL=gemma4:31b
-```
-
-Then check with `studiepodcast doctor`. It shows which backend is in use, whether the model server's address is on your local network, whether the model is pulled, and which models are in the Hugging Face cache.
-
-What offline mode enforces:
-
-- **The Claude API and ElevenLabs refuse to start.** `eleven` fails with an explanation instead of sending text.
-- **The model server has to be local.** `LOCAL_LLM_URL` must resolve to localhost or a private address (10.x, 172.16–31.x, 192.168.x). Anything else is refused before a request goes out. Traffic to it never goes through an `HTTP(S)_PROXY` from the environment.
-- **Hugging Face runs from its local cache**, with telemetry off. Chatterbox, Whisper and WhisperX weights you've already downloaded keep working; `doctor` lists them. To fetch a new one, turn offline mode off for that one run. Downloading weights sends no book content.
-- **The web app serves no CDN-loaded pages.** The `/docs` API explorer is switched off.
-
-Details:
-
-**Which model.** Sizes are Ollama's downloads, chosen for the 24 GB of an RTX PRO 5000 laptop GPU. With the default 32k context the largest sits at the edge of it. Whatever doesn't fit, Ollama moves to system RAM on its own, which only costs speed; `ollama ps` shows the split after the first request ("100% GPU" is all on the card).
-
-| model | size | when |
-|---|---|---|
-| `gemma4:31b` (default) | 20 GB | best Dutch writing in this size class; reads figures |
-| `gemma4:26b` | 19 GB | mixture of experts, 4B active: several times faster, a little less careful |
-| `qwen3.8:27b` | 18 GB | strongest at reasoning; reads figures |
-
-Any model that follows a JSON schema works. Run one chapter with two of them and compare the scripts and the audits before you commit. Bigger models run too, with the part that doesn't fit on the GPU in system RAM: much slower, which a weekend run can absorb. `qwen3.5:122b` (81 GB, mixture of experts) is the largest current one that is realistic, and needs roughly 64 GB of free system RAM next to the GPU.
-
-- **Thorough plan and lexicon.** With the local backend, the content plan and lexicon are made in parts instead of in one call over the whole chapter (`STUDIEPODCAST_PLAN_MODE=thorough`, the default for `local`). Short sections are read together up to `STUDIEPODCAST_PLAN_PART_CHARS` (default 8000 characters, about two and a half pages); a longer section is read in pieces of that size. Each part yields candidate claims, definitions and misconceptions, each marked with its section. Every quote has to be near-literal in that text. A near miss (a changed word, a dropped comma) is replaced by the source passage itself, without a model call. A quote that isn't there at all goes back to the model once, and a claim whose quote still isn't there is dropped with a warning. A chapter pass then picks and merges the claims by candidate id, so quotes are never rewritten, and writes the summary and learning objectives. `STUDIEPODCAST_PLAN_REVIEW_ROUNDS` (default 1) review rounds add what's missing and remove what's double. The lexicon reads the same parts. `studiepodcast plan <book> <chapter> --compare` makes the plan both ways and writes `plans/<chapter>.plan-compare.md`: sections covered, how many quotes are literally in the source, claims per section, and both plans in full.
-- **Speed.** A 30-page chapter at the default part size is about twelve plan calls, twelve lexicon calls and three chapter calls. How long each takes comes down to three things:
-  1. *Does the model fit on the card?* `studiepodcast doctor` (while a plan runs) or `ollama ps` says so. If part of it runs on the CPU, every call gets several times slower. The pipeline also says so in the log after the first plan. Fix it by setting these for the Ollama server (on Windows as user environment variables, then quit and restart Ollama from the tray): `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0`. They halve the memory of the context. Still too big: `LOCAL_LLM_CONTEXT=24576`, or `gemma4:26b`.
-  2. *Reasoning.* Plan sections, quote fixes and the lexicon answer directly (the code checks their quotes anyway); merge, review, script and audit keep the model's reasoning. `LOCAL_LLM_THINK_EXTRACT=on` puts reasoning back for extraction, `LOCAL_LLM_THINK=off` takes it away everywhere.
-  3. *Model.* `gemma4:26b` activates 4B of its weights per token and is several times faster than `gemma4:31b`.
-  Every plan and lexicon run logs its calls, seconds and tokens per second (`llm_calls`, `llm_seconds`, `tokens_per_s`). Note the number once with the model fully on the GPU; that is your baseline for comparing settings and models.
-- **Reasoning ("thinking").** Gemma 4 and Qwen 3.8 reason before they answer, by default. It's slower and usually more careful, which suits a run that has all weekend. The reasoning counts toward `LOCAL_LLM_MAX_TOKENS` (default 16384). If a stage stops because the budget went to reasoning, raise it or set `LOCAL_LLM_THINK=off`. `doctor` shows whether the model reasons and whether it reads images; a model that can't read images has its figure captions skipped automatically.
-- **Context window.** `LOCAL_LLM_CONTEXT` (default 32768 tokens) is set on every request. The plan stage sends a whole chapter, so a long chapter needs 65536. When a prompt doesn't fit, the stage stops and names the value to set. Otherwise Ollama would silently drop the start of the prompt. On a 24 GB GPU, 65536 pushes part of the model into system RAM: slower, still fine.
-- **Server on another machine.** Set `LOCAL_LLM_URL=http://192.168.1.20:11434`. On that machine, set `OLLAMA_HOST=0.0.0.0` so Ollama listens beyond localhost, and allow port 11434 through its firewall.
-- **Several laptops.** Give one the model server and nothing else, and let the others run the pipeline against it. On the others, run `render` for finished chapters, which keeps their own GPU busy with Chatterbox while the model laptop writes the next chapter. Each rendering laptop works on different chapters.
-- **Other servers.** llama.cpp's `llama-server`, vLLM or LM Studio: set `LOCAL_LLM_API=openai` and the server's URL, and start the server with at least `LOCAL_LLM_CONTEXT` tokens of context.
-- **GPU memory.** Before `render` and `prototype-scene`, the model is unloaded from Ollama so Chatterbox gets the card. That only happens when the model server runs on the same machine; a server on another laptop keeps its model loaded.
-- **Robustness.** Every answer is validated against its schema, and an invalid answer goes back to the model once with the error. A model that gets stuck repeating itself gets one retry, then an error that says so, rather than "raise the limit".
-- **Quality.** The audit's support check, which catches lines the source doesn't back up, runs on the same local model. A weaker model means a weaker safety net as well as weaker writing. Read the audit output for the first chapters more carefully than you would with Claude.
-
 ## Writing with your own model, through OpenCode
 
-If you already run the model you want to write with inside [OpenCode](https://opencode.ai) — a quantised local checkpoint, a provider you've configured in `opencode.json` — you don't need a second model server. `STUDIEPODCAST_LLM_BACKEND=opencode` hands every text stage (plan, lexicon, script, audit, continuity) to the OpenCode server's HTTP API instead:
+The text side (plan, lexicon, script, audit and continuity) runs on the model you already run
+inside [OpenCode](https://opencode.ai) — a quantised local checkpoint, a provider you've configured
+in `opencode.json`. Every text stage is handed to the OpenCode server's HTTP API
+(`POST /api/experimental/generate/text`, Basic auth) and nothing else; each answer is validated
+against its pydantic schema, and an invalid answer goes back to the model once with the error
+attached.
 
 ```
-STUDIEPODCAST_LLM_BACKEND=opencode
 OPENCODE_MODEL=strata/strata        # provider/id, optionally #variant
 ```
 
-No key, no port to configure: the pipeline finds the server through `OPENCODE_URL`, the `url` in `~/.config/opencode/service.json`, the URL the OpenCode desktop app last logged (`%APPDATA%/ai.opencode.desktop/logs/*/main.log`), and finally `http://127.0.0.1:4096`, the `opencode serve` default. The Basic-auth password comes from that same `service.json`, or from `OPENCODE_PASSWORD`. `studiepodcast doctor` prints which URL and model it settled on and checks the model against the server's own list.
+No key, no port to configure: the pipeline finds the server through `OPENCODE_URL`, the `url` in
+`~/.config/opencode/service.json`, the URL the OpenCode desktop app last logged
+(`%APPDATA%/ai.opencode.desktop/logs/*/main.log`), and finally `http://127.0.0.1:4096`, the
+`opencode serve` default. The Basic-auth password comes from that same `service.json`, or from
+`OPENCODE_PASSWORD`. `studiepodcast doctor` prints which URL and model it settled on and checks the
+model against the server's own list.
 
 What this means in practice:
 
-- **The model's settings belong to OpenCode.** Temperature, reasoning effort and the token budget are not sent per request; whatever that model does in `opencode.json` is what the pipeline gets. `OPENCODE_MODEL` takes `provider/id` (as `studiepodcast doctor` lists them) with an optional `#variant`.
-- **Content plan and lexicon run in thorough mode**, as with the local backend: per section, quotes checked against the source, merged and reviewed. See [Keeping book content on your own network](#keeping-book-content-on-your-own-network) — everything there about part sizes, review rounds and `plan --compare` applies here too.
-- **Figure captions are skipped.** The text endpoint takes text only, so the pipeline asks before sending a picture and goes without one. Nothing else changes; the same schema validation, repair round and repetition guard protect every answer.
-- **A long chapter takes minutes per call**, so `OPENCODE_TIMEOUT` defaults to 1800 seconds. Lower it if you want a stalled server noticed sooner.
-- **Offline mode treats it like any other model server**: `OPENCODE_URL` must resolve to localhost or a private address, and requests never go through an `HTTP(S)_PROXY`. Note that this only keeps *this machine* from reaching out — if the model OpenCode is configured with is a hosted one, your book text goes to that provider. For confidential material, point OpenCode at a local model and run with `STUDIEPODCAST_OFFLINE=1`.
+- **The model's settings belong to OpenCode.** Temperature, reasoning effort and the token budget
+  are not sent per request; whatever that model does in `opencode.json` is what the pipeline gets.
+  `OPENCODE_MODEL` takes `provider/id` (as `studiepodcast doctor` lists them) with an optional
+  `#variant`.
+- **Content plan and lexicon run in thorough mode** by default: per section, quotes checked against
+  the source, merged and reviewed. Short sections are read together up to
+  `STUDIEPODCAST_PLAN_PART_CHARS` (default 8000 characters, about two and a half pages); a longer
+  section is read in pieces of that size. Each part yields candidate claims, definitions and
+  misconceptions, each marked with its section, and every quote has to be near-literal in that
+  text. A near miss (a changed word, a dropped comma) is replaced by the source passage itself,
+  without a model call; a quote that isn't there at all goes back to the model once, and a claim
+  whose quote still isn't there is dropped with a warning. A chapter pass then picks and merges the
+  claims by candidate id, so quotes are never rewritten, and writes the summary and learning
+  objectives. `STUDIEPODCAST_PLAN_REVIEW_ROUNDS` (default 1) review rounds add what's missing and
+  remove what's double. `STUDIEPODCAST_PLAN_MODE=single` collapses a chapter into one call per
+  artifact if you want the cheap-and-quick version. `studiepodcast plan <book> <chapter> --compare`
+  makes the plan both ways and writes `plans/<chapter>.plan-compare.md`: sections covered, how many
+  quotes are literally in the source, claims per section, and both plans in full. The lexicon reads
+  the same parts.
+- **Figure captions are skipped.** The text endpoint takes text only, so the pipeline asks before
+  sending a picture and goes without one. Nothing else changes; the same schema validation, repair
+  round and repetition guard protect every answer. A model that gets stuck repeating itself gets
+  one retry, then an error that says so, rather than "raise the limit".
+- **A long chapter takes minutes per call**, so `OPENCODE_TIMEOUT` defaults to 1800 seconds. Lower
+  it if you want a stalled server noticed sooner. The endpoint does not stream, so a Stop ends the
+  job once the call in flight gets its answer; everything saved before it stays.
+- **Before a render the pipeline lets go of the writing model**; what OpenCode keeps loaded is
+  OpenCode's business.
+
+### Keeping book content on your machine
+
+The audio side (Chatterbox, Whisper, Piper) is always local. For the text side, honesty matters:
+the OpenCode *server* runs on your machine, but if the model OpenCode is configured with is a
+hosted one, your book text goes to that provider. For confidential material, point OpenCode at a
+local model and run with `STUDIEPODCAST_OFFLINE=1`.
+
+What offline mode enforces:
+
+- **The OpenCode server has to be local.** `OPENCODE_URL` must resolve to localhost or a private
+  address (10.x, 172.16-31.x, 192.168.x). Anything else is refused before a request goes out.
+  Traffic to it never goes through an `HTTP(S)_PROXY` from the environment.
+- **Hugging Face runs from its local cache**, with telemetry off. Chatterbox, Whisper and WhisperX
+  weights you've already downloaded keep working; `doctor` lists them. To fetch a new one, turn
+  offline mode off for that one run. Downloading weights sends no book content.
+- **The web app serves no CDN-loaded pages.** The `/docs` API explorer is switched off.
+
+Then check with `studiepodcast doctor`. It shows which URL and model are in use, whether the
+server's address passes the offline check, and which models are in the Hugging Face cache.
 
 ## Milestones, in order
 
@@ -156,7 +155,7 @@ The brief says not to build around a voice you have not heard, and not to build 
 studiepodcast audition paragraaf.txt --ref tessa=cast/refs/tessa.wav --ref joris=cast/refs/joris.wav
 ```
 
-It renders three exaggeration levels per voice into `data/auditions/` and prints the WER of a faster-whisper transcript per take. If Dutch quality is unacceptable here, the tier strategy inverts and ElevenLabs becomes the backbone. Once you are happy, freeze the reference files: re-cloning drifts the voice and the cast stops being the cast.
+It renders three exaggeration levels per voice into `data/auditions/` and prints the WER of a faster-whisper transcript per take (Dutch word error rate around 0.03 to 0.04 on the V3 weights is what the shipped references get). Chatterbox is the only voice, so this is the one place to judge the language before committing GPU minutes to a series. Once you are happy, freeze the reference files: re-cloning drifts the voice and the cast stops being the cast.
 
 If the voice sounds right but talks too fast, Chatterbox has no direct speed parameter, pacing is an emergent property of the model, not a dial. Two levers, in the order worth trying them:
 
@@ -177,7 +176,7 @@ Both are per-host settings in `cast/hosts.yaml` (and per-guest in `guests.yaml`)
 studiepodcast ingest boek.pdf --book-id statistiek1 [--method auto|fonts|toc|llm]
 ```
 
-Chapter detection tries font-size heuristics, then the PDF's bookmark TOC, then the model on the first pages. Figures are described with the vision model (`--no-captions` to skip), tables are spelled out as sentences. Check the chapter boundaries in `data/books/statistiek1/book.json` before going on.
+Chapter detection tries font-size heuristics, then the PDF's bookmark TOC, then the model on the first pages. Figures keep the caption text that is next to them; a vision description is added only when the model reports it can read images, which the OpenCode text endpoint cannot, so it is skipped (`--no-captions` skips the question too). Tables are spelled out as sentences. Check the chapter boundaries in `data/books/statistiek1/book.json` before going on.
 
 **M2 Content plan and lexicon** for one chapter, then verify the claims by hand:
 
@@ -227,11 +226,11 @@ studiepodcast continuity                           # what the writer sees from e
 studiepodcast serve            # http://127.0.0.1:8000
 ```
 
-Upload a PDF, watch the stages stream over SSE, browse and download every artifact, edit the script line by line (text, speaker, tags, covers, overlap, pause), re-audit, approve, render, and pick blocks for the ElevenLabs accent tier. Saving a script bumps its revision and clears the approval, so an edited script is always re-audited before it renders.
+Upload a PDF, watch the stages stream over SSE, browse and download every artifact, edit the script line by line (text, speaker, tags, covers, overlap, pause), re-audit, approve and render. Saving a script bumps its revision and clears the approval, so an edited script is always re-audited before it renders.
 
-While a job runs, a panel at the top shows the stage, a progress bar and the time left. The bar counts plan parts, script segments, audit segments or rendered turns; the line under it adds the chapter step and, with a local model, the tokens written so far. **Stop** ends the job at the next checkpoint: the next token of a local model call (the server stops generating too), the next take of a render, or the next step. With the Claude API a call in flight finishes first. What was saved before the stop stays; the interrupted stage starts over when you run it again. A reloaded page picks up running jobs.
+While a job runs, a panel at the top shows the stage, a progress bar and the time left. The bar counts plan parts, script segments, audit segments or rendered turns; the line under it adds the chapter step and the tokens the model has written so far. **Stop** ends the job at the next checkpoint: the next take of a render, the next step, or, in a stage that makes several model calls, the next call. The OpenCode endpoint does not stream, so a call already in flight gets its answer first and nothing after it runs. What was saved before the stop stays; the interrupted stage starts over when you run it again. A reloaded page picks up running jobs.
 
-API summary: `POST /api/books` (upload), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|draft|render|all"}`, `POST .../approve`, `POST .../eleven` with `{"blocks": ["b001"]}`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`.
+API summary: `POST /api/books` (upload), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|draft|render|all"}`, `POST .../approve`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`.
 
 ## The cast
 
@@ -239,24 +238,24 @@ API summary: `POST /api/books` (upload), `GET /api/books/{id}`, `GET /api/books/
 
 ## Audio details
 
-The voice comes from Resemble AI's Chatterbox Multilingual. `CHATTERBOX_MODEL` picks the T3 weights
-inside it: `v3` (default) is the June 2026 release, `v2` the original one the `chatterbox-tts`
-package on PyPI hardcodes; both read the same reference clip, so switching is free and both stay in
-the Hugging Face cache side by side. Only the T3 weights differ, so the same `VoiceSpec`, the same
-`exaggeration`/`cfg_weight`/`temperature` and the same cache keys apply — but the cache key includes
-the checkpoint name, so switching models re-renders rather than silently mixing voices in one episode.
-Every worker in the pool loads the same checkpoint: a failed load is an error instead of a quiet
-fallback, because two hosts rendering on two different checkpoints would sound like two different
-people mid-episode. Point `CHATTERBOX_CKPT_DIR` at a folder of weights (yours or a fine-tune) to skip
-the download entirely. `studiepodcast doctor` prints which T3 file the final tier will load and whether
-the weights around it are all on disk, so you can see which voice you are actually rendering with
-before an overnight run rather than after one.
+The voice comes from Resemble AI's Chatterbox Multilingual on the V3 T3 weights,
+`t3_mtl23ls_v3.safetensors` (the June 2026 release). That checkpoint is fixed, and it is not what
+the `chatterbox-tts` package on PyPI loads: the package hardcodes the older V2 file, so
+`pipeline/audio/synth.py` mirrors the package's own local loader and points it at V3 instead.
+Everything else is the package's — the same `VoiceSpec`, the same `exaggeration`/`cfg_weight`/
+`temperature`, the same reference clip. The checkpoint name is part of the take cache key, so takes
+written with another checkpoint re-render rather than silently mixing two voices in one episode, and
+every worker in the pool loads the same file: a failed load is an error instead of a quiet fallback to
+V2, because two hosts on two checkpoints would sound like two different people mid-episode. Point
+`CHATTERBOX_CKPT_DIR` at a folder of weights (yours or a fine-tune) to skip the download entirely;
+otherwise they come from the Hugging Face cache, which is offline-safe once fetched. `studiepodcast
+doctor` prints which T3 file a render will load and whether the weights around it are all on disk, so
+you can see which voice you are actually rendering with before an overnight run rather than after one.
 
 - Speaker turns (consecutive lines by one speaker) render in one call for prosody continuity; the emotional state carries forward so exaggeration moves gradually. It carries two ways: mostly within a speaker's own successive turns (60% of the previous value survives into the next), and more lightly across speakers, 20% of the other host's immediately preceding turn bleeds into this one, so a line the script didn't explicitly tag still picks up some of the other host's mood instead of resetting to a flat baseline the instant the turn changes.
 - Inter-turn gaps are sampled from 180 to 420 ms. Interrupts start 250 ms before the cut word's onset, duck the interrupted line 12 dB with an 80 ms fade and let the buried fragment run 400 to 600 ms. Backchannels sit at the first word boundary past 60% of the target line at -8 dB and do not advance the timeline.
 - Quick handoffs get their own, much tighter gap. Every line is synthesized in isolation, Chatterbox has no way to hear what the other host just said, so a uniform 180-420 ms silence before every single handoff is what makes a factually correct script still read as two people taking turns reading lines rather than a conversation. When the previous line ends in a question mark, or is short and reactive (six words or fewer), the next line's gap is instead sampled from -60 to 90 ms: sometimes a touch of real overlap, always tight, with the outgoing line's tail ducked a gentle 4 dB (not the 12 dB an interrupt gets) so the handoff blends without burying a word or cutting anyone off. A genuine written beat (`pause_after_ms`) or a segment boundary always overrides this and keeps the deliberate gap.
 - Every line is normalised to the same loudness before placement, room tone sits under the whole episode, optional stings live in `cast/stings/intro.wav` and `outro.wav`, and the episode is normalised to -16 LUFS mono. Gaps above 1.2 s that were not written as a beat are reported in the transcript's `qa` list.
-- ElevenLabs v3 Text-to-Dialogue is called per block of at most 3000 characters counted after tag injection. Rendered blocks are spliced into the timeline through `block_overrides` in the render manifest.
 
 ### If the render sounds like two monologues, not a dialogue
 
@@ -342,24 +341,14 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 | Variable | Default | Purpose |
 |---|---|---|
 | `STUDIEPODCAST_OFFLINE` | `0` | `1`: nothing leaves the local network (see above) |
-| `STUDIEPODCAST_LLM_BACKEND` | `anthropic`, `local` when offline | Which LLM writes the text side |
-| `ANTHROPIC_API_KEY` | | Frontier model for plan, lexicon, script, audit, continuity |
-| `STUDIEPODCAST_LLM_MODEL` | `claude-opus-5` | Model id |
-| `STUDIEPODCAST_LLM_EFFORT` | `high` | `low` to `max` |
-| `ELEVENLABS_API_KEY` | | Accent tier |
-| `LOCAL_LLM_API`, `LOCAL_LLM_URL`, `LOCAL_LLM_MODEL` | `ollama`, `http://localhost:11434`, `gemma4:31b` | Local model server |
-| `LOCAL_LLM_CONTEXT`, `LOCAL_LLM_MAX_TOKENS`, `LOCAL_LLM_TIMEOUT` | `32768`, `16384`, `1800` | Context window, answer length incl. reasoning, seconds per request |
-| `STUDIEPODCAST_PLAN_MODE`, `STUDIEPODCAST_PLAN_REVIEW_ROUNDS`, `STUDIEPODCAST_PLAN_PART_CHARS` | `single` (`thorough` with the local backend), `1`, `8000` | How the content plan and lexicon are made; how much text one thorough call reads |
-| `LOCAL_LLM_THINK_EXTRACT` | empty (off on a reasoning model) | Reasoning for plan sections, quote fixes and the lexicon |
-| `LOCAL_LLM_THINK` | model's own default | `off` to answer without reasoning first; `on`; `low`/`medium`/`high` where supported |
-| `LOCAL_LLM_VISION`, `LOCAL_LLM_API_KEY` | `1`, | Image input for figure captions; key for servers started with one |
+| `STUDIEPODCAST_PLAN_MODE`, `STUDIEPODCAST_PLAN_REVIEW_ROUNDS`, `STUDIEPODCAST_PLAN_PART_CHARS` | `thorough`, `1`, `8000` | How the content plan and lexicon are made; how much text one thorough call reads (`single` is the cheap-and-quick plan) |
 | `OPENCODE_URL`, `OPENCODE_PASSWORD` | service.json, then the desktop app's log, then `http://127.0.0.1:4096` | OpenCode server (backend `opencode`) and its Basic-auth password |
 | `OPENCODE_MODEL` | `strata/strata` | `provider/id` (optionally `#variant`) as OpenCode lists them |
 | `OPENCODE_TIMEOUT` | `1800` | Seconds per OpenCode call; a long chapter takes minutes |
-| `PIPER_BIN`, `PIPER_VOICES_DIR` | `piper`, `~/.local/share/piper/voices` | Draft tier |
+| `PIPER_BIN`, `PIPER_VOICES_DIR` | `piper`, `~/.local/share/piper/voices` | Cheap draft listen |
 | `STUDIEPODCAST_DEVICE` | `cuda`, `mps` on Apple Silicon | Chatterbox device |
-| `CHATTERBOX_MODEL` | `v3` | Chatterbox T3 weights: `v2`, `v3`, or your own `*.safetensors` |
-| `CHATTERBOX_CKPT_DIR` | the Hugging Face cache | Use a local folder of Chatterbox weights instead of downloading |
+| `CHATTERBOX_CKPT_DIR` | the Hugging Face cache | Use a local folder of Chatterbox V3 weights instead of downloading |
+| `HF_TOKEN` | | Only needed to fetch weights the first time, never for a render |
 | `CHATTERBOX_WORKERS` | `3`, `1` on Apple Silicon | Parallel model instances (a few GB each) |
 | `WHISPER_BACKEND` | `faster`, `mlx` on Apple Silicon | Verification and alignment backend |
 | `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE` | `large-v3`, `int8` | faster-whisper model |
@@ -373,10 +362,10 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 pytest
 ```
 
-The suite runs the whole pipeline on a generated four-page study book with a fake model and a null synthesizer, including take rejection, cache reuse, timeline maths, loudness, the approval gate, the accent-tier splice and the HTTP API.
+The suite runs the whole pipeline on a generated four-page study book with a fake model and a null synthesizer, including take rejection, cache reuse, timeline maths, loudness, the approval gate and the HTTP API. The OpenCode client has its own tests against a stub of the server (discovery, Basic auth, schema repair, the repetition guard, token progress, aborting a job while a call is in flight), and the Chatterbox loader is tested against a stub of the package for the checkpoint it asks for.
 
 ## What has not been exercised here
 
-The Chatterbox, Piper, faster-whisper, WhisperX, MLX Whisper and ElevenLabs adapters are written against their documented APIs but were not run in this environment (no GPU, no Apple Silicon, no keys). M0 is where they get their first real test, which is also the point of M0.
+The Piper, WhisperX and MLX Whisper adapters are written against their documented APIs but were not run in this environment (no Apple Silicon, no keys). M0 and M4 are where they get their first real test, which is also the point of them.
 
-The local LLM backend was run here against a real Ollama 0.34.4 server with small CPU models (qwen2.5 0.5B and 1.5B): every pipeline schema is accepted, answers validate, the model check and unload work. It has not run with `gemma4:31b` on a GPU, so script quality with a local model is still yours to judge.
+What *was* run here: Chatterbox V3 on a CUDA box rendering the shipped Dutch references, with faster-whisper scoring the takes (mean word error rate 0.033 on V3 against 0.042 on V2, which is why V3 is what loads), and the OpenCode backend against the real desktop server for `doctor`, a plan and a script. Script quality with your own model is still yours to judge: `studiepodcast plan <book> <chapter> --compare` and the audit output are the places to look first.

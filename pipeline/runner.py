@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.audio.render_draft import render_draft
-from pipeline.audio.render_final import render_eleven_blocks, render_final
+from pipeline.audio.render_final import render_final
 from pipeline.audio.synth import NullSynth, Synth
 from pipeline.cancel import Cancelled
 from pipeline.config import Settings
@@ -64,7 +64,6 @@ class Pipeline:
         self.cast = cast or load_cast(settings.cast_dir)
         self.banned = load_banned(settings.cast_dir)
         self.on_event = on_event
-        self._gpu_checked = False
         self._aborted = False
 
     # ------------------------------------------------------------------
@@ -78,14 +77,14 @@ class Pipeline:
         return self._llm
 
     def abort(self) -> None:
-        """Stop at the next checkpoint: the next event, or the next token of a local model call."""
+        """Stop at the next checkpoint: the next event, or the next answer of a model call in flight."""
         self._aborted = True
         stop = getattr(self._llm, "abort", None)
         if stop:
             stop()
 
     def release_llm(self) -> None:
-        """Hand the GPU back before rendering: a local model server would otherwise sit on its memory."""
+        """Let the writing model go before rendering; the OpenCode server decides what to keep loaded."""
         release = getattr(self._llm, "release", None)
         if callable(release):
             release()
@@ -140,7 +139,7 @@ class Pipeline:
         self.emit("ingest", "start", book_id=book_id, pdf=str(src))
         if captions and not getattr(self.llm, "supports_images", True):
             self.emit("ingest", "note", book_id=book_id,
-                      message="figure captions skipped: the local model has no vision (LOCAL_LLM_VISION=0)")
+                      message="figure captions skipped: the OpenCode generate/text endpoint is text-only")
             captions = False
         captioner = LLMCaptioner(self.llm) if captions else None
         book = ingest_book(paths.source_pdf, book_id, llm=self.llm, captioner=captioner, figures_dir=paths.figures_dir,
@@ -165,19 +164,6 @@ class Pipeline:
             spent["tokens_per_s"] = round(out / secs, 1)
         return spent
 
-    def _check_gpu_placement(self) -> None:
-        """Once per run: say so when part of the local model runs on the CPU. That alone makes it several times slower."""
-        if self._gpu_checked or self._llm is None or not hasattr(self._llm, "placement"):
-            return
-        self._gpu_checked = True
-        placed = self._llm.placement()
-        if placed and placed[1] < placed[0]:
-            share = round(100 * (placed[0] - placed[1]) / placed[0])
-            self.emit("llm", "note", message=(
-                f"{share}% of {self._llm.model} runs on the CPU because it doesn't fit in GPU memory; that makes every "
-                "call several times slower. Lower LOCAL_LLM_CONTEXT, set OLLAMA_FLASH_ATTENTION=1 and "
-                "OLLAMA_KV_CACHE_TYPE=q8_0 for the Ollama server, or use a smaller model. `studiepodcast doctor` shows it too."))
-
     # Stage 2
     def make_plan(self, book: Book, chapter_id: str, mode: str | None = None) -> ContentPlan:
         mode = mode or self.settings.plan_mode
@@ -198,7 +184,6 @@ class Pipeline:
         plan.save(self.paths(book_id).plan(chapter_id))
         self.emit("plan", "done", book_id=book_id, chapter=chapter_id, claims=len(plan.key_claims),
                   needs_expert=plan.needs_expert, warnings=plan.warnings, **self._llm_spent(before))
-        self._check_gpu_placement()
         return plan
 
     def compare_plans(self, book_id: str, chapter_id: str) -> Path:
@@ -352,15 +337,6 @@ class Pipeline:
         self.emit("render", "done", book_id=book_id, chapter=chapter_id, audio=str(result[0]),
                   flagged=[t.turn_id for t in result[2].flagged_turns()])
         return result
-
-    def eleven(self, book_id: str, chapter_id: str, block_ids: list[str], *, render_fn=None) -> RenderManifest:
-        script = self.load_script(book_id, chapter_id)
-        glossary = self.load_glossary(book_id)
-        self.emit("eleven", "start", book_id=book_id, chapter=chapter_id, blocks=block_ids)
-        manifest = render_eleven_blocks(script, glossary, self.cast, self.settings, self.paths(book_id), block_ids,
-                                        render_fn=render_fn, on_event=lambda kind, data: self.emit("eleven", kind, **data))
-        self.emit("eleven", "done", book_id=book_id, chapter=chapter_id, overrides=list(manifest.block_overrides))
-        return manifest
 
     # ------------------------------------------------------------------
     def run_chapter(self, book_id: str, chapter_id: str, *, upto: str = "draft", llm_checks: bool = True) -> dict[str, Any]:

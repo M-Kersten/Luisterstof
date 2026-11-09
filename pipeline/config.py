@@ -69,48 +69,27 @@ class Settings:
     data_dir: Path = Path("data")
     cast_dir: Path = Path("cast")
 
-    # Script side: "anthropic" (Claude API) or "local" (a model server on your own network).
-    llm_backend: str = "anthropic"
-    llm_model: str = "claude-opus-5"
-    llm_effort: str = "high"
-    llm_max_tokens: int = 32000
-    anthropic_api_key: str | None = None
+    # Script side: "opencode" (a running OpenCode server on this machine, the only real backend)
+    # or "fake" (canned answers, the same thing --fake-llm does).
+    llm_backend: str = "opencode"
 
-    # Local LLM. api=ollama uses Ollama's native /api/chat, which lets every request set the
-    # context window (Ollama's OpenAI endpoint can't, and silently truncates long prompts);
-    # api=openai speaks /v1/chat/completions for llama.cpp, vLLM, LM Studio and the like.
-    local_llm_url: str = "http://localhost:11434"
-    local_llm_api: str = "ollama"
-    local_llm_model: str = "gemma4:31b"
-    local_llm_context: int = 32768
-    local_llm_max_tokens: int = 16384  # covers a thinking model's reasoning as well as the answer
-    local_llm_think: str = ""  # "" = the model's own default; on | off; low | medium | high where supported
-    local_llm_think_extract: str = ""  # plan sections, quote fixes, lexicon; "" = off for a model that reasons
-    local_llm_timeout_s: float = 1800.0
-    local_llm_vision: bool = True  # False: skip figure captions (a model without vision is detected on Ollama anyway)
-    local_llm_api_key: str | None = None  # only for servers started with a key (vLLM --api-key, ...)
-
-    # OpenCode backend (backend opencode): the OpenCode app writes with whatever model its own opencode.json
-    # configures; the pipeline only hands over prompts. Leave url/password empty to find the local desktop
-    # server via ~/.config/opencode/service.json and its logs. Model is "provider/model", optionally "#variant".
+    # The OpenCode app writes with whatever model its own opencode.json configures; the pipeline
+    # only hands over prompts. Leave url/password empty to find the local desktop server via
+    # ~/.config/opencode/service.json and its logs. Model is "provider/model", optionally "#variant".
     opencode_url: str | None = None
     opencode_password: str | None = None
     opencode_model: str = "strata/strata"
     opencode_timeout_s: float = 1800.0
 
-    # Content plan and lexicon: "single" = one call per chapter (suits a frontier model), "thorough" = per
-    # section, quotes checked against the source, then a chapter pass and review rounds (pipeline/plan/thorough.py).
-    plan_mode: str = "single"
+    # Content plan and lexicon: "single" = one call per chapter, "thorough" = per section,
+    # quotes checked against the source, then a chapter pass and review rounds (pipeline/plan/thorough.py).
+    plan_mode: str = "thorough"
     plan_review_rounds: int = 1
     plan_part_chars: int = 8000  # thorough mode: small sections are read together up to this size
 
-    # Nothing leaves the local network: Claude API and ElevenLabs refuse to start, the local LLM
-    # must resolve to a private address, Hugging Face libraries run from their cache only.
+    # Nothing leaves this machine: Hugging Face libraries (Chatterbox, Whisper weights) run from
+    # their local cache only and send no telemetry.
     offline: bool = False
-
-    # Accent tier.
-    elevenlabs_api_key: str | None = None
-    elevenlabs_model: str = "eleven_v3"
 
     # Local synthesis. Defaults follow the platform: CUDA with three workers on a
     # 24GB GPU box, Metal with one worker and MLX Whisper on an M-series Mac.
@@ -118,7 +97,6 @@ class Settings:
     piper_voices_dir: Path = Path("~/.local/share/piper/voices")
     device: str = "cuda"
     chatterbox_workers: int = 3
-    chatterbox_model: str = "v3"  # "v2", "v3" or a T3 .safetensors filename from ResembleAI/chatterbox
     whisper_backend: str = "faster"  # faster (CTranslate2) | mlx (Apple Silicon)
     whisper_model: str = "large-v3"
     whisper_compute_type: str = "int8"
@@ -141,41 +119,22 @@ class Settings:
     def from_env(cls, dotenv: Path | str | None = ".env", **overrides) -> Settings:
         if dotenv is not None:
             load_dotenv(dotenv)
-        offline = _env_bool("STUDIEPODCAST_OFFLINE", False)
-        backend = _env_str("STUDIEPODCAST_LLM_BACKEND", "local" if offline else "anthropic").strip().casefold()
         base = cls(
-            plan_mode=_env_str("STUDIEPODCAST_PLAN_MODE", "thorough" if backend in ("local", "opencode") else "single").strip().casefold(),
+            plan_mode=_env_str("STUDIEPODCAST_PLAN_MODE", "thorough").strip().casefold(),
             plan_review_rounds=_env_int("STUDIEPODCAST_PLAN_REVIEW_ROUNDS", 1),
             plan_part_chars=max(2000, _env_int("STUDIEPODCAST_PLAN_PART_CHARS", 8000)),
-            offline=offline,
-            llm_backend=backend,
-            local_llm_url=_env_str("LOCAL_LLM_URL", "http://localhost:11434"),
-            local_llm_api=_env_str("LOCAL_LLM_API", "ollama").strip().casefold(),
-            local_llm_model=_env_str("LOCAL_LLM_MODEL", "gemma4:31b"),
-            local_llm_context=_env_int("LOCAL_LLM_CONTEXT", 32768),
-            local_llm_max_tokens=_env_int("LOCAL_LLM_MAX_TOKENS", 16384),
-            local_llm_think=_env_str("LOCAL_LLM_THINK", "").strip().casefold(),
-            local_llm_think_extract=_env_str("LOCAL_LLM_THINK_EXTRACT", "").strip().casefold(),
-            local_llm_timeout_s=_env_float("LOCAL_LLM_TIMEOUT", 1800.0),
-            local_llm_vision=_env_bool("LOCAL_LLM_VISION", True),
-            local_llm_api_key=_env_str("LOCAL_LLM_API_KEY"),
+            offline=_env_bool("STUDIEPODCAST_OFFLINE", False),
+            llm_backend=_env_str("STUDIEPODCAST_LLM_BACKEND", "opencode").strip().casefold(),
             opencode_url=_env_str("OPENCODE_URL"),
             opencode_password=_env_str("OPENCODE_PASSWORD"),
             opencode_model=_env_str("OPENCODE_MODEL", "strata/strata"),
             opencode_timeout_s=_env_float("OPENCODE_TIMEOUT", 1800.0),
             data_dir=Path(_env_str("STUDIEPODCAST_DATA_DIR", "data")),
             cast_dir=Path(_env_str("STUDIEPODCAST_CAST_DIR", "cast")),
-            llm_model=_env_str("STUDIEPODCAST_LLM_MODEL", "claude-opus-5"),
-            llm_effort=_env_str("STUDIEPODCAST_LLM_EFFORT", "high"),
-            llm_max_tokens=_env_int("STUDIEPODCAST_LLM_MAX_TOKENS", 32000),
-            anthropic_api_key=_env_str("ANTHROPIC_API_KEY"),
-            elevenlabs_api_key=_env_str("ELEVENLABS_API_KEY"),
-            elevenlabs_model=_env_str("ELEVENLABS_MODEL", "eleven_v3"),
             piper_bin=_env_str("PIPER_BIN", "piper"),
             piper_voices_dir=Path(_env_str("PIPER_VOICES_DIR", "~/.local/share/piper/voices")).expanduser(),
             device=_env_str("STUDIEPODCAST_DEVICE", default_device()),
             chatterbox_workers=_env_int("CHATTERBOX_WORKERS", 1 if apple_silicon() else 3),
-            chatterbox_model=_env_str("CHATTERBOX_MODEL", "v3").strip(),
             whisper_backend=_env_str("WHISPER_BACKEND", "mlx" if apple_silicon() else "faster"),
             whisper_model=_env_str("WHISPER_MODEL", "large-v3"),
             whisper_compute_type=_env_str("WHISPER_COMPUTE_TYPE", "int8"),
@@ -187,11 +146,19 @@ class Settings:
         )
         return replace(base, **overrides) if overrides else base
 
+    def __post_init__(self) -> None:
+        if self.llm_backend in ("anthropic", "claude", "local", "ollama"):
+            raise ValueError(
+                f"STUDIEPODCAST_LLM_BACKEND={self.llm_backend!r} is gone: the pipeline writes through a local "
+                "OpenCode server. Remove the variable or set it to 'opencode' (the Claude API and Ollama "
+                "options were removed).")
+        if self.llm_backend not in ("opencode", "fake"):
+            raise ValueError(f"STUDIEPODCAST_LLM_BACKEND must be 'opencode' or 'fake', not {self.llm_backend!r}")
+
     def with_(self, **overrides) -> Settings:
         return replace(self, **overrides)
 
     def profile(self) -> dict[str, object]:
-        llm_models = {"local": self.local_llm_model, "opencode": self.opencode_model}
         return {
             "platform": f"{platform.system()} {platform.machine()}",
             "apple_silicon": apple_silicon(),
@@ -202,7 +169,7 @@ class Settings:
             "takes_per_line": self.takes_per_line,
             "wer_threshold": self.wer_threshold,
             "llm_backend": self.llm_backend,
-            "llm_model": llm_models.get(self.llm_backend, self.llm_model),
+            "llm_model": self.opencode_model,
             "plan_mode": self.plan_mode,
             "offline": self.offline,
         }

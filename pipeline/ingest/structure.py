@@ -236,9 +236,6 @@ def headings_from_llm(units: list[Unit], llm, max_pages: int = 30, max_chars: in
         system=STRUCTURE_SYSTEM,
         user="".join(parts),
         schema=StructureGuess,
-        max_tokens=4096,
-        effort="medium",
-        cache_system=False,
     )
     guess = llm.generate(request)
     assert isinstance(guess, StructureGuess)

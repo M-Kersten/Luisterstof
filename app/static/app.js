@@ -236,13 +236,12 @@ function renderAudio(data) {
   root.innerHTML = "";
   const spans = (data.final.transcript && data.final.transcript.blocks) || [];
   const paths = Object.fromEntries(spans.map(s => [s.block_id, s.path]));
-  const overrides = (data.manifest && data.manifest.block_overrides) || {};
   for (const b of data.blocks) {
     const div = document.createElement("div");
     div.className = "block";
     const url = paths[b.id] ? `/api/books/${state.book}/artifacts/render/${state.chapter}/blocks/${b.id}.mp3` : null;
-    div.innerHTML = `<input type="checkbox" value="${b.id}"> <b>${b.id}</b> <span class="muted">${b.line_ids.length} regels, ${b.chars} tekens, ${b.segment_types.join("/")}</span>
-      ${overrides[b.id] ? '<span class="badge ok">ElevenLabs</span>' : ""} ${b.too_long ? '<span class="badge bad">te lang</span>' : ""} ${url ? `<audio controls src="${url}"></audio>` : ""}`;
+    div.innerHTML = `<b>${b.id}</b> <span class="muted">${b.line_ids.length} regels, ${b.chars} tekens, ${b.segment_types.join("/")}</span>
+      ${b.too_long ? '<span class="badge bad">te lang</span>' : ""} ${url ? `<audio controls src="${url}"></audio>` : ""}`;
     root.appendChild(div);
   }
 }
@@ -280,7 +279,7 @@ async function loadJobs() {
 }
 
 const STAGES = { ingest: "Inlezen", pipeline: "Boek verwerken", plan: "Plan", glossary: "Lexicon", script: "Script",
-  audit: "Audit", continuity: "Continuïteit", draft: "Piper draft", render: "Chatterbox render", eleven: "ElevenLabs",
+  audit: "Audit", continuity: "Continuïteit", draft: "Piper draft", render: "Chatterbox render",
   approve: "Goedkeuren", all: "Hoofdstuk", book: "Boek", run: "Hoofdstuk" };
 // Events that announce the step about to start; "turn" reports a finished one.
 const DONE_KINDS = new Set(["turn"]);
@@ -465,12 +464,6 @@ function loadGlossaryRows(entries) {
 $("#glossary").onclick = (e) => {
   if (e.target.dataset && e.target.dataset.del !== undefined) { e.target.closest("tr").remove(); }
 };
-$("#eleven").onclick = async () => {
-  const blocks = [...document.querySelectorAll("#blocks input:checked")].map(i => i.value);
-  if (!blocks.length) { log("selecteer eerst blokken"); return; }
-  try { watch(await api.send(`/api/books/${state.book}/chapters/${state.chapter}/eleven`, "POST", { blocks })); }
-  catch (err) { log("fout: " + err.message); }
-};
 $("#clear-log").onclick = () => { $("#log").textContent = ""; };
 $("#stop-job").onclick = () => run.job && stopJob(run.job.id);
 $("#jobs").onclick = (e) => {
@@ -483,9 +476,8 @@ function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":
 (async () => {
   try {
     const h = await api.get("/api/health");
-    const where = h.llm_backend === "local"
-      ? `lokaal model ${h.model}${h.offline ? ", offline: niets verlaat het netwerk" : ""}`
-      : `Claude API (${h.model}): boektekst gaat naar Anthropic`;
+    const where = `OpenCode (${h.model}): het schrijfmodel draait op deze machine` +
+      (h.offline ? ", offline: niets verlaat het netwerk" : "");
     const plan = h.plan_mode === "thorough" ? "plan per sectie (grondig)" : "plan in één keer";
     const fake = [h.fake_llm && "nep-LLM", h.fake_audio && "nep-audio"].filter(Boolean);
     $("#health").textContent = `tekst: ${where} · ${plan}${fake.length ? ` · testmodus: ${fake.join(", ")}` : ""}`;

@@ -4,7 +4,6 @@ guests:
   - id: hanna_vos
     name: Hanna Vos
     domains: ["statistiek", "kansrekening", "data-analyse", "econometrie", "wiskunde"]
-    voice_id_final: ""
     voice_id_draft: "nl_BE-nathalie-medium"
     voice_ref: "refs/hanna_vos.wav"
     persona: >-
@@ -15,7 +14,6 @@ guests:
   - id: ruben_bakker
     name: Ruben Bakker
     domains: ["informatica", "algoritmen", "machine learning", "programmeren", "software"]
-    voice_id_final: ""
     voice_id_draft: "nl_BE-rdh-medium"
     voice_ref: "refs/ruben_bakker.wav"
     persona: >-
@@ -26,7 +24,6 @@ guests:
   - id: sam_de_wit
     name: Sam de Wit
     domains: []
-    voice_id_final: ""
     voice_id_draft: "nl_BE-nathalie-medium"
     voice_ref: "refs/sam_de_wit.wav"
     persona: >-

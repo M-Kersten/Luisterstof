@@ -182,16 +182,15 @@
             <li><b>verificatie</b>: bij hoeveel beurten die terugschrijving gelukt is. Minder dan alles betekent dat de spraakherkenner niet werkte en opnames ongecontroleerd zijn gebruikt.</li>
             <li><b>geschatte uitlijning</b>: bij die beurten is niet exact bekend waar elk woord valt, dus onderbrekingen en reacties kunnen midden in een woord landen. Draai <code>studiepodcast doctor</code>.</li>
             <li><b>gevlagde beurten</b>: geen enkele opname volgde het script goed genoeg. Beluister ze; pas zo nodig de tekst aan.</li>
-            <li><b>blokken</b>: stukken van maximaal 3000 tekens die je los met ElevenLabs kunt laten inspreken, voor momenten waar echte overlappende spraak het verschil maakt. Dat stuurt die scripttekst naar ElevenLabs; in offline modus kan dat niet.</li>
+            <li><b>blokken</b>: stukken van maximaal 3000 tekens waar de finale render losse mp3's van maakt, handig om een deel apart te beluisteren.</li>
           </ul>
         </details>
         <h3>Piper draft</h3><div id="draft-audio" class="muted">nog niet gerenderd</div>
         <h3>Chatterbox final</h3><div id="final-audio" class="muted">nog niet gerenderd</div>
         <div id="audio-quality" style="margin-top:.3rem"></div>
         <div id="flagged"></div>
-        <h3>Blokken (accent tier)</h3>
+        <h3>Blokken</h3>
         <div id="blocks"></div>
-        <button id="eleven" title="Laat de aangevinkte blokken inspreken door ElevenLabs en monteert ze in de aflevering. Stuurt de tekst van die blokken naar ElevenLabs.">Geselecteerde blokken met ElevenLabs renderen</button>
       </div>
       <div class="tab" id="tab-artifacts" hidden>
         <p class="help">Elk bestand dat een stap heeft gemaakt: het boek in stukken (book.json), plannen, scripts, audits, lexicon, audio en transcripten. Handig om iets na te lezen of te bewaren.</p>

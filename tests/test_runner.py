@@ -94,27 +94,3 @@ def test_render_manifest_tracks_alignment_fallback_per_turn(ingested):
     # real alignments come from cache; only the estimated ones are retried, and a working aligner heals them
     assert 0 < fixed.calls <= manifest.alignment_fallback_count()
     assert manifest2.alignment_fallback_count() == 0
-
-
-def test_eleven_blocks_spliced(ingested):
-    import numpy as np
-
-    from pipeline.audio.synth import AudioClip
-
-    p = ingested
-    p.run_chapter("demo", "ch01", upto="render")
-    calls = []
-
-    def fake_render(inputs):
-        calls.append(inputs)
-        assert all(i["voice_id"] for i in inputs)
-        return AudioClip(np.random.default_rng(1).standard_normal(24000 * 20).astype(np.float32) * 0.05, 24000)
-
-    for h in p.cast.hosts:
-        h.voice_id_final = f"voice-{h.id}"
-    manifest = p.eleven("demo", "ch01", ["b001"], render_fn=fake_render)
-    assert "b001" in manifest.block_overrides and calls and calls[0][0]["text"]
-    audio, transcript_path, manifest2 = p.render("demo", "ch01", force=True)
-    assert "b001" in manifest2.block_overrides
-    transcript = EpisodeTranscript.load(transcript_path)
-    assert transcript.duration_s > 0

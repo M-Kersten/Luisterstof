@@ -40,9 +40,6 @@ def extract_continuity(script: Script, cast: Cast, llm: LLM, previous: list[Cont
         system=CONTINUITY_SYSTEM + f"\nSprekers: {names}." + prev,
         user=script_as_text(script),
         schema=ContinuityOut,
-        effort="medium",
-        max_tokens=4000,
-        cache_system=False,
     )
     out = llm.generate(request)
     assert isinstance(out, ContinuityOut)

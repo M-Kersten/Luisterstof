@@ -1,12 +1,12 @@
-"""Offline mode: book content never leaves the local network.
+"""Offline mode: nothing leaves this machine.
 
 Enforced rather than assumed. With STUDIEPODCAST_OFFLINE=1:
 
-* the Claude API and ElevenLabs refuse to start;
-* the local LLM URL must resolve to a loopback or private address;
 * Hugging Face libraries (Chatterbox, Whisper, WhisperX weights) run from
   their local cache only and send no telemetry. The variables are set before
   any of those libraries is imported, because they read them at import time.
+* OPENCODE_URL must resolve to a loopback or private address, so the writing
+  model really is on this machine or the local network.
 """
 
 from __future__ import annotations
@@ -34,11 +34,6 @@ def apply_env(settings) -> None:
         os.environ.update(HF_OFFLINE_ENV)
 
 
-def block_if_offline(settings, what: str) -> None:
-    if settings.offline:
-        raise OfflineViolation(f"{what} is blocked: STUDIEPODCAST_OFFLINE=1 keeps all data on the local network")
-
-
 def _is_local(address: str) -> bool:
     ip = ipaddress.ip_address(address.split("%", 1)[0])  # drop an IPv6 zone id
     return ip.is_loopback or ip.is_private or ip.is_link_local
@@ -54,24 +49,7 @@ def resolve_local(host: str) -> tuple[bool, list[str]]:
     return bool(addresses) and all(_is_local(a) for a in addresses), addresses
 
 
-def _addresses(host: str) -> set[str]:
-    try:
-        return {info[4][0].split("%", 1)[0] for info in socket.getaddrinfo(host, None)}
-    except OSError:
-        return set()
-
-
-def on_this_machine(url: str) -> bool:
-    """True when the URL's host is this computer (loopback or one of its own addresses), not another one."""
-    host = urlparse(url).hostname
-    if not host:
-        return False
-    addresses = _addresses(host)
-    own = _addresses(socket.gethostname())
-    return bool(addresses) and all(ipaddress.ip_address(a).is_loopback or a in own for a in addresses)
-
-
-def check_local_url(url: str, label: str = "LOCAL_LLM_URL") -> list[str]:
+def check_local_url(url: str, label: str = "OPENCODE_URL") -> list[str]:
     """Raise unless the URL points at this machine or the private network. Returns its addresses."""
     host = urlparse(url).hostname
     if not host:

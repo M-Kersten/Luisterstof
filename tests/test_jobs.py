@@ -8,11 +8,10 @@ import pytest
 from pydantic import BaseModel
 
 from app.jobs import JobManager, JobStore
-from pipeline import local_llm
 from pipeline.cancel import Cancelled
 from pipeline.config import Settings
 from pipeline.llm import LLMRequest
-from pipeline.local_llm import LocalLLM
+from pipeline.opencode_llm import OpenCodeLLM
 from pipeline.runner import Pipeline
 
 
@@ -59,34 +58,34 @@ def test_stop_drops_a_queued_job_and_halts_a_running_one(tmp_path, settings):
     assert replay.count("event: stage") == 2 and f"id: {events[-1]['seq']}" in replay
 
 
-def test_a_local_model_call_stops_between_tokens():
-    llm = LocalLLM(Settings().with_(llm_backend="local"))
+def _opencode() -> OpenCodeLLM:
+    return OpenCodeLLM(Settings(llm_backend="opencode", opencode_url="http://127.0.0.1:4096",
+                                opencode_password="geheim"))
 
-    def body():
-        yield b'{"message": {"content": "{\\"verdict\\""}, "done": false}\n'
-        llm.abort()
-        yield b'{"message": {"content": ": \\"ok\\"}"}, "done": false}\n'
-        yield b'{"message": {"content": ""}, "done": true, "done_reason": "stop"}\n'
 
-    llm.client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body())),
-                              base_url="http://localhost:11434")
+def test_a_model_call_in_flight_stops_when_the_job_is_cancelled():
+    llm = _opencode()
+
+    def reply(request):
+        llm.abort()  # the job was cancelled while the model was still busy
+        return httpx.Response(200, json={"data": {"text": '{"ok": true}'}})
+
+    llm.client = httpx.Client(transport=httpx.MockTransport(reply), base_url="http://127.0.0.1:4096")
     with pytest.raises(Cancelled):
-        llm._post({"model": "m", "messages": []}, "plan_section")
+        llm._post("Maak een plan")
     with pytest.raises(Cancelled):  # and it takes no new calls
         llm.generate(LLMRequest(task="support", system="s", user="u", schema=Verdict))
 
 
-def test_heartbeat_reports_tokens_while_the_model_writes(monkeypatch):
-    monkeypatch.setattr(local_llm, "HEARTBEAT_S", 0.0)
-    llm = LocalLLM(Settings().with_(llm_backend="local"))
-    lines = [b'{"message": {"content": "x"}, "done": false}\n'] * 5 + [b'{"message": {}, "done": true, "done_reason": "stop", "eval_count": 5}\n']
-    llm.client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"".join(lines))),
-                              base_url="http://localhost:11434")
+def test_token_progress_is_reported_after_every_answer():
+    llm = _opencode()
+    llm.client = httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"data": {"text": '{"ok": true}'}})),
+        base_url="http://127.0.0.1:4096")
     beats = []
     llm.on_tokens = lambda task, tokens, seconds: beats.append((task, tokens))
-    content, finish, usage, _ = llm._post({"model": "m", "messages": []}, "lexicon")
-    assert content == "xxxxx" and finish == "stop" and usage.output_tokens == 5
-    assert beats and beats[-1] == ("lexicon", 6)
+    llm.generate(LLMRequest(task="lexicon", system="s", user="u", schema=Verdict))
+    assert beats == [("lexicon", beats[-1][1])] and beats[-1][1] > 0
 
 
 def test_a_stopped_pipeline_raises_at_its_next_event(settings):

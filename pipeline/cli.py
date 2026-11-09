@@ -132,13 +132,6 @@ def render(book_id: str, chapter: str, force: bool = False):
 
 
 @app.command()
-def eleven(book_id: str, chapter: str, blocks: list[str]):
-    """Accent tier: render the given blocks (b001, b002, ...) with ElevenLabs v3 Text-to-Dialogue."""
-    m = _pipeline().eleven(book_id, chapter, blocks)
-    typer.echo(f"  overrides: {m.block_overrides}")
-
-
-@app.command()
 def run(book_id: str, pdf: Path | None = None, upto: str = "draft", chapters: str | None = None,
         method: str = "auto", llm_checks: bool = True):
     """Everything up to the approval gate (or further with --upto render)."""
@@ -322,25 +315,17 @@ def doctor():
             typer.echo(f"  ref {sp.id}: {'ok' if ref and ref.is_file() else 'missing'} ({ref})")
     except Exception as exc:  # noqa: BLE001
         typer.echo(f"cast: {exc}")
-    typer.echo(f"keys: anthropic={'set' if settings.anthropic_api_key else 'missing'} elevenlabs={'set' if settings.elevenlabs_api_key else 'missing'}"
-               + ("  (both blocked: offline)" if settings.offline else ""))
     _doctor_llm(settings)
     stings = [p.name for p in (settings.cast_dir / "stings").glob("*.wav")] if (settings.cast_dir / "stings").exists() else []
     typer.echo(f"stings: {', '.join(stings) or 'none'}")
 
 
 def _doctor_chatterbox(settings: Settings) -> None:
-    """Which T3 weights the final tier will load, and whether they are on disk (offline mode needs them there)."""
+    """Whether the V3 weights the final tier loads are on disk (offline mode can only use what is there)."""
     import os
 
-    from pipeline.audio.synth import chatterbox_required, t3_checkpoint
+    from pipeline.audio.synth import T3_CHECKPOINT, chatterbox_required
 
-    try:
-        checkpoint = t3_checkpoint(settings.chatterbox_model)
-    except ValueError as exc:
-        typer.echo(f"chatterbox: !! {exc}")
-        return
-    wanted = chatterbox_required(checkpoint)
     local = os.environ.get("CHATTERBOX_CKPT_DIR")
     if local:
         roots = [Path(local).expanduser()]
@@ -349,81 +334,37 @@ def _doctor_chatterbox(settings: Settings) -> None:
         hub = Path(cache) if cache else Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
         hub = hub if hub.name == "hub" else hub / "hub"
         roots = sorted(hub.glob("models--ResembleAI--chatterbox/snapshots/*"))
+    wanted = chatterbox_required()
     complete = [r for r in roots if all((r / f).is_file() for f in wanted)]
     if complete:
-        typer.echo(f"chatterbox: ok, T3 {checkpoint} (CHATTERBOX_MODEL={settings.chatterbox_model}) from {complete[-1]}")
+        typer.echo(f"chatterbox: ok, T3 {T3_CHECKPOINT} from {complete[-1]}")
         return
     missing = [f for f in wanted if not (roots[-1] / f).is_file()] if roots else wanted
-    typer.echo(f"chatterbox: T3 {checkpoint} (CHATTERBOX_MODEL={settings.chatterbox_model}) is not complete on disk: "
-               f"missing {', '.join(missing)}")
-    typer.echo("  run once with STUDIEPODCAST_OFFLINE=0 to download it, point CHATTERBOX_CKPT_DIR at a folder that "
-               "has the files, or set CHATTERBOX_MODEL=v2 if the older weights are already in the cache")
+    typer.echo(f"chatterbox: T3 {T3_CHECKPOINT} is not complete on disk: missing {', '.join(missing)}")
+    typer.echo("  run once with STUDIEPODCAST_OFFLINE=0 to download it, or point CHATTERBOX_CKPT_DIR at a "
+               "folder that has the files")
 
 
 def _doctor_llm(settings: Settings) -> None:
-    """Where script-side data goes, and whether the local model server is ready."""
+    """Where script-side data goes, and whether the OpenCode server is ready."""
     import os
 
-    from pipeline.offline import resolve_local
+    from pipeline.opencode_llm import OpenCodeLLM
 
-    if settings.llm_backend == "opencode":
-        from pipeline.opencode_llm import OpenCodeLLM
-
-        llm = OpenCodeLLM(settings)
-        typer.echo(f"llm: OpenCode ({llm.base_url}) model={llm.model_ref}: book text, plans and scripts stay on this machine")
-        try:
-            ok, detail = llm.check()
-            typer.echo(f"  server: {'ok' if ok else '!!'} {detail}")
-            if settings.offline:
-                typer.echo("  offline: ok, the OpenCode server runs on this machine")
-        except Exception as exc:  # noqa: BLE001
-            typer.echo(f"  server: !! {type(exc).__name__}: {exc}")
-    elif settings.llm_backend == "local":
-        from urllib.parse import urlparse
-
-        typer.echo(f"llm: local ({settings.local_llm_api}) {settings.local_llm_url} model={settings.local_llm_model} "
-                   f"context={settings.local_llm_context} vision={'on' if settings.local_llm_vision else 'off'}")
-        local, addresses = resolve_local(urlparse(settings.local_llm_url).hostname or "")
-        typer.echo(f"  address: {', '.join(addresses) or 'does not resolve'} -> "
-                   + ("local network" if local else "NOT the local network: book text would leave it"))
-        try:
-            from pipeline.local_llm import LocalLLM, think_value
-
-            llm = LocalLLM(settings)
-            ok, detail = llm.check()
-            typer.echo(f"  server: {'ok' if ok else '!!'} {detail}")
-            placed = llm.placement() if ok else None
-            if placed is None:
-                typer.echo("  gpu: model not loaded right now; check again during a plan, or run `ollama ps`")
-            elif placed[1] >= placed[0]:
-                typer.echo(f"  gpu: ok, all {placed[0] / 1e9:.1f} GB in GPU memory")
-            else:
-                cpu = round(100 * (placed[0] - placed[1]) / placed[0])
-                typer.echo(f"  gpu: !! {cpu}% of the model runs on the CPU ({placed[1] / 1e9:.1f} of {placed[0] / 1e9:.1f} GB "
-                           "in GPU memory), which makes it several times slower. Lower LOCAL_LLM_CONTEXT, set "
-                           "OLLAMA_FLASH_ATTENTION=1 and OLLAMA_KV_CACHE_TYPE=q8_0 for Ollama, or use a smaller model")
-            caps = llm.capabilities() if ok else None
-            if caps is not None:
-                typer.echo(f"  capabilities: {', '.join(sorted(caps)) or 'none reported'}")
-                if settings.local_llm_vision and "vision" not in caps:
-                    typer.echo("  note: this model can't read images, so figure captions are skipped")
-                think = think_value(settings.local_llm_think)
-                if "thinking" in caps and think is None:
-                    typer.echo("  note: this model reasons before it answers (slower, usually more careful); "
-                               "LOCAL_LLM_THINK=off makes it answer directly. Plan sections, quote fixes and the "
-                               "lexicon answer directly already (LOCAL_LLM_THINK_EXTRACT=on to change that)")
-                if think and "thinking" not in caps:
-                    typer.echo(f"  !! LOCAL_LLM_THINK={settings.local_llm_think}, but this model can't reason step by step: unset it")
-        except Exception as exc:  # noqa: BLE001
-            typer.echo(f"  server: !! {type(exc).__name__}: {exc}")
-    else:
-        typer.echo(f"llm: Claude API ({settings.llm_model}): book text, plans and scripts are sent to Anthropic"
-                   + ("  [!! blocked: offline mode needs STUDIEPODCAST_LLM_BACKEND=local]" if settings.offline else ""))
+    llm = OpenCodeLLM(settings)
+    typer.echo(f"llm: OpenCode ({llm.base_url}) model={llm.model_ref}: book text, plans and scripts stay on this machine")
+    try:
+        ok, detail = llm.check()
+        typer.echo(f"  server: {'ok' if ok else '!!'} {detail}")
+        if settings.offline:
+            typer.echo("  offline: ok, the OpenCode server runs on this machine")
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"  server: !! {type(exc).__name__}: {exc}")
     if settings.offline:
-        typer.echo("offline: on. Claude API and ElevenLabs refuse to start; Hugging Face runs from its cache "
+        typer.echo("offline: on. Hugging Face runs from its cache only and sends no telemetry "
                    f"(HF_HUB_OFFLINE={os.environ.get('HF_HUB_OFFLINE', 'unset')})")
     else:
-        typer.echo("offline: off. Set STUDIEPODCAST_OFFLINE=1 to enforce that nothing leaves the local network")
+        typer.echo("offline: off. Set STUDIEPODCAST_OFFLINE=1 to keep model downloads and telemetry off the network")
     try:
         from huggingface_hub import scan_cache_dir  # type: ignore
 

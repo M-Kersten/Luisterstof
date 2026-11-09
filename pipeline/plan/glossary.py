@@ -128,8 +128,6 @@ def propose_lexicon(chapter: Chapter, glossary: Glossary, llm: LLM) -> list[Lexi
             "Geef het aanvullende lexicon voor dit hoofdstuk."
         ),
         schema=LexiconOut,
-        effort="medium",
-        max_tokens=8000,
     )
     out = llm.generate(request)
     assert isinstance(out, LexiconOut)

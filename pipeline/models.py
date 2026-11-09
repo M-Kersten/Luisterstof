@@ -445,7 +445,6 @@ class Host(Contract):
     id: str
     name: str
     role: Literal["explainer", "skeptic"]
-    voice_id_final: str | None = None
     voice_id_draft: str | None = None
     voice_ref: str | None = None  # path to frozen reference clip (relative to cast dir)
     background: str = ""
@@ -468,7 +467,6 @@ class Guest(Contract):
     id: str
     name: str
     domains: list[str] = Field(default_factory=list)
-    voice_id_final: str | None = None
     voice_id_draft: str | None = None
     voice_ref: str | None = None
     persona: str = ""
@@ -571,7 +569,6 @@ class RenderManifest(Contract):
     tier: Literal["draft", "final"]
     synth: str
     turns: list[TurnRender] = Field(default_factory=list)
-    block_overrides: dict[str, str] = Field(default_factory=dict)  # block id -> audio path (accent tier)
     acoustics: dict[str, dict[str, float]] = Field(default_factory=dict)  # prototype: per-speaker EQ correction applied
     created_at: str = Field(default_factory=now_iso)
 

@@ -97,7 +97,7 @@ class FakeServer:
 def test_one_prompt_and_a_model_reference_is_all_the_endpoint_gets():
     server = FakeServer(['```json\n{"verdict": "ok", "score": 4}\n```'])
     llm = OpenCodeLLM(_settings(), transport=httpx.MockTransport(server))
-    result = llm.generate(_request(system=[text_block("Je bent een beoordelaar.", cache=True)],
+    result = llm.generate(_request(system=[text_block("Je bent een beoordelaar.")],
                                    user=[text_block("Beoordeel dit.")]))
     assert result == Answer(verdict="ok", score=4)
 
@@ -279,38 +279,30 @@ def test_the_doctor_reports_the_opencode_server(capsys):
 
 
 # ---------------------------------------------------------------------------
-# the Chatterbox checkpoint choice (V3 is newer than the chatterbox-tts on PyPI)
+# the Chatterbox checkpoint (V3 is newer than the chatterbox-tts on PyPI knows)
 # ---------------------------------------------------------------------------
 
-def test_the_chatterbox_checkpoint_choice_names_real_files():
-    from pipeline.audio.synth import chatterbox_files, chatterbox_required, t3_checkpoint
+def test_the_chatterbox_checkpoint_files_are_named():
+    from pipeline.audio.synth import T3_CHECKPOINT, chatterbox_files, chatterbox_required
 
-    assert t3_checkpoint("v3") == "t3_mtl23ls_v3.safetensors"
-    assert t3_checkpoint("V2") == "t3_mtl23ls_v2.safetensors"
-    assert t3_checkpoint(None) == "t3_mtl23ls_v3.safetensors"  # "the newest" is what people mean by default
-    assert t3_checkpoint("t3_mtl23ls_v3.safetensors") == "t3_mtl23ls_v3.safetensors"
-    with pytest.raises(ValueError, match="CHATTERBOX_MODEL"):
-        t3_checkpoint("turbo")
-
-    files = chatterbox_files("t3_mtl23ls_v3.safetensors")
+    assert T3_CHECKPOINT == "t3_mtl23ls_v3.safetensors"
+    files = chatterbox_files()
     assert files[1] == "t3_mtl23ls_v3.safetensors"
     assert {"ve.pt", "s3gen.pt", "grapheme_mtl_merged_expanded_v1.json", "conds.pt"} <= set(files)
     assert "t3_mtl23ls_v2.safetensors" not in files  # only the T3 weights differ between the two
     # the doctor only calls the load complete when these are there
-    assert chatterbox_required("t3_mtl23ls_v3.safetensors") == ["ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen.pt",
-                                                                "grapheme_mtl_merged_expanded_v1.json"]
+    assert chatterbox_required() == ["ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen.pt",
+                                     "grapheme_mtl_merged_expanded_v1.json"]
 
 
 def test_the_checkpoint_is_part_of_the_render_cache_key(tmp_path):
-    """CHATTERBOX_MODEL=v3 after v2 has to re-render: same text and seed, different weights, different audio."""
-    from dataclasses import replace
-
+    """Switching to V3 has to re-render: same text and seed, different weights, different audio."""
     from pipeline.audio.cache import RenderCache
-    from pipeline.audio.synth import NullSynth, VoiceSpec, chatterbox_cache_tag
+    from pipeline.audio.synth import CACHE_TAG, ChatterboxSynth, NullSynth, VoiceSpec
     from pipeline.audio.takes import render_with_takes
 
-    assert chatterbox_cache_tag(replace(Settings(), chatterbox_model="v2")) == "t3=t3_mtl23ls_v2.safetensors"
-    assert chatterbox_cache_tag(replace(Settings(), chatterbox_model="v3")) == "t3=t3_mtl23ls_v3.safetensors"
+    assert CACHE_TAG == "t3=t3_mtl23ls_v3.safetensors"
+    assert ChatterboxSynth.cache_tag == CACHE_TAG  # every real chatterbox render carries it
 
     class Tagged(NullSynth):
         def __init__(self, tag):
@@ -344,7 +336,7 @@ def test_v3_loads_through_our_own_loader_because_the_pypi_package_only_knows_v2(
     @classmethod
     def from_pretrained(cls, device):  # exactly the 0.1.7 signature: no t3_model
         calls.append({"from_pretrained": device})
-        return "v2-model"
+        return "package-model"
 
     package = types.ModuleType("chatterbox")
     mtl = types.ModuleType("chatterbox.mtl_tts")
@@ -357,18 +349,25 @@ def test_v3_loads_through_our_own_loader_because_the_pypi_package_only_knows_v2(
     monkeypatch.setitem(sys.modules, "chatterbox", package)
     monkeypatch.setitem(sys.modules, "chatterbox.mtl_tts", mtl)
 
-    assert synth.load_multilingual_model("cuda", "v2") == "v2-model"
-    assert calls[-1] == {"from_pretrained": "cuda"}
-
     monkeypatch.setattr(synth, "_multilingual_from_local",
-                        lambda ckpt_dir, device, checkpoint: calls.append({"local": (str(ckpt_dir), device, checkpoint)}) or "v3-model")
+                        lambda ckpt_dir, device: calls.append({"local": (str(ckpt_dir), device)}) or "v3-model")
     monkeypatch.setenv("CHATTERBOX_CKPT_DIR", str(tmp_path))
-    assert synth.load_multilingual_model("cuda", "v3") == "v3-model"
-    assert calls[-1]["local"] == (str(Path(tmp_path)), "cuda", "t3_mtl23ls_v3.safetensors")
+    assert synth.load_multilingual_model("cuda") == "v3-model"
+    assert calls[-1]["local"] == (str(Path(tmp_path)), "cuda")
 
-    def broken(ckpt_dir, device, checkpoint):
+    def broken(ckpt_dir, device):
         raise RuntimeError("shape mismatch")
 
     monkeypatch.setattr(synth, "_multilingual_from_local", broken)
-    with pytest.raises(RuntimeError, match="CHATTERBOX_MODEL=v2"):
-        synth.load_multilingual_model("cuda", "v3")  # no silent fallback: one episode, one voice
+    with pytest.raises(RuntimeError, match="t3_mtl23ls_v3.safetensors"):
+        synth.load_multilingual_model("cuda")  # no silent fallback: one episode, one voice
+
+    # a chatterbox that does accept t3_model may load V3 itself
+    @classmethod
+    def from_pretrained_v3(cls, device, t3_model=None):
+        calls.append({"from_pretrained": (device, t3_model)})
+        return "new-package-model"
+
+    mtl.ChatterboxMultilingualTTS = type("ChatterboxMultilingualTTS", (), {"from_pretrained": from_pretrained_v3})
+    assert synth.load_multilingual_model("cuda") == "new-package-model"
+    assert calls[-1]["from_pretrained"] == ("cuda", synth.T3_CHECKPOINT)

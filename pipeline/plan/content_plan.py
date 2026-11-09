@@ -164,7 +164,6 @@ def plan_chapter(book: Book, chapter_id: str, llm: LLM, cast: Cast | None = None
             f"Secties:\n{section_list}\n\nGebruik uitsluitend de sectie-ids hierboven."
         ),
         schema=PlanOut,
-        effort="high",
     )
     out = llm.generate(request)
     assert isinstance(out, PlanOut)

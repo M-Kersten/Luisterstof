@@ -79,9 +79,6 @@ def render_episode(
 
         bank = ReactionBank(settings.cast_dir)
     manifest = RenderManifest(episode_id=script.episode_id, tier=tier, synth=synth.name)  # type: ignore[arg-type]
-    previous_manifest = RenderManifest.load_or_none(paths.manifest(script.episode_id, tier))
-    if previous_manifest is not None:
-        manifest.block_overrides = dict(previous_manifest.block_overrides)
 
     rendered: dict[str, tuple[AudioClip, list[WordTiming]]] = {}
     state: dict[str, float] = {}
@@ -154,7 +151,6 @@ def render_episode(
     timing = turn_timing_gap(tables, seed) if performance and performance.timing and tables is not None else None
     timeline = assemble(turns, rendered, sr=synth.sample_rate, seed=seed, max_unwritten_gap=settings.max_unwritten_gap_s,
                         timing_gap=timing)
-    _apply_block_overrides(timeline, turns, manifest, cache)
     sr = settings.sample_rate if tier == "final" else synth.sample_rate
     intro = load_sting(settings.cast_dir / "stings" / "intro.wav")
     outro = load_sting(settings.cast_dir / "stings" / "outro.wav")
@@ -233,48 +229,3 @@ def _apply_phrasing(turn: Turn, clip: AudioClip, words: list[WordTiming], used_f
     if any(abs(r - s.rate) > 1e-6 for s, r in zip(segs, applied, strict=True)):
         tr.performance["phrasing_note"] = "rates not applied: librosa missing"
     return edited, new_words
-
-
-def _apply_block_overrides(timeline, turns: list[Turn], manifest: RenderManifest, cache: RenderCache) -> None:
-    """Replace the turns of an accent-tier block with the block's own audio."""
-    if not manifest.block_overrides:
-        return
-    from pipeline.audio.timeline import Placement
-
-    blocks = {b.id: b for b in chunk_script_from_turns(turns)}
-    for block_id, path in list(manifest.block_overrides.items()):
-        block = blocks.get(block_id)
-        if block is None or not Path(path).is_file():
-            manifest.block_overrides.pop(block_id, None)
-            continue
-        clip = AudioClip.read(path)
-        members = [p for p in timeline.placements if set(p.line_ids) & set(block.line_ids)]
-        if not members:
-            continue
-        start = min(p.start for p in members)
-        for p in members:
-            timeline.placements.remove(p)
-        merged = Turn(turn_id=f"block-{block_id}", speaker=members[0].turn.speaker,
-                      lines=[l for p in members for l in p.turn.lines], segment_type=members[0].turn.segment_type,
-                      segment_index=members[0].turn.segment_index,
-                      spoken_lines=[s for p in members for s in p.turn.spoken_lines])
-        words = UniformAligner().align(clip, merged.text)
-        timeline.placements.append(Placement(merged, clip, start, [w.shifted(start) for w in words]))
-        shift = (start + clip.duration_s) - max(p.end for p in members)
-        for p in timeline.placements:
-            if p.start > start and p.turn.turn_id != merged.turn_id:
-                p.start += shift
-                p.words = [w.shifted(shift) for w in p.words]
-        timeline.placements.sort(key=lambda p: p.start)
-
-
-def chunk_script_from_turns(turns: list[Turn]):
-    from pipeline.models import Script as _Script
-    from pipeline.models import Segment
-
-    segments: dict[int, Segment] = {}
-    for t in turns:
-        seg = segments.setdefault(t.segment_index, Segment(type=t.segment_type))
-        seg.lines.extend(t.lines)
-    pseudo = _Script(episode_id="tmp", segments=[segments[k] for k in sorted(segments)])
-    return chunk_script(pseudo)

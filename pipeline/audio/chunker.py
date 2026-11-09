@@ -1,9 +1,8 @@
 """Split a script into blocks of at most 3000 characters at scene seams.
 
-Used for the ElevenLabs accent tier (its request limit, counted after tag
-injection) and for the per-block artifacts under render/<chapter>/blocks.
-Seam preference: segment boundary, then speaker-turn boundary, then any
-line boundary. A line is never split.
+Used for the per-block artifacts under render/<chapter>/blocks. Seam
+preference: segment boundary, then speaker-turn boundary, then any line
+boundary. A line is never split.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from pipeline.models import Line, Script
-from pipeline.tags import eleven_tags
 
 MAX_BLOCK_CHARS = 3000
 
@@ -25,17 +23,8 @@ class Block:
     too_long: bool = False
 
 
-def eleven_text(line: Line) -> str:
-    tags = eleven_tags(line.tags, line.overlap.mode)
-    return (" ".join(tags) + " " + line.text).strip() if tags else line.text
-
-
-def eleven_inputs(lines: list[Line], voice_ids: dict[str, str]) -> list[dict[str, str]]:
-    return [{"text": eleven_text(line), "voice_id": voice_ids[line.speaker]} for line in lines]
-
-
 def line_chars(line: Line) -> int:
-    return len(eleven_text(line))
+    return len(line.text)
 
 
 def chunk_script(script: Script, max_chars: int = MAX_BLOCK_CHARS, min_fill: float = 0.4) -> list[Block]:
