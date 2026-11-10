@@ -12,7 +12,7 @@ set "STUDIE=%~dp0.venv\Scripts\studiepodcast.exe"
 if not exist "%STUDIE%" (
     echo [studiepodcast] No virtualenv found at .venv. Create it first:
     echo     uv venv --python 3.12 .venv
-    echo     .venv\Scripts\pip install -e ".[dev]" ".[cuda]"
+    echo     uv pip install -e ".[dev,cuda]" --no-build-isolation-package pkuseg
     echo.
     pause
     exit /b 1

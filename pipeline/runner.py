@@ -175,6 +175,8 @@ class Pipeline:
         entries = propose_lexicon_thorough(chapter, glossary, self.llm, part_chars=self.settings.plan_part_chars,
                                            progress=lambda kind, data: self.emit("glossary", kind, chapter=chapter_id, **data))
         added = glossary.merge(entries)
+        if chapter_id not in glossary.chapters:
+            glossary.chapters.append(chapter_id)
         glossary.save(self.paths(book_id).glossary_json)
         self.emit("glossary", "done", book_id=book_id, chapter=chapter_id, added=added, total=len(glossary.entries),
                   **self._llm_spent(before))
@@ -286,6 +288,13 @@ class Pipeline:
         glossary = self.load_glossary(book_id)
         self.release_llm()
         self.emit("render", "start", book_id=book_id, chapter=chapter_id, fake=self.fake_audio)
+        if not self.fake_audio:
+            from pipeline.audio.gpu import busy_warning
+
+            warning = busy_warning(self.settings.chatterbox_workers)
+            if warning:
+                log.warning(warning)
+                self.emit("render", "note", book_id=book_id, chapter=chapter_id, message=warning)
         result = render_final(script, glossary, self.cast, self.settings, self.paths(book_id), synth=synth,
                               transcriber=transcriber, aligner=aligner, fake=self.fake_audio,
                               on_event=lambda kind, data: self.emit("render", kind, **data))
@@ -294,11 +303,16 @@ class Pipeline:
         return result
 
     # ------------------------------------------------------------------
-    def run_chapter(self, book_id: str, chapter_id: str, *, upto: str = "script", llm_checks: bool = True) -> dict[str, Any]:
+    def run_chapter(self, book_id: str, chapter_id: str, *, upto: str = "script", llm_checks: bool = True,
+                    resume: bool = False) -> dict[str, Any]:
         """Everything that does not need a human or hours of GPU, up to ``upto``.
 
         ``upto="render"`` approves on its own authority and starts the real
         Chatterbox render: only ask for that when nobody is going to read first.
+
+        ``resume`` skips the stages whose output is already on disk and still
+        current (see ``_done``), so a run that died in chapter 7 picks up there.
+        A script edited by hand is never rewritten: at most it is audited again.
         """
         order = ["plan", "glossary", "script", "approve", "render"]
         if upto not in order:
@@ -306,36 +320,93 @@ class Pipeline:
         stop = order.index(upto)
         names = {"plan": "plan", "glossary": "lexicon", "script": "script en audit",
                  "approve": "goedkeuren", "render": "Chatterbox render"}
+        done = self._done(book_id, chapter_id) if resume else {}
 
-        def step(name: str) -> None:
+        def step(name: str) -> bool:
+            """Announce the step; False when resuming and it is already done."""
             self.emit("run", "step", book_id=book_id, chapter=chapter_id, index=order.index(name) + 1, total=stop + 1,
                       label=names[name])
+            if done.get(name):
+                self.emit(name, "skipped", book_id=book_id, chapter=chapter_id, reason=done[name])
+                return False
+            return True
 
         out: dict[str, Any] = {}
-        if stop >= 0:
-            step("plan")
+        if stop >= 0 and step("plan"):
             out["plan"] = self.plan(book_id, chapter_id)
-        if stop >= 1:
-            step("glossary")
+            done = {}  # a new plan makes everything after it stale
+        if stop >= 1 and step("glossary"):
             out["glossary"] = self.glossary(book_id, chapter_id)
         if stop >= 2:
-            step("script")
-            out["script"], out["audit"] = self.script(book_id, chapter_id, llm_checks=llm_checks)
-        if stop >= 3:
-            step("approve")
-            out["approve"] = self.approve(book_id, chapter_id, force=upto == "render" and not out["audit"].passed)
-        if stop >= 4:
-            step("render")
+            if step("script"):
+                out["script"], out["audit"] = self.script(book_id, chapter_id, llm_checks=llm_checks)
+                done = {}
+            elif done.get("audit_stale"):
+                self.emit("audit", "resume", book_id=book_id, chapter=chapter_id, reason=done["audit_stale"])
+                out["audit"] = self.audit(book_id, chapter_id, llm_checks=llm_checks)
+            else:
+                out["audit"] = AuditResult.load_or_none(self.paths(book_id).audit(chapter_id))
+        if stop >= 3 and step("approve"):
+            audit = out.get("audit")
+            out["approve"] = self.approve(book_id, chapter_id, force=upto == "render" and not (audit and audit.passed))
+        if stop >= 4 and step("render"):
             out["render"] = self.render(book_id, chapter_id)[0]
         return out
 
-    def run_book(self, book_id: str, *, upto: str = "script", chapters: list[str] | None = None, llm_checks: bool = True) -> dict[str, dict]:
+    def _done(self, book_id: str, chapter_id: str) -> dict[str, str]:
+        """Which stages of a chapter can be skipped, with the reason. An artifact counts only when it is at
+        least as new as what it was made from (book.json -> plan -> script -> final audio), so a re-ingested
+        book or a new plan redoes everything after it."""
+        paths = self.paths(book_id)
+
+        def mtime(path: Path) -> float | None:
+            return path.stat().st_mtime if path.is_file() else None
+
+        book_t, plan_t, script_t = mtime(paths.book_json), mtime(paths.plan(chapter_id)), mtime(paths.script(chapter_id))
+        done: dict[str, str] = {}
+        if plan_t is None or book_t is None or plan_t < book_t:
+            return done
+        done["plan"] = "plan staat er al"
+        glossary = Glossary.load_or_none(paths.glossary_json)
+        glossary_t = mtime(paths.glossary_json)
+        if glossary and chapter_id in glossary.chapters and glossary_t is not None and glossary_t >= book_t:
+            done["glossary"] = "lexicon voor dit hoofdstuk staat er al"
+        if script_t is None or script_t < plan_t:
+            return done
+        done["script"] = "script staat er al"
+        script = Script.load_or_none(paths.script(chapter_id))
+        audit = AuditResult.load_or_none(paths.audit(chapter_id))
+        if script is None or audit is None or audit.script_revision != script.revision:
+            done["audit_stale"] = "de audit hoort niet bij deze scriptrevisie"
+            return done
+        if self.is_approved(book_id, chapter_id):
+            done["approve"] = "deze revisie is al goedgekeurd"
+        audio_t = mtime(paths.out_audio(chapter_id))
+        if done.get("approve") and audio_t is not None and audio_t >= script_t:
+            done["render"] = "aflevering is al gerenderd"
+        return done
+
+    def run_book(self, book_id: str, *, upto: str = "script", chapters: list[str] | None = None, llm_checks: bool = True,
+                 resume: bool = True) -> dict[str, dict]:
+        """Every chapter up to ``upto``. A chapter that fails does not stop the others: the run goes on and
+        ends with a StageError naming the failed chapters. With ``resume`` (the default) finished work is
+        skipped, so running the book again after a failure only does what is missing."""
         book = self.load_book(book_id)
-        results = {}
+        results: dict[str, dict] = {}
+        failed: dict[str, str] = {}
         todo = [ch for ch in book.episode_chapters() if not chapters or ch.id in chapters]
         for n, ch in enumerate(todo, start=1):
             self.emit("book", "chapter", book_id=book_id, chapter=ch.id, index=n, total=len(todo), label=f"{ch.id} {ch.title}")
-            results[ch.id] = self.run_chapter(book_id, ch.id, upto=upto, llm_checks=llm_checks)
+            try:
+                results[ch.id] = self.run_chapter(book_id, ch.id, upto=upto, llm_checks=llm_checks, resume=resume)
+            except Exception as exc:  # noqa: BLE001 - Cancelled is a BaseException and still ends the run
+                log.exception("chapter %s failed; going on with the next one", ch.id)
+                failed[ch.id] = str(exc)
+                self.emit("book", "chapter_failed", book_id=book_id, chapter=ch.id, error=str(exc)[:500])
+        if failed:
+            listing = "; ".join(f"{cid}: {err[:160]}" for cid, err in failed.items())
+            raise StageError(f"{len(failed)} of {len(todo)} chapters failed ({listing}). The other chapters are done; "
+                             "run the book again and only what is missing is made.")
         return results
 
     def status(self, book_id: str) -> dict[str, Any]:

@@ -44,10 +44,10 @@ from pydantic import BaseModel
 from pipeline.cancel import Cancelled
 from pipeline.config import Settings
 from pipeline.llm import (
+    SCHEMA_INSTRUCTION,
     LLMError,
     LLMRequest,
     LLMTruncated,
-    SCHEMA_INSTRUCTION,
     Usage,
     clean_answer,
     content_text,
@@ -66,6 +66,7 @@ RETRY_WAIT_S = 5.0  # 5, 10, 20, 40, 60 s: a dropped stream comes back, a dead s
 FALLBACK_URL = "http://127.0.0.1:4096"  # what `opencode serve` listens on by default
 AUTH_USERNAME = "opencode"  # the server only checks the password
 TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
+ABORT_POLL_S = 0.25  # how often a waiting call looks at the Stop button
 LOOP_RETRY_NOTE = ("\n\nLet op: een eerder antwoord op deze vraag bleef hetzelfde herhalen tot het werd afgekapt. "
                    "Houd het beknopt, herhaal niets en sluit elke lijst zodra de inhoud op is.")
 
@@ -196,12 +197,33 @@ class OpenCodeLLM:
             raise LLMTransient(message) if _stumbled(response.status_code, response.text) else LLMError(message)
         return ((response.json() or {}).get("data") or {}).get("text") or ""
 
+    def _post_abortable(self, prompt: str) -> str:
+        """``_post`` on a helper thread, so a Stop ends the wait at once. The endpoint does not stream and a
+        blocked read cannot be interrupted from outside, so the call is left to finish on its own: OpenCode
+        completes that answer in the background and nobody reads it."""
+        box: dict[str, Any] = {}
+
+        def call() -> None:
+            try:
+                box["text"] = self._post(prompt)
+            except BaseException as exc:  # noqa: BLE001 - handed to the waiting thread as is
+                box["error"] = exc
+
+        worker = threading.Thread(target=call, name="opencode-call", daemon=True)
+        worker.start()
+        while worker.is_alive():
+            if self._abort.wait(ABORT_POLL_S):
+                raise Cancelled()
+        if "error" in box:
+            raise box["error"]
+        return box["text"]
+
     def _post_resilient(self, prompt: str, task: str) -> str:
         """``_post`` with a ladder for stumbles that are not this prompt's fault. The wait is an
         abort-wait, so a Stop interrupts the backoff immediately rather than after it."""
         for attempt in range(TRANSIENT_RETRIES + 1):
             try:
-                return self._post(prompt)
+                return self._post_abortable(prompt)
             except LLMTransient as exc:
                 if self._abort.is_set():
                     raise Cancelled() from exc
@@ -211,7 +233,7 @@ class OpenCodeLLM:
                 log.warning("OpenCode stumbled on %s (attempt %d/%d): %s — retrying in %.0f s",
                             task, attempt + 1, TRANSIENT_RETRIES + 1, str(exc)[:200], wait)
                 if self._abort.wait(wait):
-                    raise Cancelled()
+                    raise Cancelled() from exc
         raise AssertionError("unreachable")
 
     def generate(self, request: LLMRequest) -> BaseModel:
@@ -253,8 +275,8 @@ class OpenCodeLLM:
         raise LLMError(f"OpenCode model {self.model_ref} gave no valid {request.schema.__name__} for {request.task}: {error}")
 
     def abort(self) -> None:
-        """Refuse new calls and end the one in flight at its next answer (the endpoint is not streaming, so a
-        call that is already running is finished by the server first)."""
+        """Refuse new calls and stop waiting for the one in flight. The endpoint does not stream, so OpenCode
+        still finishes that answer in the background; the job ends right away."""
         self._abort.set()
 
     # ------------------------------------------------------------------ housekeeping
@@ -273,8 +295,8 @@ class OpenCodeLLM:
                     return True, f"reachable, {self.model_ref} listed ({len(models)} models)"
             listed = sorted({f"{m.get('providerID')}/{m.get('modelID')}" for m in models})
             if not listed:
-                return False, f"reachable, but it lists no models at all: configure one in OpenCode (opencode.json)"
+                return False, "reachable, but it lists no models at all: configure one in OpenCode (opencode.json)"
             return False, (f"reachable, but {self.model_ref} is not listed. Present: {', '.join(listed[:12])}"
-                           + (" ..." if len(listed) > 12 else "") + f". Pick one or set OPENCODE_MODEL=provider/model.")
+                           + (" ..." if len(listed) > 12 else "") + ". Pick one or set OPENCODE_MODEL=provider/model.")
         except httpx.HTTPError as exc:
             return False, f"not reachable at {self.base_url} ({type(exc).__name__}: {exc}). Is the OpenCode app running?"

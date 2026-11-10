@@ -215,6 +215,7 @@ class LexiconEntry(Contract):
 class Glossary(Contract):
     book_id: str
     entries: list[LexiconEntry] = Field(default_factory=list)
+    chapters: list[str] = Field(default_factory=list)  # chapters whose lexicon pass has run, for resuming a book run
     updated_at: str = Field(default_factory=now_iso)
 
     def find(self, surface: str) -> LexiconEntry | None:

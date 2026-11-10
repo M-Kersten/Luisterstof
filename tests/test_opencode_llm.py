@@ -4,6 +4,8 @@ import base64
 import json
 import re
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -240,6 +242,24 @@ def test_abort_ends_the_call_in_flight_and_refuses_the_next_one():
     with pytest.raises(Cancelled):
         llm.generate(_request())
     assert len(sent) == 1  # the second call never reached the server
+
+
+def test_stop_does_not_wait_for_a_long_answer():
+    release = threading.Event()
+
+    def thinking_for_minutes(request):
+        release.wait(30)  # a long chapter: the server is still writing
+        return httpx.Response(200, json={"data": {"text": '{"verdict": "ok", "score": 1}'}})
+
+    llm = OpenCodeLLM(_settings(), transport=httpx.MockTransport(thinking_for_minutes))
+    threading.Timer(0.3, llm.abort).start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(Cancelled):
+            llm.generate(_request())
+        assert time.monotonic() - started < 2.0  # the job ends now, not when the answer arrives
+    finally:
+        release.set()  # let the abandoned call finish
 
 
 def test_check_says_whether_the_server_and_the_model_are_there():

@@ -234,7 +234,7 @@ def chatterbox_files() -> list[str]:
     return chatterbox_required() + ["conds.pt", "Cangjie5_TC.json"]
 
 
-def chatterbox_checkpoint_dir() -> "Path":
+def chatterbox_checkpoint_dir() -> Path:
     """Where the weights live: CHATTERBOX_CKPT_DIR if set, else the Hugging Face cache (offline-safe)."""
     from chatterbox.mtl_tts import REPO_ID, snapshot_download  # type: ignore
 
@@ -248,8 +248,16 @@ def chatterbox_checkpoint_dir() -> "Path":
 def _multilingual_from_local(ckpt_dir, device: str):
     """ChatterboxMultilingualTTS.from_local with our T3 file instead of the packaged V2."""
     import torch  # type: ignore
-    from chatterbox.mtl_tts import (ChatterboxMultilingualTTS, Conditionals, MTLTokenizer, S3Gen, T3,  # type: ignore
-                                    T3Config, VoiceEncoder, load_safetensors)
+    from chatterbox.mtl_tts import (  # type: ignore
+        T3,
+        ChatterboxMultilingualTTS,
+        Conditionals,
+        MTLTokenizer,
+        S3Gen,
+        T3Config,
+        VoiceEncoder,
+        load_safetensors,
+    )
 
     ckpt_dir = Path(ckpt_dir)
     map_location = torch.device("cpu") if device in ("cpu", "mps") else None

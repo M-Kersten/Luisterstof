@@ -163,13 +163,18 @@ def run(book_id: str, pdf: Path | None = None, upto: str = "script", chapters: s
         method: str = "auto", llm_checks: bool = True,
         reviews: Annotated[int | None, typer.Option(help=REVIEWS_HELP)] = None,
         part_chars: Annotated[int | None, typer.Option(help=PART_CHARS_HELP)] = None,
-        revise_rounds: Annotated[int | None, typer.Option(help=REVISE_HELP)] = None):
-    """Everything up to the approval gate (or further with --upto render)."""
+        revise_rounds: Annotated[int | None, typer.Option(help=REVISE_HELP)] = None,
+        fresh: Annotated[bool, typer.Option(help="Redo every stage, also the ones that are already done and current.")] = False):
+    """Everything up to the approval gate (or further with --upto render).
+
+    Running it again picks up where it stopped: stages whose output is on disk and current are skipped,
+    and a chapter that fails does not stop the others.
+    """
     p = _pipeline(**_pass_overrides(reviews=reviews, part_chars=part_chars, revise_rounds=revise_rounds))
     if pdf is not None:
         p.ingest(pdf, book_id, method=method)
     wanted = [c.strip() for c in chapters.split(",")] if chapters else None
-    results = p.run_book(book_id, upto=upto, chapters=wanted, llm_checks=llm_checks)
+    results = p.run_book(book_id, upto=upto, chapters=wanted, llm_checks=llm_checks, resume=not fresh)
     for ch, out in results.items():
         a = out.get("audit")
         typer.echo(f"  {ch}: audit={'ok' if a and a.passed else 'open'} final={out.get('render', '-')}")
@@ -325,6 +330,15 @@ def doctor():
         typer.echo(f"torch devices: cuda={torch.cuda.is_available()}")
     except Exception:  # noqa: BLE001
         typer.echo("torch devices: torch not installed")
+    from pipeline.audio.gpu import BUSY_MIB, gpu_memory
+
+    memory = gpu_memory()
+    if memory is None:
+        typer.echo("gpu memory: unknown (no nvidia-smi)")
+    else:
+        used, total = memory
+        busy = "  [!! something already holds the card: a render would share it]" if used > BUSY_MIB else ""
+        typer.echo(f"gpu memory: {used / 1024:.1f} of {total / 1024:.1f} GB in use{busy}")
     _doctor_chatterbox(settings)
     from pipeline.script.cast import load_cast
 

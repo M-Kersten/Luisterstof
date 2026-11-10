@@ -100,10 +100,13 @@ What this means in practice:
   repair round and repetition guard protect every answer. A model that gets stuck repeating itself
   gets one retry, then an error that says so, rather than "raise the limit".
 - **A long chapter takes minutes per call**, so `OPENCODE_TIMEOUT` defaults to 1800 seconds. Lower
-  it if you want a stalled server noticed sooner. The endpoint does not stream, so a Stop ends the
-  job once the call in flight gets its answer; everything saved before it stays.
-- **Before a render the pipeline lets go of the writing model**; what OpenCode keeps loaded is
-  OpenCode's business.
+  it if you want a stalled server noticed sooner. A Stop ends the job right away, also in the
+  middle of a call; the endpoint does not stream, so OpenCode finishes that answer in the
+  background and the pipeline drops it. Everything saved before the Stop stays.
+- **The pipeline cannot unload the writing model**: what OpenCode keeps loaded is OpenCode's
+  business. If that model runs on the same GPU as Chatterbox, unload it before a render.
+  The render checks the card first (`nvidia-smi`) and warns in the log when more than 4 GB is
+  already in use; `studiepodcast doctor` shows the same reading.
 
 ### Quality over speed
 
@@ -134,8 +137,9 @@ alone (upwards only — it never relaxes a setting you already made more thoroug
 `studiepodcast doctor` prints the passes currently in effect.
 
 Budget for it: a chapter that takes ten minutes normally can take an hour or more this way. Running
-a whole book overnight or over a weekend is the intended use; a Stop still ends the job cleanly once
-the model call in flight gets its answer.
+a whole book overnight or over a weekend is the intended use. A chapter that fails along the way
+does not stop the others, and running the book again picks up where it stopped (see *M6 Whole
+book*).
 
 ### Keeping book content on your machine
 
@@ -223,8 +227,17 @@ Per speaker turn: cache lookup, three takes with seed and exaggeration jitter, f
 
 ```bash
 studiepodcast run statistiek1                     # every chapter up to the approval gate
+studiepodcast run statistiek1 --fresh             # the same, redoing what is already done
 studiepodcast continuity                           # what the writer sees from earlier episodes
 ```
+
+A book run survives its failures. A chapter that fails (OpenCode down for longer than its retries,
+an answer that never fits the schema) is logged and skipped, the other chapters carry on, and the
+run ends by naming the chapters that failed. Run the book again and only what is missing is made:
+a stage is skipped when its output is on disk and at least as new as what it was made from
+(`book.json`, then the plan, then the script). A re-ingested PDF therefore redoes everything, a new
+plan redoes its script, and a script you edited by hand is audited again, never rewritten.
+`--fresh` turns the skipping off.
 
 `cast/continuity.jsonl` is appended after every episode. Episode 5 referencing episode 2 is the whole trick.
 
@@ -238,7 +251,7 @@ Or double-click `start-app.bat`: it checks that the OpenCode server is reachable
 
 Upload a PDF, watch the stages stream over SSE, browse and download every artifact, edit the script line by line (text, speaker, tags, covers, overlap, pause), re-audit, approve and render. Saving a script bumps its revision and clears the approval, so an edited script is always re-audited before it renders. The "grondig" checkbox (on upload and next to the stage buttons) runs just that job in quality mode, hours-per-chapter thoroughness included, without changing the server's own settings.
 
-While a job runs, a panel at the top shows the stage, a progress bar and the time left. The bar counts plan parts, script segments, audit segments or rendered turns; the line under it adds the chapter step and the tokens the model has written so far. **Stop** ends the job at the next checkpoint: the next take of a render, the next step, or, in a stage that makes several model calls, the next call. The OpenCode endpoint does not stream, so a call already in flight gets its answer first and nothing after it runs. What was saved before the stop stays; the interrupted stage starts over when you run it again. A reloaded page picks up running jobs.
+While a job runs, a panel at the top shows the stage, a progress bar and the time left. The bar counts plan parts, script segments, audit segments or rendered turns; the line under it adds the chapter step and the tokens the model has written so far. **Stop** ends the job at once during a model call, and at the next take or step otherwise. The OpenCode endpoint does not stream, so OpenCode finishes an answer it was writing in the background; the next job can wait a moment for it. What was saved before the stop stays; the interrupted stage starts over when you run it again. A reloaded page picks up running jobs.
 
 API summary: `POST /api/books` (upload, `quality=true` to run it in quality mode), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|render|all", "quality": false}`, `POST .../approve`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`. `GET /api/health` reports the model and the writing passes in effect.
 
