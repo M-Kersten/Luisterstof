@@ -10,11 +10,13 @@ hands over a prompt. Two endpoints do all the work:
 * ``GET /api/model`` lists what the server can reach (used by ``doctor``).
 
 The JSON schema is written into the prompt and every answer is validated; an
-invalid one goes back once together with the error. Temperature, thinking and
-the token budget are not sent: they belong to the model's configuration in
-OpenCode, not to the caller. The endpoint is text only, so prompts are plain
-text: ``pipeline.llm.content_text`` joins the text blocks and nothing sends a
-picture.
+invalid one goes back once together with the error. A provider that stumbles —
+the local model server dropping a stream, a 5xx, the server restarting under
+the call — is retried on the spot with growing waits: a run of hours does not
+die on one hiccup. Temperature, thinking and the token budget are not sent:
+they belong to the model's configuration in OpenCode, not to the caller. The
+endpoint is text only, so prompts are plain text: ``pipeline.llm.content_text``
+joins the text blocks and nothing sends a picture.
 
 The server is discovered in this order: ``OPENCODE_URL``, the ``url`` field of
 ``~/.config/opencode/service.json``, the URL the OpenCode desktop app last
@@ -59,12 +61,27 @@ from pipeline.offline import check_local_url
 log = logging.getLogger(__name__)
 
 RETRIES = 1
+TRANSIENT_RETRIES = 5  # provider hiccups get their own ladder, on top of the schema repair round
+RETRY_WAIT_S = 5.0  # 5, 10, 20, 40, 60 s: a dropped stream comes back, a dead server is noticed
 FALLBACK_URL = "http://127.0.0.1:4096"  # what `opencode serve` listens on by default
 AUTH_USERNAME = "opencode"  # the server only checks the password
+TRANSIENT_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 LOOP_RETRY_NOTE = ("\n\nLet op: een eerder antwoord op deze vraag bleef hetzelfde herhalen tot het werd afgekapt. "
                    "Houd het beknopt, herhaal niets en sluit elke lijst zodra de inhoud op is.")
 
 MODEL_URL = re.compile(r"url: '(https?://[^']+)'")
+
+
+class LLMTransient(LLMError):
+    """The server or its model stumbled this time — a plain retry can fix it: a dropped stream, a
+    5xx, a server that was restarting while the call was in flight."""
+
+
+def _stumbled(status: int, text: str) -> bool:
+    """Is this error answer worth another try? OpenCode wraps its provider's failures in a
+    ProviderRequestError (``stream ended without finish_reason`` is the classic), which says the
+    server itself was fine and the model underneath it dropped the ball."""
+    return status in TRANSIENT_STATUSES or "ProviderRequestError" in text or "stream ended" in text
 
 
 # ---------------------------------------------------------------------------
@@ -163,8 +180,8 @@ class OpenCodeLLM:
         except httpx.HTTPError as exc:
             if self._abort.is_set():
                 raise Cancelled() from exc
-            raise LLMError(f"OpenCode at {self.base_url} not reachable ({type(exc).__name__}: {exc}). "
-                           "Is the OpenCode app running? `studiepodcast doctor` checks it.") from exc
+            raise LLMTransient(f"OpenCode at {self.base_url} not reachable ({type(exc).__name__}: {exc}). "
+                               "Is the OpenCode app running? `studiepodcast doctor` checks it.") from exc
         if self._abort.is_set():
             raise Cancelled()
         if response.status_code == 401:
@@ -175,8 +192,27 @@ class OpenCodeLLM:
             raise LLMError(f"OpenCode does not know model {self.model_ref} ({response.status_code}): pick it in the "
                            "OpenCode app or opencode.json, or point OPENCODE_MODEL at one it lists.")
         if response.status_code >= 400:
-            raise LLMError(f"OpenCode at {self.base_url} answered {response.status_code}: {response.text[:500]}")
+            message = f"OpenCode at {self.base_url} answered {response.status_code}: {response.text[:500]}"
+            raise LLMTransient(message) if _stumbled(response.status_code, response.text) else LLMError(message)
         return ((response.json() or {}).get("data") or {}).get("text") or ""
+
+    def _post_resilient(self, prompt: str, task: str) -> str:
+        """``_post`` with a ladder for stumbles that are not this prompt's fault. The wait is an
+        abort-wait, so a Stop interrupts the backoff immediately rather than after it."""
+        for attempt in range(TRANSIENT_RETRIES + 1):
+            try:
+                return self._post(prompt)
+            except LLMTransient as exc:
+                if self._abort.is_set():
+                    raise Cancelled() from exc
+                if attempt == TRANSIENT_RETRIES:
+                    raise LLMError(f"{exc} (also after {TRANSIENT_RETRIES} retries)") from exc
+                wait = min(RETRY_WAIT_S * 2 ** attempt, 60.0)
+                log.warning("OpenCode stumbled on %s (attempt %d/%d): %s — retrying in %.0f s",
+                            task, attempt + 1, TRANSIENT_RETRIES + 1, str(exc)[:200], wait)
+                if self._abort.wait(wait):
+                    raise Cancelled()
+        raise AssertionError("unreachable")
 
     def generate(self, request: LLMRequest) -> BaseModel:
         if self._abort.is_set():
@@ -189,7 +225,7 @@ class OpenCodeLLM:
             log.info("llm %s task=%s model=%s attempt=%d", self.name, request.task, self.model_ref, attempt + 1)
             if self._abort.is_set():
                 raise Cancelled()
-            answer = clean_answer(self._post(prompt))
+            answer = clean_answer(self._post_resilient(prompt, request.task))
             seconds = time.monotonic() - started
             out_tokens = estimate_tokens(answer)
             self.usage.add(SimpleNamespace(input_tokens=estimate_tokens(prompt), output_tokens=out_tokens), seconds)

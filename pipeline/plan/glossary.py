@@ -133,10 +133,13 @@ def propose_lexicon(chapter: Chapter, glossary: Glossary, llm: LLM) -> list[Lexi
     assert isinstance(out, LexiconOut)
     entries: list[LexiconEntry] = []
     for e in out.entries:
-        surface = e.surface.strip()
-        if not surface or glossary.find(surface) or surface.casefold() not in text.casefold():
+        surface, spoken = e.surface.strip(), e.spoken.strip()
+        if not surface or not spoken:
+            log.warning("lexicon entry %r from the model carries no pronunciation, dropped", e.surface)
+            continue  # the entry models accepts an empty spoken; the strict LexiconEntry would crash the job on it
+        if glossary.find(surface) or surface.casefold() not in text.casefold():
             continue
-        entries.append(LexiconEntry(surface=surface, kind=e.kind, spoken=e.spoken.strip(), note=e.note,
+        entries.append(LexiconEntry(surface=surface, kind=e.kind, spoken=spoken, note=e.note,
                                     source_chapter=chapter.id, lock=e.kind == "loanword_en"))
     return entries
 

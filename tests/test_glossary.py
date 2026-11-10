@@ -51,3 +51,23 @@ def test_propose_and_persist(book, fake_llm, cast_dir, tmp_path):
     again = load_or_create_glossary(path, "demo", cast_dir)
     assert again.find("1/6").spoken == "1 gedeeld door 6"
     assert propose_lexicon(book.chapter("ch01"), again, fake_llm) == []  # nothing new the second time
+
+
+def test_propose_lexicon_drops_entries_without_a_pronunciation(book):
+    """The answer model accepts spoken="", the strict LexiconEntry rejects it. The model's empty
+    pronunciation gets dropped at the gate instead of crashing a job that is hours into a run."""
+    from pipeline.llm import LLMRequest
+    from pipeline.plan.glossary import LexiconOut
+
+    class AnsweringLLM:
+        name = "fake"
+
+        def generate(self, request: LLMRequest):
+            return LexiconOut(entries=[
+                {"surface": "1/6", "kind": "notation", "spoken": "   ", "note": None},
+                {"surface": "P(A|B)", "kind": "notation", "spoken": "P van A gegeven B", "note": None},
+            ])
+
+    new = propose_lexicon(book.chapter("ch01"), Glossary(book_id="b"), AnsweringLLM())
+    assert [e.surface for e in new] == ["P(A|B)"]  # the blank one is dropped, the rest survives
+    assert isinstance(new[0], LexiconEntry) and new[0].spoken == "P van A gegeven B"

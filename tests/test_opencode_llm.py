@@ -12,14 +12,21 @@ import pytest
 from pydantic import BaseModel
 
 from pipeline import fake_handlers as fh
+from pipeline import opencode_llm
 from pipeline.cancel import Cancelled
 from pipeline.config import Settings
 from pipeline.llm import LLMError, LLMRequest, LLMTruncated, make_llm, text_block
 from pipeline.offline import OfflineViolation
-from pipeline.opencode_llm import FALLBACK_URL, OpenCodeLLM, discover, split_model
+from pipeline.opencode_llm import FALLBACK_URL, TRANSIENT_RETRIES, OpenCodeLLM, discover, split_model
 from pipeline.runner import Pipeline
 
 GENERATE = "/api/experimental/generate/text"
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff_sleep(monkeypatch):
+    """The retry ladder doubles from RETRY_WAIT_S; tests take the waits out."""
+    monkeypatch.setattr(opencode_llm, "RETRY_WAIT_S", 0.0)
 HANDLERS = {"LexiconOut": fh.fake_lexicon, "SegmentOut": fh.fake_script_segment,
             "PerformanceSegmentOut": fh.fake_script_scene, "SupportOut": fh.fake_support,
             "ContinuityOut": fh.fake_continuity, "SectionPlanOut": fh.fake_plan_section,
@@ -75,6 +82,8 @@ class FakeServer:
         if request.url.path != GENERATE:
             return httpx.Response(404, json={"error": f"no such endpoint: {request.url.path}"})
         text = self.replies.pop(0) if self.replies else self._canned(body["prompt"])
+        if isinstance(text, tuple):  # (status, body): the server stumbling instead of answering
+            return httpx.Response(text[0], json=text[1])
         return httpx.Response(200, json={"data": {"text": text}})
 
     @staticmethod
@@ -166,6 +175,53 @@ def test_the_three_ways_this_backend_breaks_are_named_specifically():
 
     with pytest.raises(LLMError, match=r"not reachable.*Is the OpenCode app running"):
         OpenCodeLLM(_settings(), transport=httpx.MockTransport(down)).generate(_request())
+
+
+DROPPED_STREAM = (502, {"_tag": "ProviderRequestError", "providerID": "strata", "reason": "provider",
+                        "message": "OpenAI Chat stream ended without finish_reason", "status": 200})
+
+
+def test_a_provider_that_drops_a_stream_is_retried_and_the_job_never_notices():
+    """The real failure this ladder was written for: the local runner ends the stream without
+    finish_reason, OpenCode wraps it in a 502, and one answer of a many-hour run must not die."""
+    flaky = FakeServer([DROPPED_STREAM, DROPPED_STREAM, '{"verdict": "ok", "score": 4}'])
+    llm = OpenCodeLLM(_settings(), transport=httpx.MockTransport(flaky))
+    assert llm.generate(_request()).score == 4
+    assert len(flaky.bodies()) == 3  # the two dropped streams were retried on the spot
+    assert all(b["prompt"] == flaky.bodies()[0]["prompt"] for b in flaky.bodies())  # same question again
+
+
+def test_a_provider_that_stumbles_under_a_different_name_is_still_retried():
+    flaky = FakeServer([(503, {"error": "Server Error"}), '{"verdict": "ok", "score": 2}'])
+    assert OpenCodeLLM(_settings(), transport=httpx.MockTransport(flaky)).generate(_request()).score == 2
+
+
+def test_a_provider_that_keeps_stumbling_gives_up_with_its_original_error():
+    down = FakeServer([DROPPED_STREAM] * 99)
+    with pytest.raises(LLMError, match=r"answered 502.*stream ended without finish_reason.*also after 5 retries"):
+        OpenCodeLLM(_settings(), transport=httpx.MockTransport(down)).generate(_request())
+    assert len(down.bodies()) == TRANSIENT_RETRIES + 1
+
+
+def test_a_stop_during_the_retry_wait_is_a_stop_not_a_retry():
+    calls: list = []
+
+    def stumbling(request):
+        calls.append(request)
+        llm.abort()  # the user pressed Stop while the call was in flight
+        return httpx.Response(DROPPED_STREAM[0], json=DROPPED_STREAM[1])
+
+    llm = OpenCodeLLM(_settings(), transport=httpx.MockTransport(stumbling))
+    with pytest.raises(Cancelled):
+        llm.generate(_request())
+    assert len(calls) == 1  # aborted before the ladder could try again
+
+
+def test_a_wrong_password_is_never_retried():
+    stubborn = FakeServer(status=401)
+    with pytest.raises(LLMError, match="rejected the password"):
+        OpenCodeLLM(_settings(), transport=httpx.MockTransport(stubborn)).generate(_request())
+    assert len(stubborn.requests) == 1  # the answer is never the model's fault here
 
 
 def test_abort_ends_the_call_in_flight_and_refuses_the_next_one():
