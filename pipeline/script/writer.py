@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from rapidfuzz import fuzz
 
 from pipeline.config import Settings
@@ -36,7 +36,7 @@ from pipeline.models import (
     Segment,
     SegmentType,
 )
-from pipeline.script.cast import cast_bible_text, continuity_text, pick_guest
+from pipeline.script.cast import cast_bible_text, continuity_text, pick_guest, voice_samples_text
 from pipeline.tags import known_tags
 
 log = logging.getLogger(__name__)
@@ -77,12 +77,39 @@ MIN_EPISODE_MINUTES = 6
 GUEST_MIN_MINUTES = 15  # a six-minute guest in a ten-minute episode is padding
 REEXPLAIN_MIN_DIFFICULTY = 4  # a second route only for a claim that is actually hard
 QUIZ_SECONDS_PER_QUESTION = 50
+HUMAN_MOMENT_SECONDS = 30  # each body block makes room for a story, an argument, a tease or an aha
+
+
+def _block_count(claims: list[KeyClaim]) -> int:
+    return max(3, min(5, round(len(claims) / 4))) if claims else 3
+
+
+def human_moment(i: int, explainer, skeptic) -> tuple[str, str]:
+    """(kind, instruction) for body block ``i`` (1-based). The kinds rotate so no two neighbouring blocks get the
+    same beat, and the anecdotes alternate between the hosts."""
+    kinds = ("anekdote", "meningsverschil", "plagen", "kwartje")
+    kind = kinds[(i - 1) % len(kinds)]
+    teller, listener = (explainer, skeptic) if ((i - 1) // len(kinds)) % 2 == 0 else (skeptic, explainer)
+    text = {
+        "anekdote": (f"{teller.name} vertelt kort iets uit eigen leven dat bij één van deze beweringen past: uit de "
+                     f"verhalen van {teller.name}, of een nieuw verhaal dat bij die persoon past. Concreet: wie, waar, wat "
+                     f"er gebeurde. {listener.name} reageert op het verhaal zelf, voordat het gesprek terug naar de stof gaat."),
+        "meningsverschil": (f"{explainer.name} en {skeptic.name} zijn het hier echt oneens over de stof, allebei met een "
+                            "punt. Het wordt niet in één regel opgelost: ze duwen een paar keer heen en weer en komen er "
+                            "samen uit, met de bron als scheidsrechter."),
+        "plagen": (f"{skeptic.name} plaagt {explainer.name} (of andersom) met iets uit hun gedeelde geschiedenis of iets van "
+                   "eerder in deze aflevering, en de ander pareert. Kort en warm, daarna verder met de stof."),
+        "kwartje": (f"Bij {skeptic.name} valt hoorbaar het kwartje: eerst verwarring, dan het moment dat het klikt, in eigen "
+                    f"woorden. {explainer.name} laat dat moment staan en praat er niet meteen overheen."),
+    }[kind]
+    return kind, text
 
 
 def episode_minutes(plan: ContentPlan, max_minutes: int) -> int:
     """The episode length this plan carries, between MIN_EPISODE_MINUTES and ``max_minutes``."""
     body = sum(SECONDS_PER_CLAIM.get(max(1, min(5, c.difficulty)), 35) for c in plan.key_claims)
     body += SECONDS_PER_MISCONCEPTION * len(plan.misconceptions)
+    body += HUMAN_MOMENT_SECONDS * _block_count(list(plan.key_claims))
     return max(MIN_EPISODE_MINUTES, min(max_minutes, math.ceil((body + FRAME_SECONDS) / 60)))
 
 
@@ -177,8 +204,7 @@ def build_blueprint(
         fixed += seconds["reexplain"]
     body_seconds = max(3 * 60, total_seconds - fixed)
 
-    n_blocks = max(3, min(5, round(len(claims) / 4))) if claims else 3
-    clusters = _cluster(claims, n_blocks)
+    clusters = _cluster(claims, _block_count(claims))
 
     # Cold open: an argument about something from the chapter.
     open_claim = top[0] if top else None
@@ -235,6 +261,8 @@ def build_blueprint(
                 f"Loop bewust in deze misvatting en corrigeer hem daarna: '{misc.wrong}' -> '{misc.right}' "
                 f"(verleidelijk omdat: {misc.why_tempting})."
             )
+        _, moment = human_moment(i, explainer, skeptic)
+        lines.append("Menselijk moment in dit blok (hier hangt het gesprek aan op, de beweringen eromheen): " + moment)
         if i == 1 and plan.worked_example and plan.worked_example.steps:
             lines.append(
                 "Werk het uitgewerkte voorbeeld uit de bron door in dialoog: "
@@ -332,7 +360,20 @@ class LineOut(BaseModel):
     pause_after_ms: int = Field(description="Bewuste stilte na deze regel in milliseconden, meestal 0.")
 
 
+BEATS_DESCRIPTION = ("Eerst, voor je de regels schrijft: in twee of drie zinnen het verloop van dit segment. Welk menselijk "
+                     "moment, wie wil wat, waar de lach of het 'o!' valt. Wordt niet uitgesproken.")
+
+
+def _ask_for_beats(schema: dict) -> None:
+    """The model is asked for the beats first; an answer without them is still accepted, not sent back."""
+    required = schema.setdefault("required", [])
+    if "beats" not in required:
+        required.insert(0, "beats")
+
+
 class SegmentOut(BaseModel):
+    model_config = ConfigDict(json_schema_extra=_ask_for_beats)
+    beats: str = Field(default="", description=BEATS_DESCRIPTION)
     lines: list[LineOut]
 
 
@@ -351,6 +392,8 @@ class PerformanceLineOut(LineOut):
 
 
 class PerformanceSegmentOut(BaseModel):
+    model_config = ConfigDict(json_schema_extra=_ask_for_beats)
+    beats: str = Field(default="", description=BEATS_DESCRIPTION)
     lines: list[PerformanceLineOut]
 
 
@@ -405,6 +448,8 @@ De rollen zijn tegelijk de leermotor en de comedymotor. De explainer legt uit me
 
 ## Vorm
 - Spreektaal: korte zinnen, contracties, halve zinnen mogen. Wissel zinslengte sterk af.
+- Elke regel reageert op wat er net gezegd is: op de woorden, de toon, de grap van de ander. Iemand die alleen het volgende punt afwerkt, klinkt als een robot.
+- Mensen praten niet foutloos: een zin opnieuw beginnen, zichzelf verbeteren ("nee, anders:"), lachen om iets specifieks, iets niet weten en dat zeggen. Met mate, en nooit in een regel die een getal of definitie draagt.
 - Schrijf getallen, formules en afkortingen zoals de bron ze schrijft; de uitspraak wordt later automatisch opgelost. Notatiezware stof beschrijf je in vorm en betekenis in plaats van symbolen voor te lezen.
 - Geen regieaanwijzingen in de tekst, ook niet tussen haakjes: de tekst wordt letterlijk uitgesproken. Emotie gaat via tags. Toegestane tags: {tags}.
 - Chatterbox leest hoofdletters als nadruk (harder, trager op dat woord) en gebruikt komma's en punten om adempauzes te plaatsen. Zet een enkel woord in KAPITALEN wanneer een host het écht benadrukt, niet elke zin, en varieer leestekens: een kort zinnetje met een punt klinkt anders dan een lange komma-zin.
@@ -467,6 +512,8 @@ NATURALNESS_RULES = frozenset({
     "flat_emotional_reaction",   # nobody reacts when something surprising lands
     "cut_word_missing",          # an interruption that breaks off mid-word cannot be staged
     "quiz_pause",                # a quiz question nobody waits for
+    "ignores_previous",          # a line that walks past what the other one just said
+    "stiff",                     # written language nobody would say out loud
 })
 
 # How many of the flattest body segments a script-wide note is handed to. Rewriting everything to
@@ -498,13 +545,16 @@ class Writer:
             f"{i + 1}. {b.title} ({b.type}, ~{b.target_chars} tekens, dekt {', '.join(b.covers) or 'niets'})"
             for i, b in enumerate(briefs)
         )
+        samples = voice_samples_text(self.cast)
         return [
             text_block(rules),
-            text_block(cast_bible_text(self.cast, guest) + "\n\n" + continuity_text(self.continuity)),
+            text_block(cast_bible_text(self.cast, guest) + ("\n\n" + samples if samples else "")
+                       + "\n\n" + continuity_text(self.continuity)),
             text_block(_plan_text(plan) + "\n\n" + _glossary_text(glossary) + "\n\n" + outline),
         ]
 
-    def _user(self, brief: SegmentBrief, script: Script, interrupts_left: int, fix: str | None = None) -> str:
+    def _user(self, brief: SegmentBrief, script: Script, interrupts_left: int, fix: str | None = None,
+              edit: str | None = None) -> str:
         prior = _lines_text(script)
         parts = [
             f"# Schrijf nu segment: {brief.title} (type {brief.type})",
@@ -517,8 +567,50 @@ class Writer:
             parts.append("## Herschrijf: los deze problemen op en behoud wat werkte\n"
                          "Los een probleem op in de inhoud zelf: verwijs niet naar 'de tekst' of 'de bron' om het te "
                          "ontwijken, en laat het segment niet langer worden dan de streeflengte.\n" + fix)
+        if edit:
+            parts.append(edit)
         parts.append("## Regels tot nu toe (ga hier naadloos op verder, herhaal niets)\n" + (prior or "(nog niets)"))
         return "\n\n".join(parts)
+
+    def polish(self, script: Script, audit: AuditResult | None, plan: ContentPlan, glossary: Glossary | None) -> Script:
+        """The table read: once the facts are right, every segment is rewritten for how it sounds. The facts are
+        frozen (a line with covers keeps its content and its covers); everything around them may change: lines
+        that answer each other, a host who restarts a sentence, a reaction under the other one's line. The
+        audit's conversation notes for a segment (lines that ignore the previous one, stiff lines) go along."""
+        guest = self.cast.guest(script.guest_id) if script.guest_id else None
+        notes: dict[str, list[str]] = {}
+        for issue in (audit.issues if audit else []):
+            if issue.rule in NATURALNESS_RULES and issue.line_id:
+                notes.setdefault(issue.line_id, []).append(issue.message)
+        briefs = [SegmentBrief(type=s.type, title=s.title or s.type, covers=list(s.covers), target_chars=max(200, s.char_count),
+                               instructions=s.brief or "", speakers=self._segment_speakers(s)) for s in script.segments]
+        system = self._system(plan, glossary, guest, briefs)
+        budget = self._interrupt_budget(script.target_minutes)
+        new_script = Script(episode_id=script.episode_id, target_minutes=script.target_minutes, title=script.title,
+                            guest_id=script.guest_id, revision=script.revision + 1)
+        todo = [s for s in script.segments if s.lines]
+        for n, seg in enumerate(todo, start=1):
+            if self.progress:
+                self.progress(n, len(todo), f"tafellezing: {seg.title or seg.type}")
+            i = script.segments.index(seg)
+            used = sum(1 for line in new_script.lines() if line.overlap.mode == "interrupt")
+            seg_notes = [f"- regel {line.id}: {m}" for line in seg.lines for m in notes.get(line.id, [])]
+            edit = (POLISH_INSTRUCTIONS
+                    + ("\nOpmerkingen bij deze versie:\n" + "\n".join(seg_notes) if seg_notes else "")
+                    + "\n\nHuidige versie van dit segment:\n" + "\n".join(_edit_row(line) for line in seg.lines))
+            request = LLMRequest(
+                task="script_polish",
+                system=system,
+                user=self._user(briefs[i], new_script, max(0, budget - used), edit=edit),
+                schema=SegmentOut,
+                metadata={"segment": seg.type, "polish": True},
+            )
+            out = self.llm.generate(request)
+            assert isinstance(out, SegmentOut)
+            new_seg = self._materialise(out, briefs[i], _with_max_id(new_script, script))
+            new_seg.beats = seg.beats or new_seg.beats
+            new_script.segments.append(new_seg if new_seg.lines else seg)
+        return new_script
 
     def _speaker_id(self, raw: str, allowed: list[str]) -> str | None:
         key = raw.strip().casefold()
@@ -535,7 +627,8 @@ class Writer:
         return None
 
     def _materialise(self, out: SegmentOut, brief: SegmentBrief, script: Script) -> Segment:
-        seg = Segment(type=brief.type, covers=list(brief.covers), title=brief.title, brief=brief.instructions)
+        seg = Segment(type=brief.type, covers=list(brief.covers), title=brief.title, brief=brief.instructions,
+                      beats=(getattr(out, "beats", "") or "").strip() or None)
         prev: Line | None = None
         for raw in out.lines:
             text = raw.text.strip()
@@ -719,6 +812,29 @@ class Writer:
             scored.append((overlaps, -len(seg.lines), i))
         scored.sort()
         return [i for _, _, i in scored[:FLAT_SEGMENT_TARGETS]]
+
+
+POLISH_INSTRUCTIONS = """## Tafellezing: maak hier een echt gesprek van
+Dit segment klopt inhoudelijk. Lees het in je hoofd hardop en herschrijf het zo dat het klinkt als deze twee mensen, die elkaar kennen en het ergens over hebben.
+- Elke regel reageert op de vorige: op de woorden, de toon of de grap. Een vraag krijgt antwoord, een verhaal krijgt een reactie.
+- Laat ze klinken zoals de cast ze beschrijft. Het menselijke moment van dit segment moet hoorbaar zijn.
+- Spreektaal: een zin opnieuw beginnen, zichzelf verbeteren, een korte reactie onder de ander door (backchannel), iets niet meteen weten. Met mate.
+- De feiten liggen vast. Een regel met covers houdt zijn inhoud en zijn covers; je mag hem anders zeggen of in twee regels knippen (de covers gaan mee naar de regel met het feit). Voeg geen feit toe en laat er geen weg.
+- Ongeveer even lang (± 15%). Geef ook de beats: in twee zinnen wat je aan het gesprek veranderde."""
+
+
+def _edit_row(line: Line) -> str:
+    """A line as the dialogue edit sees it: who, how, which claims it carries, and how it meets the line before."""
+    meta = []
+    if line.tags:
+        meta.append("tags: " + ", ".join(line.tags))
+    if line.covers:
+        meta.append("covers: " + ", ".join(line.covers))
+    if line.overlap.mode != "none":
+        meta.append("overlap: " + line.overlap.mode)
+    if line.pause_after_ms:
+        meta.append(f"pauze: {line.pause_after_ms}")
+    return f"[{line.id}] {line.speaker}" + (f" ({'; '.join(meta)})" if meta else "") + f": {line.text}"
 
 
 def _label(value: str | None, allowed: tuple[str, ...]) -> str | None:

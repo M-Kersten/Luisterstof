@@ -216,6 +216,10 @@ Target: coverage 100% on `exam_relevance >= 3`, zero lint hits, zero unsupported
 
 The episode is as long as its material: each claim gets 12 to 75 seconds by difficulty, plus a two-minute frame, between 6 minutes and `STUDIEPODCAST_TARGET_MINUTES` (default 25). Eight easy pages make a short episode. The guest segment comes only in an episode of 15 minutes or more whose plan asks for an expert, "wacht, opnieuw" only for a claim of difficulty 4 or 5, and the quiz has 2 to 4 questions by length. Each misconception goes to the block whose claims it is about, and each definition is explained in one block only.
 
+Every body block hangs on one human moment, in rotation: an anecdote (the hosts take turns), a real disagreement that takes a few lines to settle, a tease from their shared history, or the penny dropping for the skeptic. The writer first writes the segment's `beats` (who wants what, where the laugh or the "oh!" falls), then the lines; the beats are kept on the segment in the script json. Each block gets 30 seconds for its moment in the episode length.
+
+When the facts are right, the table read (`STUDIEPODCAST_POLISH`, on by default) rewrites every segment once for how it sounds: every line answering the one before, a restarted sentence, a reaction under the other host's line. Lines that carry a claim keep their content and their claim ids. The edited script is audited again, and if the edit added blocking issues the version before it is kept. The LLM lint also notes lines that ignore what was just said (`ignores_previous`) and written language nobody says out loud (`stiff`); these are warnings, which the table read and quality mode work from.
+
 The audit blocks what a writing model does on autopilot: a host's tic more than once per segment (`tic_overuse`), most of a host's lines starting the same way (`repeated_opening`), the same quip template over and over such as "een X is geen Y" (`stock_phrase`), the hosts talking about "de tekst" or "de bron" instead of the subject (`source_talk`), a definition read out as "term: omschrijving" (`definition_recital`) and a line repeated word for word outside the quiz (`duplicate_line`). The support check accepts a paraphrase that gets the content right. Each rewrite round is audited again, and when a round made the script worse, the best revision is saved again as the newest one (`kept_best` in the log).
 
 **M4 Human check.** Read the script and the audit output. Expect to rewrite `cast/hosts.yaml` here.
@@ -263,7 +267,11 @@ API summary: `POST /api/books` (upload, `quality=true` to run it in quality mode
 
 ## The cast
 
-`cast/hosts.yaml` defines two hosts with different epistemic roles: Tessa explains with analogies and pushes them too far, Joris refuses hand-waves and asks the question the listener has. `tic_markers` are phrases only that host may use; the linter blocks a script in which anyone else uses them. `cast/guests.yaml` is a small pool picked by domain when a chapter's plan sets `needs_expert`. `cast/banned_phrases.yaml` is the zero-tolerance list, editable.
+`cast/hosts.yaml` defines two hosts with different epistemic roles: Tessa explains with analogies and pushes them too far, Joris refuses hand-waves and asks the question the listener has. A role alone writes a robot, so each host also has a character file the writer sees in full: `voice` (how they talk), `life` (people, places, habits), `stories` (anecdotes they can tell), `wants`, `behaviour` (what they do when wrong, bored or moved) and `never`. The top-level `relationship` holds what they share: how they met, the running tease, what each admires in the other. All of it is a first draft; rewrite it until it sounds like your hosts. A host's own stories are not subject matter: they may tell them freely, as long as no fact about the material comes with them.
+
+`cast/voice_samples.md` holds three short scenes in the register the writer should hit. The writer is told to take the tone and nothing else, and the audit blocks a line that copies a sample line (`sample_copy`). Write your own scenes here once the voices are cast; the scenes in the voice-actor script fit.
+
+`tic_markers` are phrases only that host may use; the linter blocks a script in which anyone else uses them, or the host itself more than once per segment. `cast/guests.yaml` is a small pool picked by domain when a chapter's plan sets `needs_expert`. `cast/banned_phrases.yaml` is the zero-tolerance list, editable.
 
 ## Audio details
 
@@ -383,6 +391,7 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 | `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE` | `large-v3`, `int8` | faster-whisper model |
 | `STUDIEPODCAST_TAKES`, `STUDIEPODCAST_WER_THRESHOLD` | `3`, `0.05` | Take loop |
 | `STUDIEPODCAST_TARGET_MINUTES` | `25` | Longest episode; shorter material makes a shorter one |
+| `STUDIEPODCAST_POLISH` | `1` | The table read: one dialogue edit per segment once the facts are right |
 | `STUDIEPODCAST_DATA_DIR`, `STUDIEPODCAST_CAST_DIR` | `data`, `cast` | Storage |
 
 ## Tests

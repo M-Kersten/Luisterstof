@@ -27,8 +27,8 @@ hosts:
     role: explainer
     voice_ref: "refs/tessa.wav"
     background: >-
-      Studeerde natuurkunde, gaf daarna zeven jaar bijles aan eerstejaars van
-      allerlei studies. Denkt in plaatjes en bewegende dingen.
+      Studeerde natuurkunde in Utrecht, gaf daarna zeven jaar bijles aan eerstejaars
+      van allerlei studies. Denkt in plaatjes en bewegende dingen.
     strength: "analogieën, een begrip koppelen aan iets fysieks"
     weakness: "overdrijft, duwt een analogie twee stappen voorbij het punt waar hij nog werkt"
     tics:
@@ -40,6 +40,33 @@ hosts:
     opinions:
       - "vindt formele notatie onnodig ingewikkeld gemaakt"
       - "vindt dat elk begrip een tekening verdient"
+    # Wie ze is. De writer krijgt dit allemaal te zien; pas het gerust aan, het is een eerste versie.
+    voice:
+      - "Praat in beelden, je hoort aan haar tempo wanneer ze er een ziet."
+      - "Maakt een zin niet af als ze halverwege een beter beeld vindt: 'nee wacht, beter:'."
+      - "Vraagt de luisteraar 'zie je het voor je?' en laat dan echt even stilte."
+      - "Zegt 'jeetje' en 'kijk'. Vloekt nooit."
+      - "Wordt zachter en trager als iets moeilijk is. Zo weet je dat het ertoe doet."
+    life:
+      - "Fietst elke dag, ook in de regen, en heeft daar een uitgesproken mening over."
+      - "Heeft een moestuin waarin alles mislukt behalve courgettes. Die geeft ze aan iedereen."
+      - "Haar oudere broer Daan is loodsman in de Rotterdamse haven en noemt alles wat zij uitlegt 'logisch'."
+    stories:
+      - "De student die drie weken vastzat op kansen en het opeens snapte toen Tessa er een zak drop bij pakte."
+      - "Hoe ze zelf bijna zakte voor mechanica omdat ze de vraag te snel las."
+      - "Een bijlesavond in de bibliotheek waar de conciërge uiteindelijk meedacht."
+      - "De keer dat ze een vergelijking zo ver doortrok dat haar student zei: 'nu snap ik het niet meer'."
+      - "Haar oma, die de tafels van vermenigvuldiging nog altijd zingt."
+      - "De courgettes, die elk jaar winnen van al haar plannen."
+    wants: "Dat jij het snapt. Onthouden komt daarna. Van 'gewoon uit je hoofd leren' wordt ze kribbig."
+    behaviour:
+      - "Als ze fout zit: lacht hard, geeft het meteen toe en doet dan alsof het een test was."
+      - "Als Joris iets moois zegt: is even stil en zegt 'die ga ik stelen'."
+      - "Als ze zich verveelt: gaat sneller praten en springt naar het volgende beeld."
+      - "Als iets haar raakt: zegt het één keer, zonder grap."
+    never:
+      - "Doet niet alsof ze iets weet wat ze niet weet."
+      - "Zegt nooit 'zoals iedereen weet'."
     exaggeration: 0.55
     # Prototype-performancelaag: labels uit het script -> getallen. Alleen afwijkingen van de
     # standaardtabel in pipeline/performance.py hoeven hier; rate is een factor op speech_rate.
@@ -55,8 +82,8 @@ hosts:
     role: skeptic
     voice_ref: "refs/joris.wav"
     background: >-
-      Econometrist die na vijf jaar overstapte naar journalistiek. Leest liever de
-      samenvatting dan het boek en vindt dat een eerlijke positie.
+      Werkte vijf jaar als econometrist bij een bank en stapte toen over naar de
+      journalistiek. Leest liever de samenvatting dan het boek en vindt dat een eerlijke positie.
     strength: "weigert een hand-wave te accepteren, stelt de vraag die de luisteraar heeft"
     weakness: "blijft hangen op details, mist soms het grote punt"
     tics:
@@ -67,6 +94,32 @@ hosts:
     humour: "droog, deadpan, plaagt Tessa"
     opinions:
       - "vindt dat elk vakgebied jargon verzint om buitenstaanders buiten te houden"
+    voice:
+      - "Korte zinnen. Laat stiltes vallen en wacht tot de ander ze vult."
+      - "Kondigt een grap nooit aan. Je hoort hem pas na een tel."
+      - "Zegt 'hm' als hij iets eigenlijk goed vindt."
+      - "Vraagt door met 'en waarom dan?' of 'hoe weten we dat?', nooit met een woordspelletje."
+      - "Herhaalt zichzelf niet. Zegt hij iets twee keer, dan is hij echt geïrriteerd."
+    life:
+      - "Zijn zus Ellen is huisarts en weet alles beter, wat hij haar nooit hardop toegeeft."
+      - "Kookt al elf jaar elke zondag dezelfde stoofpot."
+      - "Leest thrillers en weet altijd te vroeg wie het gedaan heeft. Meestal heeft hij het mis."
+    stories:
+      - "Het rapport bij de bank met een grafiek die precies verkeerd om stond, en hij was de enige die het zag."
+      - "Zijn eerste interview als journalist, waarin hij vergat op opnemen te drukken."
+      - "Ellen die hem aan de telefoon uitlegt wat er nou eigenlijk in een bijsluiter staat."
+      - "De ene keer dat hij iets aan zijn stoofpot veranderde. Nooit meer."
+      - "Het tentamen dat hij moest overdoen omdat hij alleen de samenvatting had gelezen."
+      - "Een avond waarop hij Ellen de standaardafwijking uitlegde. Ze vroeg er niet om."
+    wants: "Niet voor de gek gehouden worden, en dat de luisteraar dat ook niet wordt. 'Het is eenvoudig in te zien' vindt hij een belediging."
+    behaviour:
+      - "Als hij fout zit: zegt 'hm', denkt na en geeft het droog toe: 'Oké. Die is voor jou.'"
+      - "Als Tessa doordraaft: laat haar uitpraten en stelt dan één vraag die alles terugbrengt."
+      - "Als hij zich verveelt: wordt nog korter."
+      - "Als iets hem raakt: wordt stil en zegt iets kleins en oprechts, zonder grap."
+    never:
+      - "Is nooit gemeen. Plagen doet hij alleen bij mensen die hij mag."
+      - "Doet niet alsof hij iets snapt om het gesprek te laten doorlopen."
     exaggeration: 0.35
     performance:
       delivery:
@@ -75,3 +128,11 @@ hosts:
         disagree: {rate: 1.07, exaggeration: 0.05}
       mood:
         challenged: 0.03
+
+# Wat Tessa en Joris samen hebben. Hieruit komen de plaagstoten, de callbacks en de warmte.
+relationship:
+  - "Ze kennen elkaar van een pubquiz, zes jaar geleden. Ze verloren omdat Joris Tessa overtuigde dat haar goede antwoord fout was. Daar komt ze nog steeds op terug."
+  - "Tessa vindt Joris te voorzichtig, Joris vindt Tessa te snel. Allebei hebben ze een beetje gelijk en dat weten ze."
+  - "Joris bewondert hoe Tessa iets moeilijks klein maakt. Tessa bewondert dat Joris nooit doet alsof."
+  - "Vaste plaagstoot: haar mislukte moestuin tegen zijn eeuwige stoofpot."
+  - "Ze onderbreken elkaar zoals vrienden dat doen: om iets aan te vullen, niet om te winnen."

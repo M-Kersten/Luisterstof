@@ -92,3 +92,44 @@ def test_revise_only_touches_flagged_segments(book, fake_llm, cast, settings):
         else:
             assert new is old
     assert len({l.id for l in revised.lines()}) == sum(len(s.lines) for s in revised.segments)
+
+
+def test_the_writer_sees_people_and_how_they_sound(book, fake_llm, cast, settings):
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
+    Writer(fake_llm, cast, settings).write(plan, book, None)
+    system = "".join(b["text"] for b in next(c for c in fake_llm.calls if c.task == "script_segment").system)
+    assert "Zo praat Tessa" in system and "Verhalen die Joris kan vertellen" in system and "### Samen" in system
+    assert "pubquiz" in system  # the shared history
+    assert "Zo klinken ze" in system and "Ik heb een systeem bedacht voor de roulette." in system
+
+
+def test_every_block_hangs_on_a_human_moment(book, fake_llm, cast, settings):
+    from pipeline.script.writer import human_moment
+
+    tessa, joris = cast.by_role("explainer"), cast.by_role("skeptic")
+    kinds = [human_moment(i, tessa, joris)[0] for i in range(1, 6)]
+    assert kinds == ["anekdote", "meningsverschil", "plagen", "kwartje", "anekdote"]
+    assert human_moment(1, tessa, joris)[1].startswith("Tessa vertelt")
+    assert human_moment(5, tessa, joris)[1].startswith("Joris vertelt")  # the anecdotes take turns
+
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
+    briefs = build_blueprint(plan, cast, guest=None, previous_plan=None, next_chapter_title=None, target_minutes=12,
+                             chars_per_second=15)
+    assert all("Menselijk moment in dit blok" in b.instructions for b in briefs if b.type == "body")
+    script = Writer(fake_llm, cast, settings).write(plan, book, None)
+    assert all(seg.beats for seg in script.segments)  # the writer's plan is kept on each segment
+
+
+def test_the_table_read_keeps_every_fact_and_adds_conversation(book, fake_llm, cast, settings):
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
+    writer = Writer(fake_llm, cast, settings)
+    script = writer.write(plan, book, None)
+    polished = writer.polish(script, None, plan, None)
+    assert polished.revision == script.revision + 1
+    facts = lambda s: [(l.speaker, l.text, l.covers) for l in s.lines() if l.covers]  # noqa: E731
+    assert facts(polished) == facts(script)  # every claim line, its words and its ids, untouched by the fake edit
+    assert len(list(polished.lines())) > len(list(script.lines()))  # a reaction under a line was added
+    assert all(seg.beats for seg in polished.segments)
+    edit_prompts = [c.user for c in fake_llm.calls if c.task == "script_polish"]
+    assert len(edit_prompts) == len(script.segments) and all("Tafellezing" in u for u in edit_prompts)
+    assert any("covers: c" in u for u in edit_prompts)  # the edit sees which lines carry which claims

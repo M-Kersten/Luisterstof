@@ -313,6 +313,7 @@ class Segment(Contract):
     lines: list[Line] = Field(default_factory=list)
     title: str | None = None
     brief: str | None = None  # what the writer was asked to do in this segment
+    beats: str | None = None  # the writer's own plan for the segment, written before the lines
 
     @property
     def char_count(self) -> int:
@@ -454,6 +455,13 @@ class Host(Contract):
     tic_markers: list[str] = Field(default_factory=list)  # literal phrases only this host may use
     humour: str = ""
     opinions: list[str] = Field(default_factory=list)
+    # The person behind the role: what makes the writer hear a voice instead of a label.
+    voice: list[str] = Field(default_factory=list)  # how they talk
+    life: list[str] = Field(default_factory=list)  # people, places, habits
+    stories: list[str] = Field(default_factory=list)  # anecdotes they can tell, in their own words
+    wants: str = ""  # what they want from a conversation
+    behaviour: list[str] = Field(default_factory=list)  # what they do when wrong, bored, moved
+    never: list[str] = Field(default_factory=list)  # what they never say or do
     exaggeration: float = 0.5  # Chatterbox base value
     cfg_weight: float = 0.5  # Chatterbox classifier-free-guidance weight; lowering it tends to slow delivery
     speech_rate: float = 1.0  # post-render pitch-preserving time-stretch; <1.0 slower, >1.0 faster, 1.0 = off
@@ -483,6 +491,8 @@ class Guest(Contract):
 class Cast(Contract):
     hosts: list[Host] = Field(default_factory=list)
     guests: list[Guest] = Field(default_factory=list)
+    relationship: list[str] = Field(default_factory=list)  # the hosts' shared history: how they met, the running tease
+    voice_samples: str = ""  # cast/voice_samples.md: short scenes in the register the writer should hit
 
     @property
     def host_ids(self) -> list[str]:

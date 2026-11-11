@@ -207,3 +207,23 @@ def test_varied_dialogue_passes(cast):
              Line(id="l4", speaker="joris", text="Wacht even. Ook omdat ze honger hadden?"),
              Line(id="l5", speaker="tessa", text="Ja, werk, geld en eten waren op.")]
     assert _repetition([_seg(lines)], cast) == []
+
+
+def test_a_line_lifted_from_the_voice_samples_is_blocking(cast):
+    lines = [Line(id="l1", speaker="joris", text="Ik heb een systeem bedacht voor de roulette!"),
+             Line(id="l2", speaker="tessa", text="Het balletje in deze opgave rolt nergens heen.")]
+    rules = _repetition([_seg(lines)], cast)
+    assert ("sample_copy", "l1") in rules and ("sample_copy", "l2") not in rules
+
+
+def test_conversation_notes_from_the_llm_lint_are_warnings(book, fake_llm, cast, banned, settings):
+    from pipeline.script.audit import lint_llm
+
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
+    script = Writer(fake_llm, cast, settings).write(plan, book, None)
+    first, second = list(script.lines())[:2]
+    picky = FakeLLM(dict(fake_llm.handlers)).on("lint", lambda req: {"hits": [
+        {"line_id": first.id, "rule": "stiff", "explanation": "Schrijftaal."},
+        {"line_id": second.id, "rule": "filler", "explanation": "Vulling."}]})
+    issues = {i.rule: i.severity for i in lint_llm(script, picky)}
+    assert issues == {"stiff": "warning", "filler": "blocking"}

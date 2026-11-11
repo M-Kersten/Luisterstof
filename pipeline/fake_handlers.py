@@ -190,7 +190,7 @@ def fake_script_segment(req: LLMRequest) -> dict:
         if "misvatting" in user.casefold():
             line(skeptic, "Dus dat geldt altijd?", tags=["skeptical"])
             line(explainer, "Nee, alleen onder de voorwaarden die erbij horen. Daar trapte ik zelf ook in.", tags=["laughs"])
-    return {"lines": lines}
+    return {"beats": f"Fake {seg_type}: een vraag, een antwoord, een korte reactie.", "lines": lines}
 
 
 def fake_script_scene(req: LLMRequest) -> dict:
@@ -223,7 +223,7 @@ def fake_script_scene(req: LLMRequest) -> dict:
          "immediate")
     line(j, "(lacht)", reaction="laugh", overlap="backchannel")
     line(j, "Dan ga ik voortaan gewoon één keer.", "punchline", "amused", "immediate", tags=["deadpan"])
-    return {"lines": lines}
+    return {"beats": "Fake scene: een aanloop, een onderbreking, het kwartje.", "lines": lines}
 
 
 def fake_support(req: LLMRequest) -> dict:
@@ -244,6 +244,33 @@ def fake_continuity(req: LLMRequest) -> dict:
     }
 
 
+_EDIT_ROW = re.compile(r"^\[(?P<id>[^\]]+)\] (?P<speaker>\S+)(?: \((?P<meta>[^)]*)\))?: (?P<text>.*)$")
+
+
+def fake_script_polish(req: LLMRequest) -> dict:
+    """The table read, faked: every line comes back as it was (facts and covers intact), and the first answer
+    gets a short reaction from the other host underneath it, the kind of thing a real edit adds."""
+    user = _text_of(req.user)
+    rows = user.split("Huidige versie van dit segment:", 1)[-1].split("\n## ", 1)[0].strip().splitlines()
+    lines: list[dict] = []
+    reacted = False
+    for row in rows:
+        m = _EDIT_ROW.match(row.strip())
+        if not m:
+            continue
+        meta = dict(part.split(": ", 1) for part in (m.group("meta") or "").split("; ") if ": " in part)
+        lines.append({"speaker": m.group("speaker"), "text": m.group("text"),
+                      "tags": [t.strip() for t in meta.get("tags", "").split(",") if t.strip()],
+                      "covers": [c.strip() for c in meta.get("covers", "").split(",") if c.strip()],
+                      "overlap": meta.get("overlap", "none"), "pause_after_ms": int(meta.get("pauze", 0) or 0)})
+        plain = not lines[-1]["covers"] and not re.search(r"\d", lines[-1]["text"]) and lines[-1]["overlap"] == "none"
+        if not reacted and plain and len(lines) > 1 and lines[-2]["speaker"] != lines[-1]["speaker"]:
+            lines.append({"speaker": lines[-2]["speaker"], "text": "Hm, ja.", "tags": [], "covers": [],
+                          "overlap": "backchannel", "pause_after_ms": 0})
+            reacted = True
+    return {"beats": "Fake tafellezing: één reactie erbij.", "lines": lines}
+
+
 def default_fake_llm() -> FakeLLM:
     return FakeLLM({
         "structure": fake_structure,
@@ -254,6 +281,7 @@ def default_fake_llm() -> FakeLLM:
         "lexicon": fake_lexicon,
         "script_segment": fake_script_segment,
         "script_scene": fake_script_scene,
+        "script_polish": fake_script_polish,
         "support": fake_support,
         "lint": fake_lint,
         "continuity": fake_continuity,

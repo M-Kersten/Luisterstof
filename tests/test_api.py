@@ -49,7 +49,7 @@ def test_upload_run_edit_approve(settings, sample_pdf):
         script = chapter["script"]
         script["segments"][0]["lines"][0]["text"] = "Nee, dat accepteer ik gewoon niet."
         saved = client.put("/api/books/demo/chapters/ch01/script", json=script).json()
-        assert saved["revision"] == 2
+        assert saved["revision"] == script["revision"] + 1
         assert client.post("/api/books/demo/chapters/ch01/approve", json={}).status_code == 200  # re-audits, then approves
         assert client.get("/api/books/demo/chapters/ch01").json()["approved"]
 

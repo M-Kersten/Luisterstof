@@ -39,12 +39,12 @@ def test_a_script_edited_by_hand_is_audited_again_never_rewritten(ingested):
     p.run_book("demo", upto="script", chapters=["ch01"])
     script = Script.load(p.paths("demo").script("ch01"))
     script.segments[0].lines[0].text = "Dit heb ik zelf herschreven."
-    p.save_script("demo", "ch01", script)  # the web app's save: new revision, the audit is now stale
+    edited = p.save_script("demo", "ch01", script)  # the web app's save: new revision, the audit is now stale
     calls = len(p.llm.calls)
     out = p.run_book("demo", upto="script", chapters=["ch01"])
     assert "script_segment" not in _tasks(p, calls) and "support" in _tasks(p, calls)
     assert Script.load(p.paths("demo").script("ch01")).segments[0].lines[0].text == "Dit heb ik zelf herschreven."
-    assert out["ch01"]["audit"].script_revision == 2
+    assert out["ch01"]["audit"].script_revision == edited.revision
 
 
 def test_a_failing_chapter_does_not_stop_the_others(ingested):

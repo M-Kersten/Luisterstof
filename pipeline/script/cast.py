@@ -19,6 +19,7 @@ from pipeline.models import Cast, ContinuityEntry, Guest, Host
 
 CONTINUITY_FILE = "continuity.jsonl"
 BANNED_FILE = "banned_phrases.yaml"
+VOICE_SAMPLES_FILE = "voice_samples.md"
 
 
 def load_cast(cast_dir: Path | str) -> Cast:
@@ -33,7 +34,9 @@ def load_cast(cast_dir: Path | str) -> Cast:
     roles = {h.role for h in hosts}
     if "explainer" not in roles or "skeptic" not in roles:
         raise ValueError("hosts.yaml needs one explainer and one skeptic")
-    return Cast(hosts=hosts, guests=guests)
+    samples = cast_dir / VOICE_SAMPLES_FILE
+    return Cast(hosts=hosts, guests=guests, relationship=[str(r) for r in hosts_raw.get("relationship", []) or []],
+                voice_samples=samples.read_text(encoding="utf-8").strip() if samples.is_file() else "")
 
 
 def continuity_path(cast_dir: Path | str) -> Path:
@@ -90,18 +93,37 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"  - {it}" for it in items) if items else "  - (geen)"
 
 
+def _section(title: str, items: list[str] | str) -> str:
+    if not items:
+        return ""
+    if isinstance(items, str):
+        return f"{title}: {items.strip()}\n"
+    return f"{title}:\n{_bullets(items)}\n"
+
+
 def cast_bible_text(cast: Cast, guest: Guest | None = None) -> str:
-    parts = ["## De cast"]
+    parts = ["## De cast",
+             "Dit zijn mensen, geen rollen. Schrijf ze zoals ze hieronder staan: hoe ze praten, wat ze willen, "
+             "wat ze meegemaakt hebben. Hun eigen verhalen zijn geen stof: een host mag uit eigen leven vertellen, "
+             "zolang het geen feit over de stof toevoegt. Een nieuw verhaal mag, als het bij de persoon past."]
     for h in cast.hosts:
         parts.append(
             f"### {h.name} (spreker-id: {h.id}, rol: {h.role})\n"
             f"Achtergrond: {h.background.strip()}\n"
-            f"Sterk in: {h.strength}\n"
+            + _section("Zo praat " + h.name, h.voice)
+            + _section("Leven", h.life)
+            + _section("Verhalen die " + h.name + " kan vertellen", h.stories)
+            + _section("Wat " + h.name + " wil", h.wants)
+            + _section("Zo reageert " + h.name, h.behaviour)
+            + _section("Nooit", h.never)
+            + f"Sterk in: {h.strength}\n"
             f"Zwak in: {h.weakness}\n"
             f"Verbale tics (alleen van {h.name}; spaarzaam, hooguit één keer per segment):\n{_bullets(h.tics)}\n"
             f"Humor: {h.humour}\n"
             f"Meningen:\n{_bullets(h.opinions)}"
         )
+    if cast.relationship:
+        parts.append("### Samen\n" + _bullets(cast.relationship))
     if guest is not None:
         parts.append(
             f"### Gast: {guest.name} (spreker-id: {guest.id})\n"
@@ -109,6 +131,23 @@ def cast_bible_text(cast: Cast, guest: Guest | None = None) -> str:
             f"Persona: {guest.persona.strip()}"
         )
     return "\n\n".join(parts)
+
+
+_SAMPLE_LINE = re.compile(r"^\s*[A-ZÀ-Ý_]+\s*(?:\[[^\]]*\]|\([^)]*\))?\s*:\s*(?P<text>\S.*)$")
+
+
+def voice_sample_lines(cast: Cast) -> list[str]:
+    """The spoken lines in the voice samples, for the check that keeps them out of the episodes."""
+    return [m.group("text").strip() for line in cast.voice_samples.splitlines() if (m := _SAMPLE_LINE.match(line))]
+
+
+def voice_samples_text(cast: Cast) -> str:
+    if not cast.voice_samples:
+        return ""
+    return ("## Zo klinken ze (voorbeelden: neem het register over, niet de inhoud)\n"
+            "Lees dit als een opname van hoe deze mensen praten. Schrijf niets ervan over: geen zin, geen grap, "
+            "geen verhaal en geen onderwerp. Het audit blokkeert een regel die op een voorbeeldregel lijkt.\n\n"
+            + cast.voice_samples)
 
 
 def continuity_text(entries: list[ContinuityEntry]) -> str:

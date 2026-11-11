@@ -219,8 +219,24 @@ class Pipeline:
             audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks)
             tried.append((script, audit))
         script, audit = self._keep_best(book_id, chapter_id, tried)
+        if self.settings.script_polish:
+            script, audit = self._polish(writer, book_id, chapter_id, script, audit, plan, glossary, llm_checks)
         self.continuity(book_id, chapter_id, script=script)
         return script, audit
+
+    def _polish(self, writer: Writer, book_id: str, chapter_id: str, script: Script, audit: AuditResult,
+                plan: ContentPlan, glossary: Glossary, llm_checks: bool) -> tuple[Script, AuditResult]:
+        """The dialogue edit, then the audit again. The edit stays unless it added blocking issues: a script that
+        sounds better with as few problems wins, one that broke a fact goes back to the version before."""
+        self.emit("script", "polish", book_id=book_id, chapter=chapter_id, segments=len(script.segments))
+        polished = writer.polish(script, audit, plan, glossary)
+        polished.save(self.paths(book_id).script(chapter_id))
+        polished_audit = self.audit(book_id, chapter_id, script=polished, llm_checks=llm_checks)
+        if len(polished_audit.blocking()) <= len(audit.blocking()):
+            self.emit("script", "polished", book_id=book_id, chapter=chapter_id, revision=polished.revision,
+                      blocking=len(polished_audit.blocking()))
+            return polished, polished_audit
+        return self._keep_best(book_id, chapter_id, [(script, audit), (polished, polished_audit)])
 
     def _keep_best(self, book_id: str, chapter_id: str, tried: list[tuple[Script, AuditResult]]) -> tuple[Script, AuditResult]:
         """A rewrite round can make a script worse: a model told a line is unsupported may start hedging

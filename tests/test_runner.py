@@ -38,11 +38,12 @@ def test_approval_gate(ingested):
     p.approve("demo", "ch03")
     assert p.is_approved("demo", "ch03")
     script = p.load_script("demo", "ch03")
+    before = script.revision
     script.segments[0].lines[0].text = "Iets anders."
     saved = p.save_script("demo", "ch03", script)
-    assert saved.revision == 2 and not p.is_approved("demo", "ch03")
+    assert saved.revision == before + 1 and not p.is_approved("demo", "ch03")
     audit = p.audit("demo", "ch03")
-    assert audit.script_revision == 2
+    assert audit.script_revision == saved.revision
     p.approve("demo", "ch03")
     audio, transcript, manifest = p.render("demo", "ch03")
     assert audio.is_file()
@@ -124,3 +125,32 @@ def test_a_rewrite_that_makes_it_worse_is_undone(ingested):
     better.revision = kept.revision + 1
     same, _ = p._keep_best("demo", "ch01", [(first, audit_with(2, 1)), (better, audit_with(0, better.revision))])
     assert same is better  # the last one was best: nothing to restore
+
+
+def test_the_dialogue_edit_stays_unless_it_breaks_a_fact(ingested):
+    p = ingested
+    p.run_chapter("demo", "ch02", upto="script")
+    assert ("script", "polished") in {(s, st) for s, st, _ in p.events}
+    assert any(l.overlap.mode == "backchannel" and l.text == "Hm, ja." for l in p.load_script("demo", "ch02").lines())
+
+    original = p.llm.handlers["script_polish"]
+
+    def careless(req):  # an edit that drops the claim ids: the coverage check now misses claims
+        out = original(req)
+        for line in out["lines"]:
+            line["covers"] = []
+        return out
+
+    p.llm.on("script_polish", careless)
+    events = len(p.events)
+    out = p.run_chapter("demo", "ch03", upto="script")
+    script, audit = out["script"], out["audit"]
+    assert ("script", "kept_best") in {(s, st) for s, st, _ in p.events[events:]}
+    assert audit.passed and any(l.covers for l in script.lines())
+
+
+def test_the_dialogue_edit_can_be_switched_off(ingested):
+    p = ingested
+    p.settings = p.settings.with_(script_polish=False)
+    p.run_chapter("demo", "ch01", upto="script")
+    assert not any(c.task == "script_polish" for c in p.llm.calls)

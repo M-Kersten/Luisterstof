@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from rapidfuzz import fuzz
 
 from pipeline.config import Settings
 from pipeline.llm import LLM, LLMRequest, text_block
@@ -30,7 +31,7 @@ from pipeline.models import (
     SupportReport,
 )
 from pipeline.plan.content_plan import span_text
-from pipeline.script.cast import BannedRules
+from pipeline.script.cast import BannedRules, voice_sample_lines
 
 log = logging.getLogger(__name__)
 
@@ -228,6 +229,7 @@ SOURCE_TALK = re.compile(r"\b(in de tekst|de tekst|de bron|volgens de bron|het b
 MAX_STOCK_DENIALS = 3  # per episode
 MAX_SOURCE_TALK = 2  # per episode
 MIN_DUPLICATE_CHARS = 40
+SAMPLE_COPY_SCORE = 85.0  # a line this close to a voice-sample line was copied, not written
 
 
 def _opening(text: str, words: int = 2) -> str:
@@ -245,6 +247,7 @@ def lint_repetition(script: Script, cast: Cast, plan: ContentPlan | None = None)
     stock_hits: dict[int, list] = {}
     source_hits: dict[int, list] = {}
     seen: dict[str, str] = {}
+    samples = [" ".join(t.split()).casefold() for t in voice_sample_lines(cast) if len(t) >= 20]
     for i, seg in enumerate(script.segments):
         by_speaker: dict[str, list] = {}
         for line in seg.lines:
@@ -261,6 +264,10 @@ def lint_repetition(script: Script, cast: Cast, plan: ContentPlan | None = None)
                 issues.append(AuditIssue(check="lint", rule="definition_recital", line_id=line.id,
                                          message=f"De definitie van '{head.strip()}' wordt voorgelezen als woordenboekregel.",
                                          suggestion="Leg het begrip uit in eigen woorden, als deel van het gesprek."))
+            if len(folded) >= 20 and any(fuzz.ratio(folded, sample) >= SAMPLE_COPY_SCORE for sample in samples):
+                issues.append(AuditIssue(check="lint", rule="sample_copy", line_id=line.id,
+                                         message="Deze regel komt uit de stemvoorbeelden van de cast.",
+                                         suggestion="De voorbeelden laten de toon horen; schrijf een eigen regel over de stof."))
             key = re.sub(r"[^\w ]", "", folded)
             if len(key) >= MIN_DUPLICATE_CHARS and seg.type not in ("quiz", "recap"):  # repeating is their job
                 if key in seen:
@@ -332,7 +339,8 @@ Geef voor elke regel een oordeel. Wees streng op inhoud, soepel op stijl."""
 
 class LintHit(BaseModel):
     line_id: str
-    rule: Literal["summary_sentence", "rhetorical_triplet", "topical_joke", "generic_joke", "visual_joke", "announcing", "filler"]
+    rule: Literal["summary_sentence", "rhetorical_triplet", "topical_joke", "generic_joke", "visual_joke", "announcing", "filler",
+                  "ignores_previous", "stiff"]
     explanation: str
 
 
@@ -350,7 +358,9 @@ Regels:
 - visual_joke: een grap waarvoor de luisteraar iets moet zien.
 - announcing: een zin die aankondigt wat het gesprek gaat doen in plaats van het te doen ("laten we kijken naar...", "nu gaan we het hebben over...").
 - filler: AI-podcastvulling zonder inhoud ("dat is echt een goed punt", "interessant", "zeker weten").
-Meld geen stijlvoorkeuren, alleen overtredingen van deze zeven regels."""
+- ignores_previous: de regel gaat voorbij aan wat de ander net zei (een vraag zonder antwoord, een grap waar niemand op reageert, een verhaal dat in het niets valt) en werkt gewoon het volgende punt af.
+- stiff: een zin die niemand hardop zo zou zeggen tegen een vriend: schrijftaal, een opsomming uit een leerboek, een definitie als woordenboekregel.
+Meld geen stijlvoorkeuren, alleen overtredingen van deze negen regels."""
 
 
 def check_support(script: Script, plan: ContentPlan, book: Book, llm: LLM, plan_lookup: PlanLookup | None = None,
@@ -425,9 +435,15 @@ def lint_llm(script: Script, llm: LLM) -> list[AuditIssue]:
     assert isinstance(out, LintOut)
     valid = {line.id for line in script.lines()}
     return [
-        AuditIssue(check="lint", rule=h.rule, line_id=h.line_id, message=h.explanation)
+        AuditIssue(check="lint", rule=h.rule, line_id=h.line_id, message=h.explanation,
+                   severity="warning" if h.rule in CONVERSATION_RULES else "blocking")
         for h in out.hits if h.line_id in valid
     ]
+
+
+# How the dialogue answers itself. These are judgement calls, so they are warnings: quality mode rewrites for them
+# and the dialogue edit (Writer.polish) gets them as notes.
+CONVERSATION_RULES = frozenset({"ignores_previous", "stiff"})
 
 
 # ---------------------------------------------------------------------------
