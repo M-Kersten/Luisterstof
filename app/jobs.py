@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pipeline.awake import keep_awake
 from pipeline.cancel import Cancelled
 
 TERMINAL = {"done", "failed", "cancelled"}
@@ -186,7 +187,10 @@ class JobManager:
                     stop_now = job_id in self._stop_requested
                 if stop_now and hasattr(pipeline, "abort"):
                     pipeline.abort()
-                result = fn(pipeline)
+                with keep_awake() as awake:
+                    if awake:
+                        self.store.add_event(job_id, "job", "awake", {"message": "de laptop blijft wakker zolang deze job loopt"})
+                    result = fn(pipeline)
                 self.store.update(job_id, "done", result=_summarise(result))
             except Cancelled:
                 self.store.add_event(job_id, "job", "cancelled", {})

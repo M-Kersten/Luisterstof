@@ -35,6 +35,12 @@ class ApproveRequest(BaseModel):
     force: bool = False
 
 
+class BookRunRequest(BaseModel):
+    upto: str = "script"  # plan | glossary | script (render would approve without a human reading first)
+    quality: bool = False
+    fresh: bool = False  # redo what is already done
+
+
 class RunRequest(BaseModel):
     stage: str = "script"  # plan | glossary | script | audit | render | all
     upto: str = "script"
@@ -141,6 +147,29 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         if not target.is_file():
             raise HTTPException(404, "no such artifact")
         return FileResponse(target)
+
+    @app.post("/api/books/{book_id}/run")
+    def run_book(book_id: str, req: BookRunRequest) -> dict[str, Any]:
+        """Every chapter up to ``upto``, picking up where an earlier run stopped. The PDF is not read again."""
+        paths = book_or_404(book_id)
+        if not paths.book_json.is_file():
+            raise HTTPException(409, "the book has not been read in yet")
+        if req.upto not in ("plan", "glossary", "script"):
+            raise HTTPException(400, "upto must be plan, glossary or script")
+
+        def work(p: Pipeline):
+            out = p.run_book(book_id, upto=req.upto, resume=not req.fresh)
+            return {ch: True for ch in out}
+
+        return manager.submit(book_id, None, "pipeline", work, settings=settings.with_quality(True) if req.quality else None)
+
+    @app.get("/api/books/{book_id}/timings")
+    def book_timings(book_id: str) -> dict[str, Any]:
+        """Start, end and duration of every pass, newest run last, plus the latest run per chapter."""
+        from pipeline.timings import load, summary
+
+        entries = load(book_or_404(book_id).timings)
+        return {"entries": [{**e.model_dump(), "title": e.title} for e in entries], "summary": summary(entries)}
 
     @app.get("/api/books/{book_id}/glossary")
     def get_glossary(book_id: str) -> Any:

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import shutil
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,8 @@ from pipeline.script.audit import audit_script
 from pipeline.script.cast import append_continuity, load_banned, load_cast, load_continuity
 from pipeline.script.continuity import extract_continuity
 from pipeline.script.writer import Writer, naturalness_issues
+from pipeline.timings import PassTiming, new_run_id, now_iso
+from pipeline.timings import append as append_timing
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +61,40 @@ class Pipeline:
         self.banned = load_banned(settings.cast_dir)
         self.on_event = on_event
         self._aborted = False
+        self.run_id = new_run_id()  # groups the timings of everything this pipeline does
+
+    # ------------------------------------------------------------ timings
+    @contextmanager
+    def _timed(self, book_id: str, chapter_id: str | None, pass_name: str, label: str = "") -> Iterator[None]:
+        """Records how long a pass took in the book's timings.jsonl, also when it fails or is stopped."""
+        started_at, t0, calls = now_iso(), time.monotonic(), self._llm_usage()[0]
+        status = "done"
+        try:
+            yield
+        except Cancelled:
+            status = "stopped"
+            raise
+        except BaseException:
+            status = "failed"
+            raise
+        finally:
+            self._record(book_id, chapter_id, pass_name, label, status, started_at, time.monotonic() - t0,
+                         self._llm_usage()[0] - calls)
+
+    def _record(self, book_id: str, chapter_id: str | None, pass_name: str, label: str, status: str,
+                started_at: str, seconds: float, llm_calls: int = 0) -> None:
+        entry = PassTiming(run=self.run_id, book_id=book_id, chapter=chapter_id, pass_name=pass_name, label=label,
+                           status=status, started_at=started_at, finished_at=now_iso(), seconds=round(seconds, 1),
+                           llm_calls=max(0, llm_calls))
+        try:
+            append_timing(self.paths(book_id).timings, entry)
+        except OSError as exc:  # a full disk must not end the run
+            log.warning("could not write timings: %s", exc)
+        if self.on_event:  # straight to the listener: emit() would refuse after a Stop, and this must still land
+            try:
+                self.on_event("timing", status, {**entry.model_dump(), "title": entry.title})
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------
     @property
@@ -123,6 +161,10 @@ class Pipeline:
     # ------------------------------------------------------------------
     # Stage 1
     def ingest(self, pdf_path: Path | str, book_id: str, *, method: str = "auto", title: str | None = None) -> Book:
+        with self._timed(book_id, None, "ingest"):
+            return self._ingest(pdf_path, book_id, method=method, title=title)
+
+    def _ingest(self, pdf_path: Path | str, book_id: str, *, method: str = "auto", title: str | None = None) -> Book:
         paths = self.paths(book_id).ensure()
         src = Path(pdf_path)
         if src.resolve() != paths.source_pdf.resolve():
@@ -151,6 +193,10 @@ class Pipeline:
 
     # Stage 2
     def plan(self, book_id: str, chapter_id: str) -> ContentPlan:
+        with self._timed(book_id, chapter_id, "plan"):
+            return self._plan(book_id, chapter_id)
+
+    def _plan(self, book_id: str, chapter_id: str) -> ContentPlan:
         from pipeline.plan.thorough import plan_chapter_thorough
 
         book = self.load_book(book_id)
@@ -165,6 +211,10 @@ class Pipeline:
 
     # Stage 2b
     def glossary(self, book_id: str, chapter_id: str) -> Glossary:
+        with self._timed(book_id, chapter_id, "glossary"):
+            return self._glossary(book_id, chapter_id)
+
+    def _glossary(self, book_id: str, chapter_id: str) -> Glossary:
         from pipeline.plan.thorough import propose_lexicon_thorough
 
         book = self.load_book(book_id)
@@ -203,20 +253,23 @@ class Pipeline:
         rounds_left = max(0, self.settings.script_revise_rounds if revise_rounds is None else revise_rounds)
         self.emit("script", "start", book_id=book_id, chapter=chapter_id, guest=plan.needs_expert,
                   revise_rounds=rounds_left)
-        script = writer.write(plan, book, glossary, previous_plan=previous_plan, next_chapter_title=nxt.title if nxt else None)
+        with self._timed(book_id, chapter_id, "script"):
+            script = writer.write(plan, book, glossary, previous_plan=previous_plan,
+                                  next_chapter_title=nxt.title if nxt else None)
         script.save(self.paths(book_id).script(chapter_id))
         self.emit("script", "done", book_id=book_id, chapter=chapter_id, lines=sum(len(s.lines) for s in script.segments),
                   estimated_minutes=round(script.estimated_seconds(self.settings.chars_per_second) / 60, 1))
-        audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks)
+        audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks, label="na het schrijven")
         tried = [(script, audit)]
         rounds = 0
         while rounds < rounds_left and self._needs_rewrite(audit):
             rounds += 1
             self.emit("script", "revise", book_id=book_id, chapter=chapter_id, round=rounds,
                       blocking=len(audit.blocking()), naturalness=len(naturalness_issues(audit)))
-            script = writer.revise(script, audit, plan, glossary, also_naturalness=self.settings.quality_mode)
+            with self._timed(book_id, chapter_id, "revise", f"ronde {rounds}"):
+                script = writer.revise(script, audit, plan, glossary, also_naturalness=self.settings.quality_mode)
             script.save(self.paths(book_id).script(chapter_id))
-            audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks)
+            audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks, label=f"na ronde {rounds}")
             tried.append((script, audit))
         script, audit = self._keep_best(book_id, chapter_id, tried)
         if self.settings.script_polish:
@@ -229,9 +282,10 @@ class Pipeline:
         """The dialogue edit, then the audit again. The edit stays unless it added blocking issues: a script that
         sounds better with as few problems wins, one that broke a fact goes back to the version before."""
         self.emit("script", "polish", book_id=book_id, chapter=chapter_id, segments=len(script.segments))
-        polished = writer.polish(script, audit, plan, glossary)
+        with self._timed(book_id, chapter_id, "polish"):
+            polished = writer.polish(script, audit, plan, glossary)
         polished.save(self.paths(book_id).script(chapter_id))
-        polished_audit = self.audit(book_id, chapter_id, script=polished, llm_checks=llm_checks)
+        polished_audit = self.audit(book_id, chapter_id, script=polished, llm_checks=llm_checks, label="na de tafellezing")
         if len(polished_audit.blocking()) <= len(audit.blocking()):
             self.emit("script", "polished", book_id=book_id, chapter=chapter_id, revision=polished.revision,
                       blocking=len(polished_audit.blocking()))
@@ -272,7 +326,12 @@ class Pipeline:
             return True
         return self.settings.quality_mode and bool(naturalness_issues(audit))
 
-    def audit(self, book_id: str, chapter_id: str, *, script: Script | None = None, llm_checks: bool = True) -> AuditResult:
+    def audit(self, book_id: str, chapter_id: str, *, script: Script | None = None, llm_checks: bool = True,
+              label: str = "") -> AuditResult:
+        with self._timed(book_id, chapter_id, "audit", label):
+            return self._audit(book_id, chapter_id, script=script, llm_checks=llm_checks)
+
+    def _audit(self, book_id: str, chapter_id: str, *, script: Script | None = None, llm_checks: bool = True) -> AuditResult:
         book = self.load_book(book_id)
         plan = self.load_plan(book_id, chapter_id)
         script = script or self.load_script(book_id, chapter_id)
@@ -288,6 +347,10 @@ class Pipeline:
         return audit
 
     def continuity(self, book_id: str, chapter_id: str, *, script: Script | None = None):
+        with self._timed(book_id, chapter_id, "continuity"):
+            return self._continuity(book_id, chapter_id, script=script)
+
+    def _continuity(self, book_id: str, chapter_id: str, *, script: Script | None = None):
         script = script or self.load_script(book_id, chapter_id)
         previous = [e for e in load_continuity(self.settings.cast_dir, last_n=10) if e.episode != chapter_id]
         entry = extract_continuity(script, self.cast, self.llm, previous)
@@ -324,6 +387,13 @@ class Pipeline:
 
     def render(self, book_id: str, chapter_id: str, *, force: bool = False, synth: Synth | None = None,
                transcriber=None, aligner=None) -> tuple[Path, Path, RenderManifest]:
+        if not force and not self.is_approved(book_id, chapter_id):
+            raise StageError("script is not approved for this revision; read the script and audit, then approve first")
+        with self._timed(book_id, chapter_id, "render"):
+            return self._render(book_id, chapter_id, force=force, synth=synth, transcriber=transcriber, aligner=aligner)
+
+    def _render(self, book_id: str, chapter_id: str, *, force: bool = False, synth: Synth | None = None,
+                transcriber=None, aligner=None) -> tuple[Path, Path, RenderManifest]:
         if not force and not self.is_approved(book_id, chapter_id):
             raise StageError("script is not approved for this revision; read the script and audit, then approve first")
         script = self.load_script(book_id, chapter_id)
@@ -370,6 +440,7 @@ class Pipeline:
                       label=names[name])
             if done.get(name):
                 self.emit(name, "skipped", book_id=book_id, chapter=chapter_id, reason=done[name])
+                self._record(book_id, chapter_id, name, done[name], "skipped", now_iso(), 0.0)
                 return False
             return True
 
@@ -440,7 +511,8 @@ class Pipeline:
         for n, ch in enumerate(todo, start=1):
             self.emit("book", "chapter", book_id=book_id, chapter=ch.id, index=n, total=len(todo), label=f"{ch.id} {ch.title}")
             try:
-                results[ch.id] = self.run_chapter(book_id, ch.id, upto=upto, llm_checks=llm_checks, resume=resume)
+                with self._timed(book_id, ch.id, "chapter"):
+                    results[ch.id] = self.run_chapter(book_id, ch.id, upto=upto, llm_checks=llm_checks, resume=resume)
             except Exception as exc:  # noqa: BLE001 - Cancelled is a BaseException and still ends the run
                 log.exception("chapter %s failed; going on with the next one", ch.id)
                 failed[ch.id] = str(exc)

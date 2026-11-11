@@ -238,6 +238,7 @@ Per speaker turn: cache lookup, three takes with seed and exaggeration jitter, f
 ```bash
 studiepodcast run statistiek1                     # every chapter up to the approval gate
 studiepodcast run statistiek1 --fresh             # the same, redoing what is already done
+studiepodcast timings statistiek1                 # when each pass started and ended, and how long it took
 studiepodcast continuity                           # what the writer sees from earlier episodes
 ```
 
@@ -259,11 +260,15 @@ studiepodcast serve            # http://127.0.0.1:8000
 
 Or double-click `start-app.bat`: it checks that the OpenCode server is reachable, starts the app and opens your browser.
 
+**Overnight.** Upload a PDF with "direct doorlopen tot script en audit" ticked (the default) and the job reads the book in and runs every chapter through plan, lexicon, script, the audit and rewrite loop and the table read, then stops at the approval gate. In the morning every chapter has a script and an audit. While a job runs the laptop does not go to sleep (Windows; the screen may still switch off). Closing the lid follows the power settings: set "when I close the lid" to "do nothing", and keep the charger in. If the night was cut short anyway (a restart, a Stop, a chapter that failed), **Hele boek doorlopen** in the book panel carries on where it stopped without reading the PDF again; uploading the same PDF again would redo everything.
+
+**Timings.** Every pass is recorded with its start, end and duration in `data/books/<book>/timings.jsonl`: reading in, plan, lexicon, writing, each audit, each rewrite round, the table read, continuity and render, plus the whole chapter, and a skipped pass when a run carried on past finished work. The log shows them as they finish, with clock times on every line. The book panel says when the latest run started and when its last pass ended; the **Duur** column has each chapter's total (hover for the breakdown), and the **Tijden** tab of a chapter lists every pass of its last three runs with the number of model calls. `studiepodcast timings <book>` prints the same in a terminal.
+
 Upload a PDF, watch the stages stream over SSE, browse and download every artifact, edit the script line by line (text, speaker, tags, covers, overlap, pause), re-audit, approve and render. Saving a script bumps its revision and clears the approval, so an edited script is always re-audited before it renders. The "grondig" checkbox (on upload and next to the stage buttons) runs just that job in quality mode, hours-per-chapter thoroughness included, without changing the server's own settings.
 
 While a job runs, a panel at the top shows the stage, a progress bar and the time left. The bar counts plan parts, script segments, audit segments or rendered turns; the line under it adds the chapter step and the tokens the model has written so far. **Stop** ends the job at once during a model call, and at the next take or step otherwise. The OpenCode endpoint does not stream, so OpenCode finishes an answer it was writing in the background; the next job can wait a moment for it. What was saved before the stop stays; the interrupted stage starts over when you run it again. A reloaded page picks up running jobs.
 
-API summary: `POST /api/books` (upload, `quality=true` to run it in quality mode), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|render|all", "quality": false}`, `POST .../approve`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`. `GET /api/health` reports the model and the writing passes in effect.
+API summary: `POST /api/books` (upload, `quality=true` to run it in quality mode), `GET /api/books/{id}`, `GET /api/books/{id}/chapters/{ch}`, `PUT .../script`, `POST .../run` with `{"stage": "plan|glossary|script|audit|render|all", "quality": false}`, `POST .../approve`, `GET /api/jobs/{id}/events` (SSE, resumes from `Last-Event-ID`), `POST /api/jobs/{id}/cancel`, `GET /api/books/{id}/artifacts/{path}`, `POST /api/books/{id}/run` with `{"upto": "plan|glossary|script", "quality": false, "fresh": false}` (the whole book, carrying on where it stopped), `GET /api/books/{id}/timings`. `GET /api/health` reports the model and the writing passes in effect.
 
 ## The cast
 

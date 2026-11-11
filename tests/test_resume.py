@@ -19,8 +19,10 @@ def test_a_second_run_skips_everything_that_is_done_and_current(ingested):
     events = len(p.events)
     p.run_book("demo", upto="render", chapters=["ch01"])
     assert _tasks(p, calls) == []  # nothing written, nothing audited, nothing rendered again
-    skipped = {s for s, st, _ in p.events[events:] if st == "skipped"}
+    skipped = {s for s, st, _ in p.events[events:] if st == "skipped" and s != "timing"}
     assert skipped == {"plan", "glossary", "script", "approve", "render"}
+    timed = {d["pass_name"] for s, st, d in p.events[events:] if s == "timing" and st == "skipped"}
+    assert timed == skipped  # the morning report says what was skipped, too
 
 
 def test_a_reingested_book_makes_the_old_plan_stale(ingested):

@@ -71,6 +71,11 @@
     </div>
     <div id="book-panel" hidden>
       <h2 id="book-title"></h2>
+      <div class="bar small">
+        <span id="book-run" class="muted"></span>
+        <span><label title="Kwaliteit boven snelheid voor deze run: meer controlerondes en herschrijfrondes. Kan uren per hoofdstuk duren."><input type="checkbox" id="run-book-quality"> grondig</label>
+        <button id="run-book" title="Loopt alle hoofdstukken door tot en met script en audit. Wat al klaar is, wordt overgeslagen, dus dit gaat verder waar een run stopte (na een herstart, een Stop of een mislukt hoofdstuk). Leest de PDF niet opnieuw in.">Hele boek doorlopen</button></span>
+      </div>
       <p class="help">Elke rij is een hoofdstuk en straks een aflevering. De kolommen volgen de stappen van links naar rechts. Klik een hoofdstuk om het te openen.</p>
       <table id="chapters">
         <thead><tr>
@@ -80,6 +85,7 @@
           <th title="Uitkomst van de controle op het script. Blokkerend betekent: eerst oplossen, dan pas goedkeuren.">Audit</th>
           <th title="Heb jij deze scriptversie goedgekeurd voor de render?">Goedgekeurd</th>
           <th title="Is de echte aflevering met Chatterbox gerenderd? Gevlagd = beurten die de controle niet haalden.">Final</th>
+          <th title="Hoe lang de laatste run over dit hoofdstuk deed: plan, lexicon, schrijven, audits en herschrijfrondes samen. Per stap in het tab Tijden.">Duur</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -107,6 +113,7 @@
         <button data-tab="plan" title="De feitelijke basis: beweringen met hun bron.">Plan</button>
         <button data-tab="lexicon" title="Hoe termen worden uitgesproken, voor het hele boek.">Lexicon</button>
         <button data-tab="audio" title="De echte aflevering en de kwaliteitscontrole.">Audio</button>
+        <button data-tab="timings" title="Wanneer elke stap begon en klaar was, en hoe lang hij duurde.">Tijden</button>
         <button data-tab="artifacts" title="Alle bestanden die de stappen hebben gemaakt.">Artefacten</button>
       </nav>
 
@@ -191,6 +198,10 @@
         <div id="flagged"></div>
         <h3>Blokken</h3>
         <div id="blocks"></div>
+      </div>
+      <div class="tab" id="tab-timings" hidden>
+        <p class="help">Per run van dit hoofdstuk: wanneer elke stap begon en klaar was, hoe lang hij duurde en hoeveel modelaanroepen hij deed. Een herschrijfronde en de tafellezing worden elk gevolgd door een eigen audit. "Overgeslagen" betekent dat het resultaat er al lag. De nieuwste run staat bovenaan.</p>
+        <div id="timings-view"></div>
       </div>
       <div class="tab" id="tab-artifacts" hidden>
         <p class="help">Elk bestand dat een stap heeft gemaakt: het boek in stukken (book.json), plannen, scripts, audits, lexicon, audio en transcripten. Handig om iets na te lezen of te bewaren.</p>

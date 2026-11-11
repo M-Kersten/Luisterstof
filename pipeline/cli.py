@@ -142,7 +142,10 @@ def approve(book_id: str, chapter: str, note: str | None = None, force: bool = F
 @app.command()
 def render(book_id: str, chapter: str, force: bool = False):
     """Chatterbox render with take selection, alignment, timeline assembly and mix."""
-    audio, transcript, manifest = _pipeline().render(book_id, chapter, force=force)
+    from pipeline.awake import keep_awake
+
+    with keep_awake():
+        audio, transcript, manifest = _pipeline().render(book_id, chapter, force=force)
     flagged = manifest.flagged_turns()
     verified, verifiable = manifest.verification_coverage()
     fallback = manifest.alignment_fallback_count()
@@ -170,14 +173,49 @@ def run(book_id: str, pdf: Path | None = None, upto: str = "script", chapters: s
     Running it again picks up where it stopped: stages whose output is on disk and current are skipped,
     and a chapter that fails does not stop the others.
     """
+    from pipeline.awake import keep_awake
+
     p = _pipeline(**_pass_overrides(reviews=reviews, part_chars=part_chars, revise_rounds=revise_rounds))
-    if pdf is not None:
-        p.ingest(pdf, book_id, method=method)
-    wanted = [c.strip() for c in chapters.split(",")] if chapters else None
-    results = p.run_book(book_id, upto=upto, chapters=wanted, llm_checks=llm_checks, resume=not fresh)
+    with keep_awake():  # a run of a whole night must not stop when the laptop wants to sleep
+        if pdf is not None:
+            p.ingest(pdf, book_id, method=method)
+        wanted = [c.strip() for c in chapters.split(",")] if chapters else None
+        results = p.run_book(book_id, upto=upto, chapters=wanted, llm_checks=llm_checks, resume=not fresh)
     for ch, out in results.items():
         a = out.get("audit")
         typer.echo(f"  {ch}: audit={'ok' if a and a.passed else 'open'} final={out.get('render', '-')}")
+
+
+@app.command()
+def timings(book_id: str, chapter: Annotated[str | None, typer.Option(help="Only this chapter.")] = None,
+            runs: Annotated[int, typer.Option(help="How many of the latest runs to show.")] = 1):
+    """When each pass started and ended, and how long it took: plan, lexicon, writing, audits, rewrites."""
+    from datetime import datetime
+
+    from pipeline.timings import fmt_seconds, load
+
+    entries = load(_pipeline().paths(book_id).timings)
+    if not entries:
+        typer.echo(f"{book_id}: no timings yet")
+        return
+
+    def clock(iso: str) -> str:
+        local = datetime.fromisoformat(iso).astimezone()
+        return ("ma", "di", "wo", "do", "vr", "za", "zo")[local.weekday()] + local.strftime(" %H:%M:%S")
+
+    for run in sorted({e.run for e in entries})[-max(1, runs):]:
+        in_run = [e for e in entries if e.run == run and (chapter is None or e.chapter in (chapter, None))]
+        if not in_run:
+            continue
+        start, end = min(e.started_at for e in in_run), max(e.finished_at for e in in_run)
+        total = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+        typer.echo(f"run {run}: {clock(start)} -> {clock(end)}  ({fmt_seconds(total)})")
+        for e in in_run:
+            where = e.chapter or "boek"
+            status = "" if e.status == "done" else f"  [{e.status}]"
+            calls = f"  {e.llm_calls} modelaanroep{'en' if e.llm_calls != 1 else ''}" if e.llm_calls else ""
+            typer.echo(f"  {where:<6} {e.title:<34} {clock(e.started_at)} -> {clock(e.finished_at)}  "
+                       f"{fmt_seconds(e.seconds):>12}{calls}{status}")
 
 
 @app.command()

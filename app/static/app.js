@@ -1,6 +1,6 @@
 /* Studiepodcast UI: upload, watch stages stream, inspect artifacts, edit scripts line by line. */
 const $ = (sel, root = document) => root.querySelector(sel);
-const state = { book: null, chapter: null, data: null, glossary: null, sources: {} };
+const state = { book: null, chapter: null, data: null, glossary: null, sources: {}, timings: null };
 
 const api = {
   async get(url) { const r = await fetch(url); if (!r.ok) throw new Error(await r.text()); return r.json(); },
@@ -38,8 +38,14 @@ async function openBook(bookId) {
   }
   state.book = bookId;
   const s = await api.get(`/api/books/${bookId}`);
+  try { state.timings = await api.get(`/api/books/${bookId}/timings`); } catch { state.timings = null; }
+  const perChapter = (state.timings && state.timings.summary.chapters) || {};
+  const run = state.timings && state.timings.summary.latest_run;
   $("#book-panel").hidden = false;
   $("#book-title").textContent = `${s.title || bookId} (structuur: ${s.structure_method || "-"}, lexicon: ${s.glossary_entries})`;
+  $("#book-run").textContent = run
+    ? `Laatste run: begonnen ${fmtWhen(run.started_at)}, laatste stap klaar ${fmtWhen(run.finished_at)}, ${fmtSeconds(run.seconds)} in totaal.`
+    : "Nog geen run.";
   const tbody = $("#chapters tbody");
   tbody.innerHTML = "";
   for (const ch of s.chapters) {
@@ -51,7 +57,8 @@ async function openBook(bookId) {
     tr.innerHTML = `<td>${ch.id} ${ch.title}<br><span class="muted">p${ch.pages[0]}-${ch.pages[1]}, ${ch.chars} tekens</span></td>
       <td>${badge(ch.plan)}</td><td>${ch.script ? `<span class="badge ok" title="Revisie ${ch.script_revision}: zo vaak is het script opgeslagen.">rev ${ch.script_revision}</span>` : badge(false)}</td>
       <td>${audit}</td><td>${badge(ch.approved)}</td>
-      <td>${badge(ch.final)}${ch.flagged_turns ? ` <span class="badge warn" title="Beurten waarvan geen enkele opname het script goed genoeg volgde. Beluister ze in het Audio-tab.">${ch.flagged_turns} gevlagd</span>` : ""}</td>`;
+      <td>${badge(ch.final)}${ch.flagged_turns ? ` <span class="badge warn" title="Beurten waarvan geen enkele opname het script goed genoeg volgde. Beluister ze in het Audio-tab.">${ch.flagged_turns} gevlagd</span>` : ""}</td>
+      <td>${durationCell(perChapter[ch.id])}</td>`;
     tr.onclick = () => openChapter(ch.id);
     tbody.appendChild(tr);
   }
@@ -77,6 +84,7 @@ async function openChapter(chapterId) {
   renderPlan(data);
   renderAudio(data);
   renderArtifacts();
+  renderTimings(chapterId);
   loadGlossary();
 }
 
@@ -244,6 +252,42 @@ function renderAudio(data) {
   }
 }
 
+// ----------------------------------------------------------------- timings
+function fmtSeconds(seconds) {
+  const s = Math.round(seconds || 0), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h} u ${String(m).padStart(2, "0")} min` : m ? `${m} min ${String(sec).padStart(2, "0")} s` : `${sec} s`;
+}
+function fmtClock(iso) { return iso ? new Date(iso).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""; }
+function fmtWhen(iso) {
+  return iso ? new Date(iso).toLocaleString("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+}
+const TIMING_STATUS = { done: "", failed: '<span class="badge bad">mislukt</span>', stopped: '<span class="badge warn">gestopt</span>',
+  skipped: '<span class="badge">overgeslagen</span>' };
+
+function durationCell(chapter) {
+  if (!chapter) return '<span class="muted">-</span>';
+  const parts = chapter.passes.filter(p => p.pass_name !== "chapter" && p.status !== "skipped")
+    .map(p => `${p.title || p.pass_name}: ${fmtSeconds(p.seconds)}`);
+  return `<span title="${escapeHtml(parts.join("\n"))}">${fmtSeconds(chapter.seconds)}</span>`;
+}
+
+function renderTimings(chapterId) {
+  const root = $("#timings-view");
+  const entries = ((state.timings && state.timings.entries) || []).filter(e => e.chapter === chapterId);
+  if (!entries.length) { root.innerHTML = '<p class="muted">Nog geen tijden voor dit hoofdstuk.</p>'; return; }
+  const runs = [...new Set(entries.map(e => e.run))].sort().reverse().slice(0, 3);
+  root.innerHTML = runs.map(run => {
+    const rows = entries.filter(e => e.run === run);
+    const total = rows.find(e => e.pass_name === "chapter");
+    const head = `Run van ${fmtWhen(rows[0].started_at)}` + (total ? `, hoofdstuk in ${fmtSeconds(total.seconds)}` : "");
+    return `<h3>${escapeHtml(head)}</h3><table class="timings"><thead><tr><th>Stap</th><th>Begon</th><th>Klaar</th><th>Duur</th>
+      <th title="Hoeveel keer het schrijfmodel werd aangeroepen in deze stap.">Modelaanroepen</th><th></th></tr></thead><tbody>` +
+      rows.filter(e => e.pass_name !== "chapter").map(e => `<tr><td>${escapeHtml(e.title)}</td><td>${fmtClock(e.started_at)}</td>
+        <td>${fmtClock(e.finished_at)}</td><td>${e.status === "skipped" ? "-" : fmtSeconds(e.seconds)}</td>
+        <td>${e.llm_calls || ""}</td><td>${TIMING_STATUS[e.status] || ""}</td></tr>`).join("") + "</tbody></table>";
+  }).join("");
+}
+
 async function renderArtifacts() {
   const items = await api.get(`/api/books/${state.book}/artifacts`);
   $("#artifact-list").innerHTML = items.map(a => `<li><a href="/api/books/${state.book}/artifacts/${a.path}" target="_blank">${a.path}</a> <span class="muted">${(a.bytes / 1024).toFixed(0)} kB</span></li>`).join("");
@@ -382,10 +426,17 @@ function watch(job) {
     const ev = JSON.parse(e.data);
     trackEvent(job, ev);
     if (ev.stage === "llm" && ev.status === "tokens") return;  // heartbeat: progress panel only
+    const at = ev.ts ? fmtClock(ev.ts) + " " : "";
+    if (ev.stage === "timing") {
+      const t = ev.data;
+      const status = { done: "", failed: " MISLUKT", stopped: " gestopt", skipped: " overgeslagen" }[t.status] || "";
+      log(`${at}⏱ ${t.chapter || "boek"} ${t.title}: ${fmtClock(t.started_at)} → ${fmtClock(t.finished_at)} (${fmtSeconds(t.seconds)})${status}`);
+      return;
+    }
     const d = { ...ev.data };
     delete d.book_id;
     delete d.trace;
-    log(`[${ev.stage}] ${ev.status} ${Object.entries(d).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" ")}`);
+    log(`${at}[${ev.stage}] ${ev.status} ${Object.entries(d).map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" ")}`);
   });
   es.addEventListener("job", (e) => {
     const j = JSON.parse(e.data);
@@ -467,6 +518,14 @@ $("#glossary").onclick = (e) => {
   if (e.target.dataset && e.target.dataset.del !== undefined) { e.target.closest("tr").remove(); }
 };
 $("#clear-log").onclick = () => { $("#log").textContent = ""; };
+$("#run-book").onclick = async () => {
+  if (!state.book) return;
+  try {
+    const job = await api.send(`/api/books/${state.book}/run`, "POST", { upto: "script", quality: $("#run-book-quality").checked });
+    log("hele boek doorlopen: wat al klaar is wordt overgeslagen");
+    watch(job);
+  } catch (err) { log("fout: " + err.message); }
+};
 $("#stop-job").onclick = () => run.job && stopJob(run.job.id);
 $("#jobs").onclick = (e) => {
   const id = e.target.dataset && e.target.dataset.cancel;

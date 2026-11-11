@@ -48,6 +48,10 @@ class BookPaths:
         return self.root / "glossary.json"
 
     @property
+    def timings(self) -> Path:
+        return self.root / "timings.jsonl"
+
+    @property
     def plans_dir(self) -> Path:
         return self.root / "plans"
 
