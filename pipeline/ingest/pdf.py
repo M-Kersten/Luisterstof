@@ -60,6 +60,7 @@ class PageData:
     width: float
     height: float
     blocks: list[Block] = field(default_factory=list)
+    picture_boxes: list[tuple] = field(default_factory=list)  # every image, however small: captions sit under them
 
     def lines(self) -> list[TextLine]:
         return [ln for b in self.blocks if b.kind == "text" for ln in b.lines]
@@ -88,11 +89,29 @@ def _span_bold(span: dict) -> bool:
     return bool(flags & 16) or "bold" in font or "black" in font or "heavy" in font
 
 
+_FOOTNOTE_MARK = re.compile(r"^\s*(\d{1,3}|\*{1,3}|[†‡])\s*$")
+_WORD_END = re.compile(r"([^\W\d_]{3,}|[.,;:!?’'”»])\s*$")
+
+
+def _is_footnote_mark(span: dict, before: str) -> bool:
+    """A superscript number glued to a word ("opstand¹") points at a footnote or word list and is never spoken.
+    A superscript after a short symbol or a bracket is an exponent (x², (a+b)²) and stays."""
+    return bool(span.get("flags", 0) & 1) and bool(_FOOTNOTE_MARK.match(span.get("text", ""))) \
+        and bool(_WORD_END.search(before)) and not before.rstrip().endswith(")")
+
+
 def _line_from_dict(line: dict) -> TextLine | None:
-    spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
+    kept: list[dict] = []
+    before = ""
+    for s in line.get("spans", []):
+        if _is_footnote_mark(s, before):
+            continue
+        kept.append(s)
+        before += s.get("text", "")
+    spans = [s for s in kept if s.get("text", "").strip()]
     if not spans:
         return None
-    text = "".join(s["text"] for s in line["spans"]).strip()
+    text = "".join(s["text"] for s in kept).strip()
     text = re.sub(r"[ \t]+", " ", text)
     weights = Counter()
     for s in spans:
@@ -165,7 +184,44 @@ def extract_pages(pdf_path: Path | str, *, max_pages: int | None = None) -> list
                 break
             pages.append(_extract_page(page))
     _strip_running_headers(pages)
+    _absorb_unlabelled_captions(pages, body_font_size(pages))
     return pages
+
+
+_NAME_PARTICLES = {"van", "de", "der", "den", "het", "ten", "ter", "te", "von", "la", "le", "du", "and", "en"}
+
+
+def _is_label_only(text: str) -> bool:
+    """'Willem van Oranje  Karel de Vijfde': names under photos, nothing a listener needs."""
+    words = re.findall(r"[^\W\d_][\w'’-]*", text)
+    return len(words) < 4 or all(w[0].isupper() or w.casefold() in _NAME_PARTICLES for w in words)
+
+
+def _absorb_unlabelled_captions(pages: list[PageData], body_size: float, gap: float = 24.0, overlap: float = 15.0) -> None:
+    """A caption without "Figuur 3" in front of it is a small line right under or above a picture. It is not
+    part of the running text: one that says something becomes the figure's text, a row of names is dropped."""
+    for page in pages:
+        if not page.picture_boxes:
+            continue
+        captioned = [b.bbox for b in page.blocks if b.kind == "figure"]
+        new_blocks: list[Block] = []
+        for blk in page.blocks:
+            if blk.kind != "text" or len(blk.lines) > 3 or not all(ln.size < body_size * 0.95 for ln in blk.lines):
+                new_blocks.append(blk)
+                continue
+            boxes = [fb for fb in page.picture_boxes
+                     if blk.bbox[0] < fb[2] and blk.bbox[2] > fb[0]  # overlaps the picture horizontally
+                     and (-overlap <= blk.bbox[1] - fb[3] <= gap or -overlap <= fb[1] - blk.bbox[3] <= gap)]
+            if not boxes:
+                new_blocks.append(blk)
+                continue
+            box = boxes[0]
+            caption = block_text(blk)
+            labels_under_a_row = len(boxes) > 1  # one line under several photos side by side: their names
+            if not labels_under_a_row and not _is_label_only(caption) \
+                    and not any(_inside(box, c) or _inside(c, box) for c in captioned):
+                new_blocks.append(Block(kind="figure", page=page.number, bbox=blk.bbox, text=figure_to_text(caption)))
+        page.blocks = new_blocks
 
 
 def _extract_page(page: pymupdf.Page) -> PageData:
@@ -175,6 +231,8 @@ def _extract_page(page: pymupdf.Page) -> PageData:
     tables = _extract_tables(page)
     table_boxes = [bbox for bbox, _ in tables]
     figure_boxes = _figure_regions(page)
+    data.picture_boxes = figure_boxes + [tuple(i["bbox"]) for i in page.get_image_info()
+                                         if not any(_inside(tuple(i["bbox"]), fb) for fb in figure_boxes)]
 
     text_blocks: list[Block] = []
     for b in raw.get("blocks", []):

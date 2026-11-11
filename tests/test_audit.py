@@ -159,3 +159,51 @@ def test_full_audit_with_llm_checks(book, fake_llm, cast, banned, settings):
 
     skipped = audit_script(script, plan, book, cast, banned, settings, llm=None)
     assert skipped.support.skipped and any(i.rule == "support_skipped" for i in skipped.warnings())
+
+
+def _seg(lines, seg_type="body"):
+    return Segment(type=seg_type, lines=lines)
+
+
+def _repetition(segments, cast, plan=None):
+    from pipeline.script.audit import lint_repetition
+
+    script = Script(episode_id="ch01", target_minutes=10, segments=segments)
+    return [(i.rule, i.line_id) for i in lint_repetition(script, cast, plan)]
+
+
+def test_autopilot_dialogue_is_blocking(cast):
+    tessa = [Line(id=f"t{i}", speaker="tessa", text=f"Oké dus, punt {i} van het verhaal gaat verder.") for i in range(4)]
+    joris = [Line(id=f"j{i}", speaker="joris", text=t) for i, t in enumerate([
+        "Een deur is geen brood.", "Een brief is geen honger.", "Gereedschap is geen volk.", "Een muur is geen staat.",
+        "Er staat dat Alva weg moet.", "De tekst zegt Duitsland.", "Volgens de bron klopt het."])]
+    rules = _repetition([_seg(tessa + joris)], cast)
+    assert ("tic_overuse", "t1") in rules  # the second 'oké dus' in one segment is one too many
+    assert ("stock_phrase", "j0") in rules and ("source_talk", "j4") in rules
+    assert sum(r == "repeated_opening" for r, _ in rules) == 0  # the tic is counted once, as a tic
+
+
+def test_recited_definitions_and_repeated_lines(cast, book, fake_llm):
+    from pipeline.models import Definition, SourceSpan
+
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
+    plan.definitions = [Definition(term="protestant", definition="Iemand die zich losmaakte van de katholieke kerk.",
+                                   source_span=SourceSpan(section="ch01.1", start=0, end=1))]
+    recital = "Oké dus, protestant: Iemand die zich in de zestiende eeuw losmaakte van de katholieke kerk."
+    lines = [Line(id="l1", speaker="tessa", text=recital), Line(id="l2", speaker="joris", text="Hm."),
+             Line(id="l3", speaker="tessa", text="Protestanten waren mensen die zich van de katholieke kerk losmaakten.")]
+    later = [Line(id="l4", speaker="tessa", text=recital)]
+    quiz = [Line(id="q1", speaker="tessa", text="Protestanten waren mensen die zich van de katholieke kerk losmaakten.")]
+    rules = _repetition([_seg(lines), _seg(later), _seg(quiz, "quiz")], cast, plan)
+    assert ("definition_recital", "l1") in rules and ("definition_recital", "l4") in rules
+    assert ("duplicate_line", "l4") in rules
+    assert ("definition_recital", "l3") not in rules and ("duplicate_line", "q1") not in rules  # a quiz may repeat
+
+
+def test_varied_dialogue_passes(cast):
+    lines = [Line(id="l1", speaker="tessa", text="Oké dus, in 1566 slaan mensen de beelden in de kerken kapot."),
+             Line(id="l2", speaker="joris", text="Waarom juist de beelden?"),
+             Line(id="l3", speaker="tessa", text="Omdat ze boos zijn op de kerk en op de koning tegelijk."),
+             Line(id="l4", speaker="joris", text="Wacht even. Ook omdat ze honger hadden?"),
+             Line(id="l5", speaker="tessa", text="Ja, werk, geld en eten waren op.")]
+    assert _repetition([_seg(lines)], cast) == []

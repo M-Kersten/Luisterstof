@@ -94,3 +94,33 @@ def test_render_manifest_tracks_alignment_fallback_per_turn(ingested):
     # real alignments come from cache; only the estimated ones are retried, and a working aligner heals them
     assert 0 < fixed.calls <= manifest.alignment_fallback_count()
     assert manifest2.alignment_fallback_count() == 0
+
+
+def test_a_rewrite_that_makes_it_worse_is_undone(ingested):
+    from pipeline.models import AuditIssue, AuditResult
+
+    p = ingested
+    p.run_chapter("demo", "ch01", upto="script")
+    first = p.load_script("demo", "ch01")
+    worse = first.model_copy(deep=True)
+    worse.revision = first.revision + 1
+    worse.segments[0].lines[0].text = "Oké dus, de tekst zegt dit."
+
+    def audit_with(blocking: int, revision: int) -> AuditResult:
+        audit = AuditResult(episode_id="ch01", script_revision=revision)
+        audit.issues = [AuditIssue(check="lint", rule="x", message="x") for _ in range(blocking)]
+        audit.passed = not audit.issues
+        return audit
+
+    kept, audit = p._keep_best("demo", "ch01", [(first, audit_with(1, first.revision)), (worse, audit_with(4, worse.revision))])
+    assert kept.revision == worse.revision + 1  # the better text, saved as the newest revision
+    assert kept.segments[0].lines[0].text == first.segments[0].lines[0].text
+    on_disk = p.load_script("demo", "ch01")
+    assert on_disk.revision == kept.revision and on_disk.segments[0].lines[0].text == first.segments[0].lines[0].text
+    assert AuditResult.load(p.paths("demo").audit("ch01")).script_revision == kept.revision
+    assert ("script", "kept_best") in {(s, st) for s, st, _ in p.events}
+
+    better = worse.model_copy(deep=True)
+    better.revision = kept.revision + 1
+    same, _ = p._keep_best("demo", "ch01", [(first, audit_with(2, 1)), (better, audit_with(0, better.revision))])
+    assert same is better  # the last one was best: nothing to restore

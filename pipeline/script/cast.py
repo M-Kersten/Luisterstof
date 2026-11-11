@@ -98,7 +98,7 @@ def cast_bible_text(cast: Cast, guest: Guest | None = None) -> str:
             f"Achtergrond: {h.background.strip()}\n"
             f"Sterk in: {h.strength}\n"
             f"Zwak in: {h.weakness}\n"
-            f"Verbale tics (alleen van {h.name}):\n{_bullets(h.tics)}\n"
+            f"Verbale tics (alleen van {h.name}; spaarzaam, hooguit één keer per segment):\n{_bullets(h.tics)}\n"
             f"Humor: {h.humour}\n"
             f"Meningen:\n{_bullets(h.opinions)}"
         )

@@ -32,8 +32,8 @@ hosts:
     strength: "analogieën, een begrip koppelen aan iets fysieks"
     weakness: "overdrijft, duwt een analogie twee stappen voorbij het punt waar hij nog werkt"
     tics:
-      - "begint antwoorden met 'oké dus'"
-      - "gebruikt 'eigenlijk' te vaak"
+      - "zegt soms 'oké dus' als ze een nieuwe gedachte begint"
+      - "zegt graag 'eigenlijk'"
     tic_markers:
       - "oké dus"
     humour: "enthousiast, lacht om haar eigen grappen"
@@ -60,7 +60,7 @@ hosts:
     strength: "weigert een hand-wave te accepteren, stelt de vraag die de luisteraar heeft"
     weakness: "blijft hangen op details, mist soms het grote punt"
     tics:
-      - "'wacht even'"
+      - "zegt 'wacht even' als hij iets echt niet gelooft"
       - "droge understatement"
     tic_markers:
       - "wacht even"

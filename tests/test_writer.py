@@ -1,7 +1,7 @@
-from pipeline.models import AuditIssue, AuditResult, Guest
+from pipeline.models import AuditIssue, AuditResult, Guest, Misconception
 from pipeline.plan.thorough import plan_chapter_thorough
 from pipeline.script.cast import pick_guest
-from pipeline.script.writer import Writer, build_blueprint
+from pipeline.script.writer import Writer, build_blueprint, episode_minutes
 
 
 def test_blueprint_shape(book, fake_llm, cast, settings):
@@ -10,7 +10,8 @@ def test_blueprint_shape(book, fake_llm, cast, settings):
     briefs = build_blueprint(plan2, cast, guest=None, previous_plan=plan1, next_chapter_title="X", target_minutes=25, chars_per_second=15)
     types = [b.type for b in briefs]
     assert types[0] == "cold_open" and types[1] == "recap" and types[-1] == "outro"
-    assert "reexplain" in types and "quiz" in types and "guest" not in types
+    assert "quiz" in types and "guest" not in types
+    assert "reexplain" not in types  # nothing in this plan is harder than 3: no second route needed
     body_covers = [c for b in briefs if b.type == "body" for c in b.covers]
     assert sorted(body_covers) == sorted(c.id for c in plan2.key_claims)
     quiz = next(b for b in briefs if b.type == "quiz")
@@ -25,6 +26,38 @@ def test_blueprint_shape(book, fake_llm, cast, settings):
     assert pick_guest(cast, "kunstgeschiedenis").id == "sam_de_wit"
     with_guest = build_blueprint(plan2, cast, guest=guest, previous_plan=None, next_chapter_title=None, target_minutes=25, chars_per_second=15)
     assert "guest" in [b.type for b in with_guest] and "recap" not in [b.type for b in with_guest]
+    short = build_blueprint(plan2, cast, guest=guest, previous_plan=None, next_chapter_title=None, target_minutes=9, chars_per_second=15)
+    assert "guest" not in [b.type for b in short]  # a six-minute guest in a nine-minute episode is padding
+    assert len(next(b for b in short if b.type == "quiz").covers) == 2
+
+    plan2.key_claims[0].difficulty = 5
+    assert "reexplain" in [b.type for b in build_blueprint(plan2, cast, guest=None, previous_plan=None, next_chapter_title=None,
+                                                          target_minutes=25, chars_per_second=15)]
+
+
+def test_episode_length_follows_the_material(book, fake_llm, cast):
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
+    easy = plan.model_copy(deep=True)
+    for c in easy.key_claims:
+        c.difficulty = 1
+    hard = plan.model_copy(deep=True)
+    hard.key_claims = [c.model_copy(update={"id": f"c{i}", "difficulty": 5}) for i, c in enumerate(plan.key_claims * 6, 1)]
+    middle = plan.model_copy(deep=True)
+    middle.key_claims = [c.model_copy(update={"id": f"c{i}"}) for i, c in enumerate(plan.key_claims * 3, 1)]
+    assert episode_minutes(easy, 25) == 6  # the floor
+    assert episode_minutes(hard, 25) == 25  # the ceiling: STUDIEPODCAST_TARGET_MINUTES
+    assert 6 < episode_minutes(middle, 25) < 25
+
+
+def test_misconceptions_go_to_the_block_they_are_about(book, fake_llm, cast):
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
+    opener = max(plan.key_claims, key=lambda c: (c.exam_relevance, -c.difficulty))
+    last = [c for c in plan.key_claims if c.id != opener.id][-1]  # not the cold open's own claim
+    plan.misconceptions = [Misconception(wrong=f"Het is niet zo dat {last.claim.lower()}", right=last.claim, why_tempting="x")]
+    briefs = build_blueprint(plan, cast, guest=None, previous_plan=None, next_chapter_title=None, target_minutes=20,
+                             chars_per_second=15)
+    with_it = [b for b in briefs if "Loop bewust in deze misvatting" in b.instructions]
+    assert len(with_it) == 1 and last.id in with_it[0].covers
 
 
 def test_write_produces_valid_script(book, fake_llm, cast, settings):

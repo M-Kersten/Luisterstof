@@ -158,7 +158,7 @@ def fake_script_segment(req: LLMRequest) -> dict:
         line(skeptic, "Ja. Dat.", tags=["deadpan"])
     elif seg_type == "quiz":
         for i, (cid, text) in enumerate(claims[:4]):
-            line(skeptic, f"Vraag {i + 1}. Wat zegt het boek hierover: {text.split(',')[0].rstrip('.')}?", pause=3000)
+            line(skeptic, f"Vraag {i + 1}. Wat weet je nog over: {text.split(',')[0].rstrip('.')}?", pause=3000)
             if i == 1:
                 line(explainer, "Volgens mij het omgekeerde.", tags=["thinking"])
                 line(skeptic, f"Fout. {text}", covers=[cid])
@@ -181,11 +181,15 @@ def fake_script_segment(req: LLMRequest) -> dict:
             line(asker, f"En hoe zit dat dan met {text.split(' ')[0].lower()} {text.split(' ')[1] if len(text.split(' ')) > 1 else ''}?".replace("  ", " "))
             line(answerer, text, covers=[cid])
             if i == 0:
-                line(answerer, "Dat is de kern ervan, en de rest volgt daaruit.", tags=["warm"])
+                fillers = ("Dat is de kern ervan, en de rest volgt daaruit.", "Onthoud vooral dit stuk.",
+                           "Hier draait het hele blok om.", "Wie dit snapt, heeft de rest ook.",
+                           "Hou dat even vast.", "Daar bouwt alles op voort.", "Dit is het stuk dat blijft hangen.")
+                number = int(re.sub(r"\D", "", cid) or 0)
+                line(answerer, fillers[number % len(fillers)], tags=["warm"])
                 line(skeptic, "Ja, precies.", overlap="backchannel")
         if "misvatting" in user.casefold():
             line(skeptic, "Dus dat geldt altijd?", tags=["skeptical"])
-            line(explainer, "Nee, alleen onder de voorwaarden die het boek noemt. Daar trapte ik zelf ook in.", tags=["laughs"])
+            line(explainer, "Nee, alleen onder de voorwaarden die erbij horen. Daar trapte ik zelf ook in.", tags=["laughs"])
     return {"lines": lines}
 
 

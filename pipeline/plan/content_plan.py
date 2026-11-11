@@ -159,7 +159,10 @@ def build_plan(chapter: Chapter, out: PlanOut) -> ContentPlan:
         expert_reason = "gemiddelde moeilijkheid boven 4 in sectie(s) " + ", ".join(hard_sections)
 
     dense = set(s.id for s in chapter.sections if s.formula_density >= FORMULA_DENSITY_THRESHOLD)
-    dense.update(sid for sid in out.formula_dense_sections if chapter.section(sid))
+    # The model's own call counts only where the text has some notation at all: plain prose with a few
+    # years in it is never "formula-dense", whatever a fill-in exercise made it look like.
+    dense.update(sid for sid in out.formula_dense_sections
+                 if chapter.section(sid) and chapter.section(sid).formula_density >= FORMULA_DENSITY_THRESHOLD / 4)
 
     return ContentPlan(
         chapter_id=chapter.id,

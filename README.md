@@ -1,6 +1,6 @@
 # Studiepodcast
 
-Turn a dense Dutch study book (PDF) into a podcast series: one episode per chapter, 20 to 30 minutes, hosted by a stable recurring cast with real banter and occasional expert guests. Output language is Dutch. Accuracy is non-negotiable: every factual line traces back to a source span and is audited before anything is rendered.
+Turn a dense Dutch study book (PDF) into a podcast series: one episode per chapter, as long as its material carries (6 to 25 minutes), hosted by a stable recurring cast with real banter and occasional expert guests. Output language is Dutch. Accuracy is non-negotiable: every factual line traces back to a source span and is audited before anything is rendered.
 
 The build brief this implements is in `PLAN.md`.
 
@@ -8,16 +8,16 @@ The build brief this implements is in `PLAN.md`.
 
 ```
 upload PDF
-  -> ingest            book.json          chapters, sections, figures and tables as sentences
+  -> ingest            book.json          chapters, sections, figures and tables as sentences; exercises out
   -> content plan      chXX.plan.json     claims with source spans, definitions, misconceptions
   -> lexicon           glossary.json      loanwords, notation, abbreviations, resolved before render
-  -> script            chXX.script.json   cold open, recap, body blocks, guest, "wacht opnieuw", quiz, outro
+  -> script            chXX.script.json   cold open, recap, body blocks, guest*, "wacht opnieuw"*, quiz, outro
   -> audit             chXX.audit.json    support (LLM), coverage, lint; blocking issues gate the render
   === APPROVAL GATE (read the script and the audit) ===
   -> chatterbox render out/chXX.mp3       take selection, WhisperX alignment, timeline assembly, mix
 ```
 
-Every stage writes a file under `data/books/<book_id>/`, every file is inspectable in the web UI, and no stage reaches into another stage's internals. Content (stage 2) and comedy (stage 3) are generated separately on purpose.
+(* only when the chapter calls for it, see M3.) Every stage writes a file under `data/books/<book_id>/`, every file is inspectable in the web UI, and no stage reaches into another stage's internals. Content (stage 2) and comedy (stage 3) are generated separately on purpose.
 
 ## Setup
 
@@ -194,6 +194,8 @@ studiepodcast ingest boek.pdf --book-id statistiek1 [--method auto|fonts|toc|llm
 
 Chapter detection tries font-size heuristics, then the PDF's bookmark TOC, then the model on the first pages. Figures keep the caption text that is next to them; there is no vision pass, the endpoint is text-only. Tables are spelled out as sentences. Check the chapter boundaries in `data/books/statistiek1/book.json` before going on.
 
+**What the ingest leaves out.** A study book prints things for a reader with a pen, and a podcast must not read them: exercises (from an "Oefening 3", "Opdrachten" or "Vragen bij ..." heading up to the next real heading), fill-in-the-blank copies of the text, paragraphs that repeat an earlier one, footnote numbers (superscript digits glued to a word; an exponent after a symbol stays) and footnote bodies. A caption under a picture becomes that figure's text; a row of names under portraits is dropped. A sentence cut by a page break is joined again. Word lists stay: they are the book's own definitions. `book.json` lists what was left out under `warnings`. A book without chapters becomes one episode with the book's title.
+
 **M2 Content plan and lexicon** for one chapter, then verify the claims by hand:
 
 ```bash
@@ -211,6 +213,10 @@ studiepodcast audit statistiek1 ch03      # re-audit after editing the script js
 ```
 
 Target: coverage 100% on `exam_relevance >= 3`, zero lint hits, zero unsupported claims. Blocking issues are listed with line ids.
+
+The episode is as long as its material: each claim gets 12 to 75 seconds by difficulty, plus a two-minute frame, between 6 minutes and `STUDIEPODCAST_TARGET_MINUTES` (default 25). Eight easy pages make a short episode. The guest segment comes only in an episode of 15 minutes or more whose plan asks for an expert, "wacht, opnieuw" only for a claim of difficulty 4 or 5, and the quiz has 2 to 4 questions by length. Each misconception goes to the block whose claims it is about, and each definition is explained in one block only.
+
+The audit blocks what a writing model does on autopilot: a host's tic more than once per segment (`tic_overuse`), most of a host's lines starting the same way (`repeated_opening`), the same quip template over and over such as "een X is geen Y" (`stock_phrase`), the hosts talking about "de tekst" or "de bron" instead of the subject (`source_talk`), a definition read out as "term: omschrijving" (`definition_recital`) and a line repeated word for word outside the quiz (`duplicate_line`). The support check accepts a paraphrase that gets the content right. Each rewrite round is audited again, and when a round made the script worse, the best revision is saved again as the newest one (`kept_best` in the log).
 
 **M4 Human check.** Read the script and the audit output. Expect to rewrite `cast/hosts.yaml` here.
 
@@ -376,6 +382,7 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 | `CHATTERBOX_WORKERS` | `3` | Parallel model instances (a few GB each) |
 | `WHISPER_MODEL`, `WHISPER_COMPUTE_TYPE` | `large-v3`, `int8` | faster-whisper model |
 | `STUDIEPODCAST_TAKES`, `STUDIEPODCAST_WER_THRESHOLD` | `3`, `0.05` | Take loop |
+| `STUDIEPODCAST_TARGET_MINUTES` | `25` | Longest episode; shorter material makes a shorter one |
 | `STUDIEPODCAST_DATA_DIR`, `STUDIEPODCAST_CAST_DIR` | `data`, `cast` | Storage |
 
 ## Tests

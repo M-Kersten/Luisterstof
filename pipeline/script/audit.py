@@ -220,6 +220,91 @@ def lint_rules(script: Script, cast: Cast, banned: BannedRules, glossary: Glossa
 
 
 # ---------------------------------------------------------------------------
+# Repetition: what a writing model falls back on when it runs out of ideas
+# ---------------------------------------------------------------------------
+
+STOCK_DENIAL = re.compile(r"\b(is|zijn|blijft|blijven)\s+(nog\s+)?geen\b", re.IGNORECASE)  # "een deur is geen brood"
+SOURCE_TALK = re.compile(r"\b(in de tekst|de tekst|de bron|volgens de bron|het boek|er staat|staat er)\b", re.IGNORECASE)
+MAX_STOCK_DENIALS = 3  # per episode
+MAX_SOURCE_TALK = 2  # per episode
+MIN_DUPLICATE_CHARS = 40
+
+
+def _opening(text: str, words: int = 2) -> str:
+    return " ".join(re.findall(r"[^\W\d_]+", text.casefold())[:words])
+
+
+def lint_repetition(script: Script, cast: Cast, plan: ContentPlan | None = None) -> list[AuditIssue]:
+    """Tics on every line, one joke template thirty times, definitions read out like a dictionary, the hosts
+    talking about "de tekst" instead of the subject. Each of these is what a model does on autopilot, and each
+    is blocking: a listener hears it within a minute."""
+    issues: list[AuditIssue] = []
+    markers = {sp.id: [m.casefold() for m in sp.tic_markers if m.strip()] for sp in list(cast.hosts) + list(cast.guests)}
+    names = {sp.id: sp.name for sp in list(cast.hosts) + list(cast.guests)}
+    terms = {d.term.casefold().strip() for d in (plan.definitions if plan else [])}
+    stock_hits: dict[int, list] = {}
+    source_hits: dict[int, list] = {}
+    seen: dict[str, str] = {}
+    for i, seg in enumerate(script.segments):
+        by_speaker: dict[str, list] = {}
+        for line in seg.lines:
+            by_speaker.setdefault(line.speaker, []).append(line)
+            text = " ".join(line.text.split())
+            folded = text.casefold()
+            if any(STOCK_DENIAL.search(sent) and len(sent.split()) <= 9 for sent in re.split(r"(?<=[.!?])\s+", text)):
+                stock_hits.setdefault(i, []).append(line)
+            if SOURCE_TALK.search(text):
+                source_hits.setdefault(i, []).append(line)
+            bare = re.sub(r"^(oké dus|oke dus|nou|dus|ja)[,.]?\s*", "", folded)
+            head, colon, _ = bare.partition(":")
+            if colon and head.strip() in terms:
+                issues.append(AuditIssue(check="lint", rule="definition_recital", line_id=line.id,
+                                         message=f"De definitie van '{head.strip()}' wordt voorgelezen als woordenboekregel.",
+                                         suggestion="Leg het begrip uit in eigen woorden, als deel van het gesprek."))
+            key = re.sub(r"[^\w ]", "", folded)
+            if len(key) >= MIN_DUPLICATE_CHARS and seg.type not in ("quiz", "recap"):  # repeating is their job
+                if key in seen:
+                    issues.append(AuditIssue(check="lint", rule="duplicate_line", line_id=line.id,
+                                             message=f"Letterlijk dezelfde regel als {seen[key]}."))
+                else:
+                    seen[key] = line.id
+        for speaker, lines in by_speaker.items():
+            name = names.get(speaker, speaker)
+            allowed = 1 + len(lines) // 15
+            for marker in markers.get(speaker, []):
+                hits = [ln for ln in lines if re.search(r"(?<!\w)" + re.escape(marker) + r"(?!\w)", ln.text.casefold())]
+                if len(hits) > allowed:
+                    issues.append(AuditIssue(check="lint", rule="tic_overuse", line_id=hits[allowed].id,
+                                             message=f"{name} zegt '{marker}' {len(hits)} keer in dit segment; een tic "
+                                                     f"werkt hooguit {allowed} keer.",
+                                             suggestion="Laat de tic weg en begin de regel met de inhoud."))
+            if len(lines) >= 5:
+                openings: dict[str, list] = {}
+                for ln in lines:
+                    openings.setdefault(_opening(ln.text), []).append(ln)
+                for opening, same in openings.items():
+                    if opening and opening not in markers.get(speaker, []) and len(same) >= 3 and len(same) >= 0.4 * len(lines):
+                        issues.append(AuditIssue(check="lint", rule="repeated_opening", line_id=same[2].id,
+                                                 message=f"{name} begint {len(same)} van {len(lines)} regels in dit "
+                                                         f"segment met '{opening}'.",
+                                                 suggestion="Varieer hoe de regels beginnen."))
+    if sum(len(v) for v in stock_hits.values()) > MAX_STOCK_DENIALS:
+        total = sum(len(v) for v in stock_hits.values())
+        for lines in stock_hits.values():
+            issues.append(AuditIssue(check="lint", rule="stock_phrase", line_id=lines[0].id,
+                                     message=f"Vaste formule 'een X is geen Y' ({total} keer in de aflevering).",
+                                     suggestion="Laat de twijfel over de stof gaan: vraag waarom, hoe of wat het betekent."))
+    if sum(len(v) for v in source_hits.values()) > MAX_SOURCE_TALK:
+        total = sum(len(v) for v in source_hits.values())
+        for lines in source_hits.values():
+            issues.append(AuditIssue(check="lint", rule="source_talk", line_id=lines[0].id,
+                                     message=f"De hosts praten {total} keer over 'de tekst' of 'de bron' in plaats van over "
+                                             "het onderwerp.",
+                                     suggestion="Vertel wat er gebeurde of hoe het zit; laat de verwijzing naar de bron weg."))
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # LLM checks
 # ---------------------------------------------------------------------------
 
@@ -238,6 +323,8 @@ SUPPORT_SYSTEM = """Je controleert een podcastscript op feitelijke ondersteuning
 Per regel krijg je de tekst en de bronfragmenten die de regel zou moeten dekken. Beoordeel:
 - Wordt elke feitelijke bewering in de regel gedekt door de fragmenten? Getallen, definities, richtingen van verbanden en voorwaarden moeten kloppen.
 - Analogieën en beelden mogen simplificeren zolang ze de bron niet tegenspreken.
+- Een parafrase in eigen woorden is ondersteund als de inhoud klopt; letterlijk citeren is niet nodig. Een regel als "hij wilde Alva het land uit hebben" bij de bron "Hij wil Alva weg krijgen uit Nederland" is ondersteund.
+- Oordeel "niet ondersteund" alleen als de regel iets beweert dat niet in de fragmenten staat of ze tegenspreekt. Een detail weglaten is geen fout.
 - Vragen, grappen, reacties en emotie zijn geen beweringen; beoordeel alleen de feitelijke inhoud.
 - Een regel die bewust iets fout zegt als onderdeel van een misvatting of quizfout is alleen in orde als dat uit de regel zelf blijkt (de spreker twijfelt, of het is een quizantwoord dat daarna wordt gecorrigeerd).
 Geef voor elke regel een oordeel. Wees streng op inhoud, soepel op stijl."""
@@ -366,6 +453,7 @@ def audit_script(
     cov_issues, result.coverage = check_coverage(script, plan)
     result.issues += cov_issues
     result.issues += lint_rules(script, cast, banned, glossary, settings)
+    result.issues += lint_repetition(script, cast, plan)
     if llm is not None:
         sup_issues, result.support = check_support(script, plan, book, llm, plan_lookup, progress=progress)
         result.issues += sup_issues

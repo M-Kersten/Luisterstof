@@ -67,6 +67,56 @@ SEGMENT_SECONDS = {
 }
 
 
+# How long a claim takes to land in conversation, by its difficulty (1-5). With a short frame around the
+# body this sizes the episode to its material: eight easy pages make a short episode, a dense chapter
+# a long one, and STUDIEPODCAST_TARGET_MINUTES is the ceiling.
+SECONDS_PER_CLAIM = {1: 12, 2: 20, 3: 35, 4: 55, 5: 75}
+SECONDS_PER_MISCONCEPTION = 10
+FRAME_SECONDS = 120  # cold open, a short quiz, the outro
+MIN_EPISODE_MINUTES = 6
+GUEST_MIN_MINUTES = 15  # a six-minute guest in a ten-minute episode is padding
+REEXPLAIN_MIN_DIFFICULTY = 4  # a second route only for a claim that is actually hard
+QUIZ_SECONDS_PER_QUESTION = 50
+
+
+def episode_minutes(plan: ContentPlan, max_minutes: int) -> int:
+    """The episode length this plan carries, between MIN_EPISODE_MINUTES and ``max_minutes``."""
+    body = sum(SECONDS_PER_CLAIM.get(max(1, min(5, c.difficulty)), 35) for c in plan.key_claims)
+    body += SECONDS_PER_MISCONCEPTION * len(plan.misconceptions)
+    return max(MIN_EPISODE_MINUTES, min(max_minutes, math.ceil((body + FRAME_SECONDS) / 60)))
+
+
+def quiz_questions(target_minutes: int) -> int:
+    return 2 if target_minutes < 10 else 3 if target_minutes < 18 else 4
+
+
+def _assign_misconceptions(misconceptions: list, clusters: list[list[KeyClaim]], open_claim: KeyClaim | None,
+                           min_score: float = 50.0) -> tuple[object | None, dict[int, object]]:
+    """Each misconception goes to the block whose claims it is about (at most one per block), never by its
+    position in the list: a misconception about 1584 does not belong in the block about 1566. The cold open
+    may take one that is about its own claim."""
+    def about(m, claims: list[KeyClaim]) -> float:
+        text = f"{m.wrong} {m.right}"
+        return max((fuzz.token_set_ratio(text, c.claim) for c in claims), default=0.0)
+
+    pool = list(misconceptions)
+    opener = None
+    if open_claim is not None and pool:
+        best = max(pool, key=lambda m: about(m, [open_claim]))
+        if about(best, [open_claim]) >= min_score + 10:
+            opener = best
+            pool.remove(best)
+    pairs = sorted(((about(m, cl), i, k) for k, m in enumerate(pool) for i, cl in enumerate(clusters)), reverse=True)
+    per_block: dict[int, object] = {}
+    used: set[int] = set()
+    for score, i, k in pairs:
+        if score < min_score or i in per_block or k in used:
+            continue
+        per_block[i] = pool[k]
+        used.add(k)
+    return opener, per_block
+
+
 def _chars(seconds: float, cps: float) -> int:
     return int(seconds * cps * 0.9)
 
@@ -104,24 +154,39 @@ def build_blueprint(
     briefs: list[SegmentBrief] = []
 
     total_seconds = target_minutes * 60
-    fixed = SEGMENT_SECONDS["cold_open"] + SEGMENT_SECONDS["reexplain"] + SEGMENT_SECONDS["quiz"] + SEGMENT_SECONDS["outro"]
-    if previous_plan is not None:
-        fixed += SEGMENT_SECONDS["recap"]
-    if guest is not None and plan.needs_expert:
-        fixed += SEGMENT_SECONDS["guest"]
-    body_seconds = max(6 * 60, total_seconds - fixed)
-
     claims = list(plan.key_claims)
     top = sorted(claims, key=lambda c: (-c.exam_relevance, c.difficulty))
     hardest = plan.hardest_claim()
+    with_guest = guest is not None and plan.needs_expert and target_minutes >= GUEST_MIN_MINUTES
+    with_reexplain = hardest is not None and hardest.difficulty >= REEXPLAIN_MIN_DIFFICULTY
+    n_quiz = quiz_questions(target_minutes)
+    seconds = {
+        "cold_open": SEGMENT_SECONDS["cold_open"],
+        "outro": SEGMENT_SECONDS["outro"],
+        "quiz": QUIZ_SECONDS_PER_QUESTION * n_quiz,
+        "recap": min(SEGMENT_SECONDS["recap"], 0.08 * total_seconds),
+        "guest": min(SEGMENT_SECONDS["guest"], 0.25 * total_seconds),
+        "reexplain": min(SEGMENT_SECONDS["reexplain"], 0.15 * total_seconds),
+    }
+    fixed = seconds["cold_open"] + seconds["quiz"] + seconds["outro"]
+    if previous_plan is not None:
+        fixed += seconds["recap"]
+    if with_guest:
+        fixed += seconds["guest"]
+    if with_reexplain:
+        fixed += seconds["reexplain"]
+    body_seconds = max(3 * 60, total_seconds - fixed)
+
+    n_blocks = max(3, min(5, round(len(claims) / 4))) if claims else 3
+    clusters = _cluster(claims, n_blocks)
 
     # Cold open: an argument about something from the chapter.
     open_claim = top[0] if top else None
-    misconception = plan.misconceptions[0] if plan.misconceptions else None
+    misconception, block_misconceptions = _assign_misconceptions(plan.misconceptions, clusters, open_claim)
     briefs.append(SegmentBrief(
         type="cold_open", title="Koude opening",
         covers=[open_claim.id] if open_claim else [],
-        target_chars=_chars(SEGMENT_SECONDS["cold_open"], chars_per_second),
+        target_chars=_chars(seconds["cold_open"], chars_per_second),
         speakers=hosts,
         instructions=(
             "De hosts zitten al midden in een meningsverschil over iets uit dit hoofdstuk. Geen intro, geen welkom, "
@@ -138,7 +203,7 @@ def build_blueprint(
         briefs.append(SegmentBrief(
             type="recap", title="Terugblik",
             covers=[f"{previous_plan.chapter_id}:{prev_claim.id}"] if prev_claim else [],
-            target_chars=_chars(SEGMENT_SECONDS["recap"], chars_per_second),
+            target_chars=_chars(seconds["recap"], chars_per_second),
             speakers=hosts,
             instructions=(
                 f"Eén kernpunt uit de vorige aflevering ({previous_plan.chapter_title or previous_plan.chapter_id}). "
@@ -151,18 +216,19 @@ def build_blueprint(
         ))
 
     # Body blocks.
-    n_blocks = max(3, min(5, round(len(claims) / 4))) if claims else 3
-    clusters = _cluster(claims, n_blocks)
     per_block_chars = _chars(body_seconds / max(1, len(clusters)), chars_per_second)
-    definitions = {d.term.casefold(): d for d in plan.definitions}
+    explained: set[str] = set()  # each definition is handed to one block only, so it is explained once
     for i, cluster in enumerate(clusters, start=1):
-        misc = plan.misconceptions[i] if i < len(plan.misconceptions) else None
-        relevant_defs = [d for d in plan.definitions if any(d.term.casefold() in c.claim.casefold() for c in cluster)]
+        misc = block_misconceptions.get(i - 1)
+        relevant_defs = [d for d in plan.definitions if d.term.casefold() not in explained
+                         and any(d.term.casefold() in c.claim.casefold() for c in cluster)]
+        explained.update(d.term.casefold() for d in relevant_defs)
         lines = ["Beweringen die dit blok moet dekken (gebruik de id's in 'covers'):"]
         lines += [_claim_text(c) for c in cluster]
         lines += [f"  bron {c.id}: \"{(c.source_span.quote or '')[:300]}\"" for c in cluster]
         if relevant_defs:
-            lines.append("Definities die hier thuishoren (letterlijk correct houden, nooit onder overlap):")
+            lines.append("Begrippen die hier thuishoren. Leg ze één keer uit, in eigen woorden en inhoudelijk juist, "
+                         "als deel van het gesprek; nooit voorlezen als 'term: omschrijving', nooit onder overlap:")
             lines += [f"- {d.term}: {d.definition}" for d in relevant_defs]
         if misc:
             lines.append(
@@ -185,15 +251,13 @@ def build_blueprint(
                 "terugkomen, feitelijk correct, met de bijbehorende id in 'covers'.\n" + "\n".join(lines)
             ),
         ))
-    _ = definitions
-
     # Guest block.
-    if guest is not None and plan.needs_expert:
+    if with_guest:
         hard = sorted(claims, key=lambda c: -c.difficulty)[:4]
         briefs.append(SegmentBrief(
             type="guest", title=f"Gast: {guest.name}",
             covers=[c.id for c in hard],
-            target_chars=_chars(SEGMENT_SECONDS["guest"], chars_per_second),
+            target_chars=_chars(seconds["guest"], chars_per_second),
             speakers=hosts + [guest.id],
             instructions=(
                 f"Driespreker-blok met gast {guest.name} (spreker-id {guest.id}), vakgebied: {plan.expert_domain}. "
@@ -206,11 +270,11 @@ def build_blueprint(
         ))
 
     # Wacht, opnieuw.
-    if hardest is not None:
+    if with_reexplain:
         briefs.append(SegmentBrief(
             type="reexplain", title="Wacht, opnieuw",
             covers=[hardest.id],
-            target_chars=_chars(SEGMENT_SECONDS["reexplain"], chars_per_second),
+            target_chars=_chars(seconds["reexplain"], chars_per_second),
             speakers=hosts,
             instructions=(
                 f"{skeptic.name} weigert de eerdere uitleg van het moeilijkste begrip en eist een tweede route. "
@@ -222,14 +286,14 @@ def build_blueprint(
 
     # Quiz.
     quiz_pool = [c for c in top if c.exam_relevance >= 4] or top
-    quiz_claims = quiz_pool[:4]
+    quiz_claims = quiz_pool[:n_quiz]
     briefs.append(SegmentBrief(
         type="quiz", title="Quiz",
         covers=[c.id for c in quiz_claims],
-        target_chars=_chars(SEGMENT_SECONDS["quiz"], chars_per_second),
+        target_chars=_chars(seconds["quiz"], chars_per_second),
         speakers=hosts,
         instructions=(
-            f"{skeptic.name} overhoort {explainer.name} met precies vier vragen, elk gebaseerd op één van deze beweringen. "
+            f"{skeptic.name} overhoort {explainer.name} met precies {len(quiz_claims)} vragen, elk gebaseerd op één van deze beweringen. "
             f"Na elke vraag valt een stilte voor de luisteraar: zet pause_after_ms op 3000 op de regel met de vraag. "
             f"{explainer.name} heeft er precies één fout, {skeptic.name} corrigeert met de juiste informatie uit de bron. "
             "Vragen en antwoorden moeten exact kloppen met de bron.\n"
@@ -242,7 +306,7 @@ def build_blueprint(
     briefs.append(SegmentBrief(
         type="outro", title="Uitsmijter",
         covers=[],
-        target_chars=_chars(SEGMENT_SECONDS["outro"], chars_per_second),
+        target_chars=_chars(seconds["outro"], chars_per_second),
         speakers=hosts,
         instructions=(
             "Dertig seconden. Geen samenvatting van wat er is besproken, geen bedankje aan de luisteraar. "
@@ -308,14 +372,21 @@ De rollen zijn tegelijk de leermotor en de comedymotor. De explainer legt uit me
 
 ## Nauwkeurigheid (niet onderhandelbaar)
 - Dit is studiemateriaal. Elke feitelijke bewering komt uit het inhoudsplan en de bronfragmenten. Voeg geen feiten toe die niet in de bron staan.
-- Getallen, definities en formuleringen uit de bron zijn heilig. Een analogie mag simplificeren, nooit tegenspreken.
+- Getallen, jaartallen en namen uit de bron zijn heilig. Begrippen leg je uit in eigen spreektaal, inhoudelijk juist; lees een definitie nooit voor als woordenboekregel ("term: omschrijving") en leg elk begrip één keer uit. Een analogie mag simplificeren, nooit tegenspreken.
+- Praat over het onderwerp, niet over de bron. Geen "de tekst zegt", "er staat", "volgens de bron": vertel wat er gebeurde of hoe het zit.
 - Markeer regels die een bewering overbrengen met de claim-id in 'covers'. Grappen, vragen en reacties krijgen geen covers.
 - Als een host expres iets fout zegt (misvatting, quizfout), corrigeer het in het gesprek binnen twee regels, en zet de covers alleen op de regel met de correcte informatie.
 
 ## Humor
 - Humor hangt aan de stof. Toegestane bronnen: een analogie die tot hij breekt wordt doorgevoerd, een host die het begrip verkeerd toepast, een callback uit het continuïteitslogboek, de hosts die het oneens zijn over hoe moeilijk iets is.
 - Verboden: actuele grappen, grappen die in elke aflevering zouden werken, grappen waarvoor de luisteraar iets moet zien.
-- Elke host houdt zich aan de eigen verbale tics. De tics van de ander zijn verboden terrein.
+- Een verbale tic is een kruiderij: hooguit één keer per segment, nooit als vaste opening van regels. De tics van de ander zijn verboden terrein.
+- Geen vaste formules. Laat regels niet steeds met dezelfde woorden beginnen en gebruik geen sjabloon dat terugkomt (zoals steeds "een X is geen Y").
+
+## Beelden en twijfel
+- Een beeld moet iets uitleggen: het koppelt het begrip aan iets wat de luisteraar kent, en uit het gesprek blijkt wat met wat overeenkomt. Waar niets uit te leggen valt, geen beeld.
+- Bij verhalende stof (geschiedenis, een verloop van gebeurtenissen) is het verhaal zelf het beeld: vertel wie, wanneer, wat en waarom, in de volgorde waarin het gebeurde.
+- De skeptic twijfelt aan de stof: waarom gebeurde dit, hoe hangt het samen, wat betekent het. Niet aan de woordkeus van de ander, en niet aan wat er wel of niet in de bron staat.
 
 ## Verboden taal (de linter blokkeert het script bij één treffer)
 - AI-podcastvulling: "dat is echt fascinerend", "goede vraag", "laten we eens duiken in", "aan het eind van de dag", "welkom bij", "in deze aflevering", "kortom", "samengevat", "in een notendop".
@@ -443,7 +514,9 @@ class Writer:
             "Opdracht:\n" + brief.instructions,
         ]
         if fix:
-            parts.append("## Herschrijf: los deze problemen op en behoud wat werkte\n" + fix)
+            parts.append("## Herschrijf: los deze problemen op en behoud wat werkte\n"
+                         "Los een probleem op in de inhoud zelf: verwijs niet naar 'de tekst' of 'de bron' om het te "
+                         "ontwijken, en laat het segment niet langer worden dan de streeflengte.\n" + fix)
         parts.append("## Regels tot nu toe (ga hier naadloos op verder, herhaal niets)\n" + (prior or "(nog niets)"))
         return "\n\n".join(parts)
 
@@ -509,7 +582,7 @@ class Writer:
         next_chapter_title: str | None = None,
         target_minutes: int | None = None,
     ) -> Script:
-        target_minutes = target_minutes or self.settings.target_minutes
+        target_minutes = target_minutes or episode_minutes(plan, self.settings.target_minutes)
         guest = pick_guest(self.cast, plan.expert_domain) if plan.needs_expert else None
         briefs = build_blueprint(
             plan, self.cast, guest=guest, previous_plan=previous_plan, next_chapter_title=next_chapter_title,

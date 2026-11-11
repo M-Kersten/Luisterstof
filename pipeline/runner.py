@@ -208,6 +208,7 @@ class Pipeline:
         self.emit("script", "done", book_id=book_id, chapter=chapter_id, lines=sum(len(s.lines) for s in script.segments),
                   estimated_minutes=round(script.estimated_seconds(self.settings.chars_per_second) / 60, 1))
         audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks)
+        tried = [(script, audit)]
         rounds = 0
         while rounds < rounds_left and self._needs_rewrite(audit):
             rounds += 1
@@ -216,8 +217,33 @@ class Pipeline:
             script = writer.revise(script, audit, plan, glossary, also_naturalness=self.settings.quality_mode)
             script.save(self.paths(book_id).script(chapter_id))
             audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks)
+            tried.append((script, audit))
+        script, audit = self._keep_best(book_id, chapter_id, tried)
         self.continuity(book_id, chapter_id, script=script)
         return script, audit
+
+    def _keep_best(self, book_id: str, chapter_id: str, tried: list[tuple[Script, AuditResult]]) -> tuple[Script, AuditResult]:
+        """A rewrite round can make a script worse: a model told a line is unsupported may start hedging
+        everything. The revision with the best audit wins (fewest blocking issues, then fewest dialogue-shape
+        warnings, then fewest warnings; the later one on a tie). If that is an earlier one, it is saved again
+        as the newest revision, so the file and its audit stay in step."""
+        def score(item: tuple[int, tuple[Script, AuditResult]]) -> tuple:
+            i, (_, a) = item
+            return (len(a.blocking()), len(naturalness_issues(a)), len(a.warnings()), -i)
+
+        best_i, (best, best_audit) = min(enumerate(tried), key=score)
+        last, last_audit = tried[-1]
+        if best_i == len(tried) - 1:
+            return last, last_audit
+        restored = best.model_copy(deep=True)
+        restored.revision = last.revision + 1
+        restored.save(self.paths(book_id).script(chapter_id))
+        audit = best_audit.model_copy(deep=True)
+        audit.script_revision = restored.revision
+        audit.save(self.paths(book_id).audit(chapter_id))
+        self.emit("script", "kept_best", book_id=book_id, chapter=chapter_id, from_revision=best.revision,
+                  revision=restored.revision, blocking=len(audit.blocking()), last_blocking=len(last_audit.blocking()))
+        return restored, audit
 
     def _needs_rewrite(self, audit: AuditResult) -> bool:
         """Whether another rewrite round is warranted.

@@ -17,6 +17,7 @@ from statistics import median
 from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
+from pipeline.ingest.cleanup import CleanupReport, clean_paragraphs, is_exercise_heading
 from pipeline.ingest.pdf import PageData, body_font_size, join_lines
 from pipeline.models import Book, Chapter, Section
 
@@ -328,12 +329,22 @@ def build_book(
             sec["paragraphs"].append(join_lines(sec["buffer"]))
             sec["buffer"] = []
 
+    report = CleanupReport()
+    lines_per_block = Counter(u.block_id for u in units if u.kind == "line")
+    in_exercises = False  # from an exercise heading up to the next real heading
     skip_until = -1
     for u in units:
         if u.index < skip_until:
             continue
         h = heading_at.get(u.index)
+        if h is not None and (is_exercise_heading(h.clean_title) or is_exercise_heading(h.text)):
+            skip_until = u.index + max(1, h.span)
+            flush(section)
+            in_exercises = True
+            report.exercise_chars += len(h.text)
+            continue
         if h is not None:
+            in_exercises = False
             skip_until = u.index + h.span
             flush(section)
             if h.level == 1 or current is None:
@@ -348,6 +359,13 @@ def build_book(
                 pass
             else:
                 continue
+        if u.kind == "line" and not in_exercises and is_exercise_heading(u.text) \
+                and (u.bold or lines_per_block[u.block_id] == 1):
+            flush(section)
+            in_exercises = True
+        if in_exercises:
+            report.exercise_chars += len(u.text)
+            continue
         if current is None:
             current = new_chapter(None)
             section = new_section(current, None)
@@ -395,8 +413,9 @@ def build_book(
             ch_title = ch["title"]
         sections: list[Section] = []
         k = 0
+        seen: list[str] = []  # paragraphs kept so far in this chapter, to catch a fill-in copy without blanks
         for s in ch["sections"]:
-            text = "\n\n".join(p for p in s["paragraphs"] if p.strip())
+            text = "\n\n".join(p for p in clean_paragraphs(s["paragraphs"], seen, report) if p.strip())
             if not text.strip():
                 continue
             k += 1
@@ -414,10 +433,18 @@ def build_book(
     if n_real == 0:
         warnings.append("no chapters detected; whole book treated as one episode")
         if out_chapters:
-            out_chapters[0].level = 1
-            out_chapters[0].id = "ch01"
-            for i, s in enumerate(out_chapters[0].sections, start=1):
+            only = out_chapters[0]
+            only.level = 1
+            only.id = "ch01"
+            if only.title == "Voorwerk":  # the whole book is the episode, so it carries the book's title
+                only.title = title
+            for i, s in enumerate(only.sections, start=1):
                 s.id = f"ch01.{i}"
+                if s.title == "Voorwerk" or s.title.startswith("Voorwerk ("):
+                    s.title = title if i == 1 else f"{title} ({i})"
+    summary = report.summary()
+    if summary:
+        warnings.append(summary)
     return Book(book_id=book_id, title=title, language=language, chapters=out_chapters, page_count=page_count,
                 structure_method=method, warnings=warnings)
 
