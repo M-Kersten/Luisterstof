@@ -67,17 +67,18 @@ SEGMENT_SECONDS = {
 }
 
 
-# How long a claim takes to land in conversation, by its difficulty (1-5). With a short frame around the
-# body this sizes the episode to its material: eight easy pages make a short episode, a dense chapter
-# a long one, and STUDIEPODCAST_TARGET_MINUTES is the ceiling.
-SECONDS_PER_CLAIM = {1: 12, 2: 20, 3: 35, 4: 55, 5: 75}
+# How long a claim takes to land in conversation, by its difficulty (1-5). The hosts tell the material as a
+# story rather than state it, which takes longer than a list of facts. With a short frame around the body
+# this sizes the episode to its material: eight easy pages make a short episode, a dense chapter a long
+# one, and STUDIEPODCAST_TARGET_MINUTES is the ceiling.
+SECONDS_PER_CLAIM = {1: 15, 2: 25, 3: 40, 4: 60, 5: 85}
 SECONDS_PER_MISCONCEPTION = 10
 FRAME_SECONDS = 120  # cold open, a short quiz, the outro
 MIN_EPISODE_MINUTES = 6
 GUEST_MIN_MINUTES = 15  # a six-minute guest in a ten-minute episode is padding
 REEXPLAIN_MIN_DIFFICULTY = 4  # a second route only for a claim that is actually hard
 QUIZ_SECONDS_PER_QUESTION = 50
-HUMAN_MOMENT_SECONDS = 30  # each body block makes room for a story, an argument, a tease or an aha
+HUMAN_MOMENT_SECONDS = 45  # each body block makes room for a story, an argument, a tease or an aha, told at length
 
 
 def _block_count(claims: list[KeyClaim]) -> int:
@@ -91,16 +92,19 @@ def human_moment(i: int, explainer, skeptic) -> tuple[str, str]:
     kind = kinds[(i - 1) % len(kinds)]
     teller, listener = (explainer, skeptic) if ((i - 1) // len(kinds)) % 2 == 0 else (skeptic, explainer)
     text = {
-        "anekdote": (f"{teller.name} vertelt kort iets uit eigen leven dat bij één van deze beweringen past: uit de "
-                     f"verhalen van {teller.name}, of een nieuw verhaal dat bij die persoon past. Concreet: wie, waar, wat "
-                     f"er gebeurde. {listener.name} reageert op het verhaal zelf, voordat het gesprek terug naar de stof gaat."),
+        "anekdote": (f"{teller.name} vertelt iets uit eigen leven dat bij één van deze beweringen past: uit de "
+                     f"verhalen van {teller.name}, of een nieuw verhaal dat bij die persoon past. Als een echt verhaal, in "
+                     "een paar lange beurten: waar en wanneer, wie erbij was, wat er misging of verraste, hoe het afliep, "
+                     f"met de omwegen die mensen maken als ze vertellen. {listener.name} vraagt ertussen door en reageert op "
+                     "het verhaal zelf, voordat het gesprek terug naar de stof gaat."),
         "meningsverschil": (f"{explainer.name} en {skeptic.name} zijn het hier echt oneens over de stof, allebei met een "
                             "punt. Het wordt niet in één regel opgelost: ze duwen een paar keer heen en weer en komen er "
                             "samen uit, met de bron als scheidsrechter."),
         "plagen": (f"{skeptic.name} plaagt {explainer.name} (of andersom) met iets uit hun gedeelde geschiedenis of iets van "
                    "eerder in deze aflevering, en de ander pareert. Kort en warm, daarna verder met de stof."),
-        "kwartje": (f"Bij {skeptic.name} valt hoorbaar het kwartje: eerst verwarring, dan het moment dat het klikt, in eigen "
-                    f"woorden. {explainer.name} laat dat moment staan en praat er niet meteen overheen."),
+        "kwartje": (f"Bij {skeptic.name} valt hoorbaar het kwartje: eerst verwarring, dan het moment dat het klikt, en dan "
+                    f"vertelt {skeptic.name} het in een paar eigen zinnen terug, met een eigen voorbeeld erbij. "
+                    f"{explainer.name} laat dat moment staan en praat er niet meteen overheen."),
     }[kind]
     return kind, text
 
@@ -275,8 +279,9 @@ def build_blueprint(
             target_chars=per_block_chars,
             speakers=hosts,
             instructions=(
-                f"{skeptic.name} duwt, {explainer.name} legt uit. Elke bewering hierboven moet in minstens één regel "
-                "terugkomen, feitelijk correct, met de bijbehorende id in 'covers'.\n" + "\n".join(lines)
+                f"{explainer.name} vertelt dit blok als een verhaal of een gedachtegang, met een begin, een opbouw en "
+                f"een wending; {skeptic.name} vraagt door en duwt terug. Elke bewering hierboven moet in minstens één "
+                "regel terugkomen, feitelijk correct, met de bijbehorende id in 'covers'.\n" + "\n".join(lines)
             ),
         ))
     # Guest block.
@@ -360,8 +365,9 @@ class LineOut(BaseModel):
     pause_after_ms: int = Field(description="Bewuste stilte na deze regel in milliseconden, meestal 0.")
 
 
-BEATS_DESCRIPTION = ("Eerst, voor je de regels schrijft: in twee of drie zinnen het verloop van dit segment. Welk menselijk "
-                     "moment, wie wil wat, waar de lach of het 'o!' valt. Wordt niet uitgesproken.")
+BEATS_DESCRIPTION = ("Eerst, voor je de regels schrijft: in twee of drie zinnen het verloop van dit segment. Waar begint het "
+                     "verhaal (een moment, een persoon, een raadsel), welk menselijk moment, wie wil wat, waar de lach of "
+                     "het 'o!' valt. Wordt niet uitgesproken.")
 
 
 def _ask_for_beats(schema: dict) -> None:
@@ -411,7 +417,7 @@ Elke regel krijgt labels die bepalen hoe hij klinkt. Kies ze op basis van wat er
 WRITER_RULES = """Je schrijft het script van een Nederlandse studiepodcast met een vaste cast. Eén aflevering per hoofdstuk van een studieboek. Alles in het Nederlands.
 
 ## De twee motoren
-De rollen zijn tegelijk de leermotor en de comedymotor. De explainer legt uit met beelden en duwt die soms te ver; de skeptic accepteert geen hand-wave en stelt de vraag die de luisteraar heeft. Het meningsverschil is echt en gaat over de stof.
+De rollen zijn tegelijk de leermotor en de comedymotor. De explainer vertelt: neemt de luisteraar mee in een verhaal of een gedachtegang, met beelden, en duwt een beeld soms te ver; de skeptic accepteert geen hand-wave en stelt de vraag die de luisteraar heeft. Het meningsverschil is echt en gaat over de stof.
 
 ## Nauwkeurigheid (niet onderhandelbaar)
 - Dit is studiemateriaal. Elke feitelijke bewering komt uit het inhoudsplan en de bronfragmenten. Voeg geen feiten toe die niet in de bron staan.
@@ -426,10 +432,12 @@ De rollen zijn tegelijk de leermotor en de comedymotor. De explainer legt uit me
 - Een verbale tic is een kruiderij: hooguit één keer per segment, nooit als vaste opening van regels. De tics van de ander zijn verboden terrein.
 - Geen vaste formules. Laat regels niet steeds met dezelfde woorden beginnen en gebruik geen sjabloon dat terugkomt (zoals steeds "een X is geen Y").
 
-## Beelden en twijfel
+## Vertellen
+- Dit is een verhaal dat de luisteraar meeneemt, geen les. Een blok begint ergens waar je kunt staan: een moment, een persoon, een plek, een vraag waar toen nog niemand het antwoord op had. Van daaruit bouwt het op: wat stond er op het spel, wat wist nog niemand, wat liep anders dan gedacht. De beweringen vallen in het verhaal op de plek waar ze thuishoren, met hun oorzaak en hun gevolg erbij.
+- Bij verhalende stof (geschiedenis, een verloop van gebeurtenissen) vertel je in de volgorde waarin het gebeurde, met wie, wanneer en waarom. Bij stof zonder verloop in de tijd (een begrip, een rekenregel, een mechanisme) is de gedachtegang het verhaal: begin bij een raadsel of een situatie, loop samen naar het antwoord en neem onderweg een verkeerde afslag die je hardop terugdraait.
+- Een feit staat nooit kaal. Een jaartal krijgt een persoon of een plek, een besluit krijgt een reden, een getal krijgt iets om het mee te vergelijken. Rijtjes losse zinnetjes zijn verboden, zoals "Nee. 1533, Duitsland. Zijn ouders waren protestant." of "Een kind ging. De koning wilde het.": zo klinkt een spiekbriefje dat wordt voorgelezen. Vertel hetzelfde in een lopende zin, met wie, waarom en wat het betekende.
 - Een beeld moet iets uitleggen: het koppelt het begrip aan iets wat de luisteraar kent, en uit het gesprek blijkt wat met wat overeenkomt. Waar niets uit te leggen valt, geen beeld.
-- Bij verhalende stof (geschiedenis, een verloop van gebeurtenissen) is het verhaal zelf het beeld: vertel wie, wanneer, wat en waarom, in de volgorde waarin het gebeurde.
-- De skeptic twijfelt aan de stof: waarom gebeurde dit, hoe hangt het samen, wat betekent het. Niet aan de woordkeus van de ander, en niet aan wat er wel of niet in de bron staat.
+- De skeptic twijfelt aan de stof: waarom gebeurde dit, hoe hangt het samen, wat betekent het. Niet aan de woordkeus van de ander, en niet aan wat er wel of niet in de bron staat. Hij praat ook in hele zinnen: gokt hardop en zit er soms naast, maakt de zin van de ander af, haalt er iets uit zijn eigen leven bij.
 
 ## Verboden taal (de linter blokkeert het script bij één treffer)
 - AI-podcastvulling: "dat is echt fascinerend", "goede vraag", "laten we eens duiken in", "aan het eind van de dag", "welkom bij", "in deze aflevering", "kortom", "samengevat", "in een notendop".
@@ -447,7 +455,8 @@ De rollen zijn tegelijk de leermotor en de comedymotor. De explainer legt uit me
 - De eerste regel van een segment heeft nooit overlap. Overlap is altijd met een andere spreker dan de vorige regel.
 
 ## Vorm
-- Spreektaal: korte zinnen, contracties, halve zinnen mogen. Wissel zinslengte sterk af.
+- Spreektaal zoals mensen echt praten als ze iets vertellen: zinnen die kronkelen, met 'en toen', 'want', 'terwijl', 'alleen', 'dus eigenlijk'; een zijpad dat terugkomt ("en dat is trouwens, nee, dat komt zo, eerst dit"); een spoor dat doodloopt ("je zou denken dat het andersom zit, en zo dacht ik er ook lang over, tot..."). Daartussen korte reacties, een vraag, een stilte. Lange en korte zinnen wisselen elkaar af; een rij korte zinnen achter elkaar klinkt als een opsomming.
+- Een vertelbeurt is één regel, ook als hij drie tot vijf zinnen lang is (tot ongeveer 400 tekens). Knip een verhaal niet op in regels van één feit per regel; de ander reageert eronder met een backchannel of onderbreekt waar het spannend wordt. Een kaal "Ja." of "Nee." is een reactie, nooit het begin van een rijtje feiten.
 - Elke regel reageert op wat er net gezegd is: op de woorden, de toon, de grap van de ander. Iemand die alleen het volgende punt afwerkt, klinkt als een robot.
 - Mensen praten niet foutloos: een zin opnieuw beginnen, zichzelf verbeteren ("nee, anders:"), lachen om iets specifieks, iets niet weten en dat zeggen. Met mate, en nooit in een regel die een getal of definitie draagt.
 - Schrijf getallen, formules en afkortingen zoals de bron ze schrijft; de uitspraak wordt later automatisch opgelost. Notatiezware stof beschrijf je in vorm en betekenis in plaats van symbolen voor te lezen.
@@ -514,6 +523,7 @@ NATURALNESS_RULES = frozenset({
     "quiz_pause",                # a quiz question nobody waits for
     "ignores_previous",          # a line that walks past what the other one just said
     "stiff",                     # written language nobody would say out loud
+    "telegraphic",               # facts in strings of three-word sentences instead of a story
 })
 
 # How many of the flattest body segments a script-wide note is handed to. Rewriting everything to
@@ -818,9 +828,10 @@ POLISH_INSTRUCTIONS = """## Tafellezing: maak hier een echt gesprek van
 Dit segment klopt inhoudelijk. Lees het in je hoofd hardop en herschrijf het zo dat het klinkt als deze twee mensen, die elkaar kennen en het ergens over hebben.
 - Elke regel reageert op de vorige: op de woorden, de toon of de grap. Een vraag krijgt antwoord, een verhaal krijgt een reactie.
 - Laat ze klinken zoals de cast ze beschrijft. Het menselijke moment van dit segment moet hoorbaar zijn.
+- Maak er een verhaal van. Waar een host feiten opsomt in korte losse zinnen ("Nee. 1533, Duitsland."), smeed je ze tot een lopende zin met een persoon, een reden of een gevolg erbij. De explainer vertelt, met een zijpad dat terugkomt of een spoor dat doodloopt. Een vertelbeurt mag lang zijn; korte zinnen zijn voor reacties, vragen en de grap.
 - Spreektaal: een zin opnieuw beginnen, zichzelf verbeteren, een korte reactie onder de ander door (backchannel), iets niet meteen weten. Met mate.
 - De feiten liggen vast. Een regel met covers houdt zijn inhoud en zijn covers; je mag hem anders zeggen of in twee regels knippen (de covers gaan mee naar de regel met het feit). Voeg geen feit toe en laat er geen weg.
-- Ongeveer even lang (± 15%). Geef ook de beats: in twee zinnen wat je aan het gesprek veranderde."""
+- Ongeveer even lang (± 20%). Geef ook de beats: in twee zinnen wat je aan het gesprek veranderde."""
 
 
 def _edit_row(line: Line) -> str:

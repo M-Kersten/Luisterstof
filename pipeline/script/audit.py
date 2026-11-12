@@ -312,6 +312,54 @@ def lint_repetition(script: Script, cast: Cast, plan: ContentPlan | None = None)
 
 
 # ---------------------------------------------------------------------------
+# Telegraphic lines: facts read off a crib sheet instead of told
+# ---------------------------------------------------------------------------
+
+SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+WORD = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*")  # "1533" and "Oranje-Nassau" are one word each
+TELEGRAPHIC_MEAN_WORDS = 5.0  # two or more sentences averaging fewer words than this read as a list of facts
+TELEGRAPHIC_MIN_WORDS = 6  # "Ja. Precies." is a reaction, not a list
+TELEGRAPHIC_SHARE = 0.2  # of a segment's substantive lines before the segment counts as told in fragments
+TELEGRAPHIC_MAX_HITS = 4  # per segment: enough for the rewrite to see the pattern
+NARRATIVE_SEGMENTS = ("cold_open", "recap", "body", "guest", "reexplain", "outro")  # the quiz asks short questions
+
+
+def sentence_lengths(text: str) -> list[int]:
+    """Words per sentence, empty sentences left out."""
+    return [n for n in (len(WORD.findall(part)) for part in SENTENCE_END.split(text.strip())) if n]
+
+
+def is_telegraphic(text: str) -> bool:
+    """"Nee. 1533, Duitsland. Zijn ouders waren protestant." Several sentences, each a bare fact."""
+    lengths = sentence_lengths(text)
+    return (len(lengths) >= 2 and sum(lengths) >= TELEGRAPHIC_MIN_WORDS
+            and sum(lengths) / len(lengths) < TELEGRAPHIC_MEAN_WORDS)
+
+
+def lint_telegraphic(script: Script) -> list[AuditIssue]:
+    """A segment in which the hosts state facts in strings of three-word sentences. One such line is a
+    deadpan; a pattern of them sounds like a lesson read aloud, and a listener tunes out. A warning per line
+    (up to a few per segment), so the rewrite and the table read know where to tell instead of list."""
+    issues: list[AuditIssue] = []
+    for seg in script.segments:
+        if seg.type not in NARRATIVE_SEGMENTS:
+            continue
+        substantive = [line for line in seg.lines if line.overlap.mode != "backchannel"
+                       and sum(sentence_lengths(line.text)) >= TELEGRAPHIC_MIN_WORDS]
+        hits = [line for line in substantive if is_telegraphic(line.text)]
+        if len(hits) < 2 or len(hits) < TELEGRAPHIC_SHARE * len(substantive):
+            continue
+        for line in hits[:TELEGRAPHIC_MAX_HITS]:
+            issues.append(AuditIssue(
+                check="lint", severity="warning", rule="telegraphic", line_id=line.id,
+                message=f"Losse korte zinnetjes, als een spiekbriefje dat wordt voorgelezen ({len(hits)} van "
+                        f"{len(substantive)} regels in dit segment).",
+                suggestion="Vertel het: smeed de feiten tot een lopende zin met een persoon, een reden of een "
+                           "gevolg erbij, en laat de uitlegger een verhaal opbouwen."))
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # LLM checks
 # ---------------------------------------------------------------------------
 
@@ -359,7 +407,7 @@ Regels:
 - announcing: een zin die aankondigt wat het gesprek gaat doen in plaats van het te doen ("laten we kijken naar...", "nu gaan we het hebben over...").
 - filler: AI-podcastvulling zonder inhoud ("dat is echt een goed punt", "interessant", "zeker weten").
 - ignores_previous: de regel gaat voorbij aan wat de ander net zei (een vraag zonder antwoord, een grap waar niemand op reageert, een verhaal dat in het niets valt) en werkt gewoon het volgende punt af.
-- stiff: een zin die niemand hardop zo zou zeggen tegen een vriend: schrijftaal, een opsomming uit een leerboek, een definitie als woordenboekregel.
+- stiff: een zin die niemand hardop zo zou zeggen tegen een vriend: schrijftaal, een opsomming uit een leerboek, een definitie als woordenboekregel. Een lange, kronkelende spreekzin met een zijpad is niet stiff; een rijtje kale feiten in losse zinnetjes wel.
 Meld geen stijlvoorkeuren, alleen overtredingen van deze negen regels."""
 
 
@@ -470,6 +518,7 @@ def audit_script(
     result.issues += cov_issues
     result.issues += lint_rules(script, cast, banned, glossary, settings)
     result.issues += lint_repetition(script, cast, plan)
+    result.issues += lint_telegraphic(script)
     if llm is not None:
         sup_issues, result.support = check_support(script, plan, book, llm, plan_lookup, progress=progress)
         result.issues += sup_issues

@@ -227,3 +227,35 @@ def test_conversation_notes_from_the_llm_lint_are_warnings(book, fake_llm, cast,
         {"line_id": second.id, "rule": "filler", "explanation": "Vulling."}]})
     issues = {i.rule: i.severity for i in lint_llm(script, picky)}
     assert issues == {"stiff": "warning", "filler": "blocking"}
+
+
+def test_facts_in_three_word_sentences_are_flagged_as_telegraphic():
+    from pipeline.script.audit import is_telegraphic, lint_telegraphic
+
+    assert is_telegraphic("Nee. 1533, Duitsland. Zijn ouders waren protestant.")
+    assert is_telegraphic("Een kind ging. De koning wilde het.")
+    assert not is_telegraphic("Ja. Precies.")  # a reaction
+    assert not is_telegraphic("Behalve de groene nul.")  # one dry sentence
+    assert not is_telegraphic("Hij werd in 1533 geboren, in Duitsland, bij ouders die protestant waren, en dat is gek "
+                              "als je bedenkt waar hij later terechtkwam.")
+
+    told = [Line(id="l001", speaker="tessa", text="Hij werd in 1533 geboren in Duitsland, bij ouders die protestant "
+                                                  "waren, en daar begint het eigenlijk al te knagen."),
+            Line(id="l002", speaker="joris", text="Eerst de as. Altijd.")]
+    listed = [Line(id="l003", speaker="joris", text="Waar kwam hij vandaan?"),
+              Line(id="l004", speaker="tessa", text="Nee. 1533, Duitsland. Zijn ouders waren protestant."),
+              Line(id="l005", speaker="joris", text="En toen?"),
+              Line(id="l006", speaker="tessa", text="Een kind ging. De koning wilde het."),
+              Line(id="l007", speaker="joris", text="Ja. Geen keuze voor Daan. Eerst aan boord, kijken, zwijgen.")]
+    script = Script(episode_id="ch01", target_minutes=10,
+                    segments=[_seg(told), _seg(listed), _seg([line.model_copy(update={"id": f"q{i}"})
+                                                                for i, line in enumerate(listed)], "quiz")])
+    hits = lint_telegraphic(script)
+    assert [i.line_id for i in hits] == ["l004", "l006", "l007"]  # one deadpan line is fine, a pattern is not
+    assert all(i.severity == "warning" and i.rule == "telegraphic" for i in hits)
+
+
+def test_telegraphic_lines_go_back_to_the_writer():
+    from pipeline.script.writer import NATURALNESS_RULES
+
+    assert "telegraphic" in NATURALNESS_RULES

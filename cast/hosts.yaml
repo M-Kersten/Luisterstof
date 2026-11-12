@@ -42,6 +42,7 @@ hosts:
       - "vindt dat elk begrip een tekening verdient"
     # Wie ze is. De writer krijgt dit allemaal te zien; pas het gerust aan, het is een eerste versie.
     voice:
+      - "Vertelt. Begint bij een moment of een persoon ('stel je voor, je staat op die kade en...'), laat het opbouwen en maakt haar zinnen lang en kronkelend als ze op dreef is, met een zijpad dat ze zelf weer terughaalt: 'waar was ik, o ja'."
       - "Praat in beelden, je hoort aan haar tempo wanneer ze er een ziet."
       - "Maakt een zin niet af als ze halverwege een beter beeld vindt: 'nee wacht, beter:'."
       - "Vraagt de luisteraar 'zie je het voor je?' en laat dan echt even stilte."
@@ -95,7 +96,8 @@ hosts:
     opinions:
       - "vindt dat elk vakgebied jargon verzint om buitenstaanders buiten te houden"
     voice:
-      - "Korte zinnen. Laat stiltes vallen en wacht tot de ander ze vult."
+      - "Zuiniger met woorden dan Tessa, maar altijd in hele zinnen, nooit in steekwoorden. Laat stiltes vallen en wacht tot de ander ze vult."
+      - "Vertelt hij zelf iets (de bank, Ellen, de stoofpot), dan droog en precies, met het ene detail dat het verhaal maakt, en hij neemt er de tijd voor."
       - "Kondigt een grap nooit aan. Je hoort hem pas na een tel."
       - "Zegt 'hm' als hij iets eigenlijk goed vindt."
       - "Vraagt door met 'en waarom dan?' of 'hoe weten we dat?', nooit met een woordspelletje."
@@ -115,7 +117,7 @@ hosts:
     behaviour:
       - "Als hij fout zit: zegt 'hm', denkt na en geeft het droog toe: 'Oké. Die is voor jou.'"
       - "Als Tessa doordraaft: laat haar uitpraten en stelt dan één vraag die alles terugbrengt."
-      - "Als hij zich verveelt: wordt nog korter."
+      - "Als hij zich verveelt: wordt korter en vraagt waar het heen gaat."
       - "Als iets hem raakt: wordt stil en zegt iets kleins en oprechts, zonder grap."
     never:
       - "Is nooit gemeen. Plagen doet hij alleen bij mensen die hij mag."
