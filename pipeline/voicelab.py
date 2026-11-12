@@ -77,6 +77,7 @@ def voice_info(cast: Cast, cast_dir: Path) -> list[dict[str, Any]]:
             "role": getattr(sp, "role", None),
             "about": (getattr(sp, "background", None) or getattr(sp, "persona", None) or "").strip(),
             "voice_ref": sp.voice_ref, "has_ref": bool(ref and ref.is_file()),
+            "ref_hash": voice_spec_for(sp, cast_dir).ref_hash if ref and ref.is_file() else None,
             "params": current_params(sp),
         })
     return rows

@@ -152,12 +152,16 @@
     </div>
     <div id="voice-model" class="callout" hidden></div>
     <div class="voicelab">
-      <nav class="voicelist" id="voice-list" aria-label="Stemmen"></nav>
+      <div class="voicecol">
+        <nav class="voicelist" id="voice-list" aria-label="Stemmen"></nav>
+        <a class="btn btn--secondary btn--sm voicenew" href="#/personage/nieuw">+ Nieuw personage</a>
+      </div>
       <div class="voicemain">
         <p id="voice-empty" class="empty">Kies links een stem.</p>
         <div id="voice-editor" hidden>
           <div class="voicehead">
-            <div><p class="overline" id="voice-kind"></p><h2 id="voice-name"></h2><p class="muted" id="voice-about"></p></div>
+            <div><p class="overline" id="voice-kind"></p><h2 id="voice-name"></h2><p class="muted" id="voice-about"></p>
+              <a class="link voicesetup" id="voice-setup" href="#/stemmen">Personage instellen: karakter en referentieclip</a></div>
             <div class="voiceref" id="voice-ref"></div>
           </div>
 
@@ -193,6 +197,58 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- ========================================================= character -->
+  <section id="view-character" class="page" hidden>
+    <nav class="crumbs" aria-label="Kruimelpad"><a href="#/stemmen">Stemmen</a><span aria-hidden="true">›</span><span id="crumb-character"></span></nav>
+    <h1 id="character-title"></h1>
+    <p class="lead" id="character-lead"></p>
+    <ol class="setupnav" id="setup-nav">
+      <li><a href="#setup-who" data-step="who"><span class="setupnav__n">1</span>Wie is het?</a></li>
+      <li><a href="#setup-traits" data-step="traits"><span class="setupnav__n">2</span>Karakter</a></li>
+      <li><a href="#setup-clip" data-step="clip"><span class="setupnav__n">3</span>Referentieclip</a></li>
+      <li><a href="#setup-voice" data-step="voice"><span class="setupnav__n">4</span>Stem afstellen</a></li>
+    </ol>
+
+    <form id="character-form" class="formsteps" novalidate>
+      <section class="formstep" id="setup-who">
+        <h2><span class="formstep__n">1</span>Wie is het?</h2>
+        <div id="who-fields" class="charfields"></div>
+      </section>
+      <section class="formstep" id="setup-traits">
+        <h2><span class="formstep__n">2</span>Karakter</h2>
+        <p class="muted">De schrijver leest dit bij elke aflevering waarin dit personage meepraat. Hoe concreter, hoe minder het als een rol klinkt. Lijsten: één punt per regel.</p>
+        <div id="trait-fields" class="charfields"></div>
+      </section>
+      <div class="formactions charsave">
+        <button type="submit" class="btn btn--primary" id="character-save">Opslaan</button>
+        <span id="character-state" class="muted small"></span>
+      </div>
+    </form>
+
+    <section class="formstep" id="setup-clip">
+      <h2><span class="formstep__n">3</span>Referentieclip</h2>
+      <p>Upload een opname van deze stem: 30 seconden tot een paar minuten, alleen deze spreker, het liefst levendig verteld. Luisterstof maakt er de beste referentie van die erin zit. Het haalt stiltes weg, zet het levendigste stuk vooraan (daar haalt Chatterbox de spreekstijl uit), kort lange pauzes in, filtert lage brom en zet de luidheid gelijk aan de andere stemmen. Aan de stem zelf verandert niets. Wat niet te repareren is, zoals ruis of oversturing, hoor je terug, met wat je eraan kunt doen.</p>
+      <div id="clip-current" class="clipcurrent"></div>
+      <label class="drop" id="clip-drop">
+        <input type="file" id="clip-file" accept="audio/*,.wav,.flac,.mp3,.ogg">
+        <span class="drop__badge" aria-hidden="true">WAV</span>
+        <span class="drop__text" id="clip-drop-text"><b>Sleep een opname hierheen</b><br>of klik om een bestand te kiezen (WAV, FLAC, MP3 of OGG)</span>
+      </label>
+      <p id="clip-error" class="formerror" hidden></p>
+      <div id="clip-results" class="cliplist"></div>
+    </section>
+
+    <section class="formstep" id="setup-voice">
+      <h2><span class="formstep__n">4</span>Stem afstellen</h2>
+      <p class="muted">De knoppen waarmee Chatterbox deze stem maakt. Luister het effect af in het stemmenlab: daar maak je takes met precies deze knoppen.</p>
+      <div class="sliders" id="setup-sliders"></div>
+      <div class="actions">
+        <button class="btn btn--secondary" id="setup-voice-save" disabled>Knoppen opslaan</button>
+        <a class="btn btn--ghost" id="setup-to-lab" href="#/stemmen">Naar het stemmenlab</a>
+      </div>
+    </section>
   </section>
 
   <!-- ============================================================== book -->

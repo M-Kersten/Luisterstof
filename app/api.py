@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +17,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.jobs import JobManager, JobStore
+from pipeline import characters
+from pipeline.audio.refclip import ClipError
+from pipeline.audio.refclip import process_to_folder as process_clip
 from pipeline.config import Settings
 from pipeline.models import (
     Approval,
@@ -32,7 +39,8 @@ from pipeline.voicelab import VoiceLab, find_speaker, voice_info
 from pipeline.voicelab import clean_params as clean_voice_params
 from pipeline.voicelab import save_params as save_voice_params
 
-VOICELAB_JOBS = "stemlab"  # the jobs table wants a book id; voice-lab takes file under this one
+VOICELAB_JOBS = "stemlab"
+CLIP_UPLOAD_LIMIT = 200 * 1024 * 1024  # a long raw session is fine, a whole film is not  # the jobs table wants a book id; voice-lab takes file under this one
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -424,6 +432,112 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         casts["cast"] = load_cast(settings.cast_dir)
         reader.cast = casts["cast"]
         return {"saved": params, "file": path.name}
+
+    # ------------------------------------------------------------ characters
+    def reload_cast() -> None:
+        casts["cast"] = load_cast(settings.cast_dir)
+        reader.cast = casts["cast"]
+
+    def character_or_404(character_id: str) -> dict[str, Any]:
+        try:
+            return characters.describe(casts["cast"], character_id)
+        except KeyError as exc:
+            raise HTTPException(404, f"unknown character {character_id}") from exc
+
+    def clips_dir(character_id: str) -> Path:
+        return settings.data_dir / "voicelab" / character_id / "clips"
+
+    def clip_rows(character_id: str) -> list[dict[str, Any]]:
+        rows = []
+        for folder in sorted(clips_dir(character_id).glob("*"), reverse=True)[:20]:
+            report = folder / "report.json"
+            if not report.is_file() or not (folder / "clip.wav").is_file():
+                continue
+            base = f"/api/characters/{character_id}/clips/{folder.name}"
+            original = next(folder.glob("original.*"), None)
+            digest = hashlib.sha256((folder / "clip.wav").read_bytes()).hexdigest()[:16]  # as VoiceSpec.ref_hash
+            rows.append({"id": folder.name, "report": json.loads(report.read_text(encoding="utf-8")), "hash": digest,
+                         "clip": f"{base}/clip", "original": f"{base}/original" if original else None,
+                         "name": (folder / "name.txt").read_text(encoding="utf-8") if (folder / "name.txt").is_file() else ""})
+        return rows
+
+    def character_payload(character_id: str) -> dict[str, Any]:
+        info = character_or_404(character_id)
+        voice = next(v for v in voice_info(casts["cast"], settings.cast_dir) if v["id"] == character_id)
+        return {**info, "name": voice["name"], "has_ref": voice["has_ref"], "params": voice["params"],
+                "ref_hash": voice.get("ref_hash"), "clips": clip_rows(character_id)}
+
+    @app.get("/api/characters/{character_id}")
+    def character_get(character_id: str) -> dict[str, Any]:
+        return character_payload(character_id)
+
+    @app.post("/api/characters")
+    def character_create(fields: dict[str, Any]) -> dict[str, Any]:
+        try:
+            new_id = characters.create_guest(settings.cast_dir, casts["cast"], fields)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        reload_cast()
+        return character_payload(new_id)
+
+    @app.put("/api/characters/{character_id}")
+    def character_update(character_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        character_or_404(character_id)
+        try:
+            characters.update(settings.cast_dir, casts["cast"], character_id, fields)
+        except ValueError as exc:
+            raise HTTPException(400, f"niet opgeslagen: {exc}") from exc
+        reload_cast()
+        return character_payload(character_id)
+
+    @app.post("/api/characters/{character_id}/clips")
+    def character_clip(character_id: str, file: UploadFile = File(...)) -> dict[str, Any]:  # noqa: B008
+        character_or_404(character_id)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+        folder = clips_dir(character_id) / stamp
+        folder.mkdir(parents=True, exist_ok=True)
+        suffix = Path(file.filename or "").suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{2,5}", suffix):
+            suffix = ".wav"
+        original = folder / f"original{suffix}"
+        size = 0
+        with original.open("wb") as fh:
+            while chunk := file.file.read(1 << 20):
+                size += len(chunk)
+                if size > CLIP_UPLOAD_LIMIT:
+                    fh.close()
+                    shutil.rmtree(folder, ignore_errors=True)
+                    raise HTTPException(413, "Dit bestand is groter dan 200 MB. Knip er eerst een stuk van een paar minuten uit.")
+                fh.write(chunk)
+        (folder / "name.txt").write_text(Path(file.filename or "opname").name[:120], encoding="utf-8")
+        try:
+            process_clip(original, folder)
+        except ClipError as exc:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise HTTPException(400, str(exc)) from exc
+        return next(r for r in clip_rows(character_id) if r["id"] == stamp)
+
+    @app.get("/api/characters/{character_id}/clips/{clip_id}/{which}")
+    def character_clip_audio(character_id: str, clip_id: str, which: str):
+        character_or_404(character_id)
+        if not re.fullmatch(r"[0-9]{8}T[0-9]{12}", clip_id) or which not in ("clip", "original"):
+            raise HTTPException(404, "unknown clip")
+        folder = clips_dir(character_id) / clip_id
+        path = folder / "clip.wav" if which == "clip" else next(folder.glob("original.*"), None)
+        if not path or not path.is_file():
+            raise HTTPException(404, "unknown clip")
+        return FileResponse(path)
+
+    @app.post("/api/characters/{character_id}/clips/{clip_id}/use")
+    def character_clip_use(character_id: str, clip_id: str) -> dict[str, Any]:
+        character_or_404(character_id)
+        clip = clips_dir(character_id) / clip_id / "clip.wav"
+        if not re.fullmatch(r"[0-9]{8}T[0-9]{12}", clip_id) or not clip.is_file():
+            raise HTTPException(404, "unknown clip")
+        lab.release()  # the next take loads the new voice
+        target = characters.install_clip(settings.cast_dir, casts["cast"], character_id, clip)
+        reload_cast()
+        return {**character_payload(character_id), "installed": target.name}
 
     @app.post("/api/voices/release")
     def voice_release() -> dict[str, Any]:

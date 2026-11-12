@@ -6,7 +6,7 @@ const state = {
   view: null, book: null, chapter: null, step: null, data: null, glossary: null, timings: null, status: null,
   books: [], jobs: [], health: null, names: {}, hosts: [], dirty: false, stageOpen: {}, runQuality: false,
   source: null, sourceFor: null, workTab: "script", selectedLine: null, selectedClaim: null,
-  voices: null, voice: null, voiceTakes: [], voiceDraft: {},
+  voices: null, voice: null, voiceTakes: [], voiceDraft: {}, character: null, characterDirty: false,
   engineDetail: { writer: "", voice: "" },
 };
 
@@ -111,6 +111,8 @@ const chapterHash = (book, ch, step) => `${bookHash(book)}/${enc(ch)}${step && S
 function parseHash() {
   const h = decodeURIComponent(location.hash.replace(/^#/, ""));
   if (h === "/nieuw") return { view: "new" };
+  const c = h.match(/^\/personage\/([^/]+)$/);
+  if (c) return { view: "character", id: c[1] === "nieuw" ? null : c[1] };
   const v = h.match(/^\/stemmen(?:\/([^/]+))?$/);
   if (v) return { view: "voices", voice: v[1] || null };
   const m = h.match(/^\/boek\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?$/);
@@ -127,6 +129,10 @@ let lastHash = location.hash;
 window.addEventListener("hashchange", () => {
   const r = parseHash();
   const stays = r.view === "chapter" && r.book === state.book && r.chapter === state.chapter;
+  if (state.characterDirty && !(r.view === "character" && state.character && r.id === state.character.id)) {
+    if (!confirm("Je wijzigingen aan dit personage zijn nog niet opgeslagen. Toch verlaten?")) { history.replaceState(null, "", lastHash); return; }
+    state.characterDirty = false;
+  }
   if (state.dirty && !stays) {
     if (!confirm("Je wijzigingen in het script zijn nog niet opgeslagen. Toch verlaten?")) { history.replaceState(null, "", lastHash); return; }
     setDirty(false);
@@ -141,6 +147,7 @@ async function route() {
   if (r.view === "new") { showView("new"); renderEngineWarning(); return; }
   if (r.view === "home") { showView("home"); renderHome(); return; }
   if (r.view === "voices") { showView("voices"); await openVoices(r.voice); return; }
+  if (r.view === "character") { showView("character"); await openCharacter(r.id); return; }
   if (!state.books.some(b => b.book_id === r.book)) {
     try { await loadBooks(); } catch { /* shown below */ }
     if (!state.books.some(b => b.book_id === r.book)) { toast(`Het boek ${r.book} bestaat niet (meer).`, true); go("#/"); return; }
@@ -156,8 +163,8 @@ async function route() {
 function showView(name) {
   const changed = name !== state.view;
   state.view = name;
-  for (const v of ["home", "new", "book", "chapter", "voices"]) $(`#view-${v}`).hidden = v !== name;
-  $$(".site-nav a").forEach(a => a.toggleAttribute("aria-current", (a.dataset.nav === "home" && ["home", "book", "chapter"].includes(name)) || a.dataset.nav === name || (a.dataset.nav === "new" && name === "new")));
+  for (const v of ["home", "new", "book", "chapter", "voices", "character"]) $(`#view-${v}`).hidden = v !== name;
+  $$(".site-nav a").forEach(a => a.toggleAttribute("aria-current", (a.dataset.nav === "home" && ["home", "book", "chapter"].includes(name)) || a.dataset.nav === name || (a.dataset.nav === "voices" && name === "character")));
   $("#savebar").hidden = !(state.dirty && name === "chapter");
   if (changed) window.scrollTo(0, 0);
   document.title = name === "chapter" && state.data ? `${$("#chapter-title").textContent} · Luisterstof`
@@ -1381,18 +1388,18 @@ function renderVoiceList() {
   if (loaded) $("#voice-model").innerHTML = 'Het stemmodel staat geladen op de videokaart, zodat de volgende take snel is. Ga je schrijven met OpenCode, geef de kaart dan eerst vrij. <button class="link" id="voice-release">Videokaart vrijgeven</button>';
 }
 
-function sliderHtml(key, spec, value, saved) {
+function sliderHtml(key, spec, value, saved, pre = "") {
   const pct = (x) => (100 * (x - spec.min) / (spec.max - spec.min)).toFixed(1);
   return `<div class="slider" data-knob="${key}">
-    <div class="slider__head"><label for="knob-${key}">${KNOBS[key][0]}</label><output id="out-${key}">${value}</output></div>
-    <div class="slider__track"><input type="range" id="knob-${key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${value}">
+    <div class="slider__head"><label for="${pre}knob-${key}">${KNOBS[key][0]}</label><output id="${pre}out-${key}">${value}</output></div>
+    <div class="slider__track"><input type="range" id="${pre}knob-${key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${value}">
       <span class="slider__saved" style="left:${pct(saved)}%" title="opgeslagen: ${saved}"></span></div>
     <p class="slider__help">${KNOBS[key][1]} <span class="slider__savedtext">Opgeslagen: ${saved}.</span></p>
   </div>`;
 }
 
 function saveVoiceDraft() {
-  if (!state.voice || $("#voice-editor").hidden) return;
+  if (!state.voice || $("#voice-editor").hidden || !$("#voice-sliders .slider")) return;
   state.voiceDraft[state.voice] = { text: $("#voice-text").value, params: knobValues(), seed: $("#voice-seed").value };
   try { localStorage.setItem("luisterstof.voiceText", $("#voice-text").value); } catch { /* private window */ }
 }
@@ -1407,9 +1414,10 @@ function renderVoiceEditor() {
   $("#voice-kind").textContent = v.kind === "host" ? "Host" : "Gast";
   $("#voice-name").textContent = v.name;
   $("#voice-about").textContent = v.about;
+  $("#voice-setup").href = `#/personage/${enc(v.id)}`;
   $("#voice-ref").innerHTML = v.has_ref
     ? `<span class="muted small">De referentieclip, waar elke take op lijkt:</span><audio controls preload="none" src="/api/voices/${enc(v.id)}/ref"></audio>`
-    : `<div class="callout callout--bad"><b>Nog geen referentieclip.</b> Zet 30 tot 60 seconden schone opname in <code>cast/${escapeHtml(v.voice_ref || "refs/" + v.id + ".wav")}</code>. De Opnamegids legt uit hoe.${state.voices.fake_audio ? " In testmodus kun je toch takes maken." : ""}</div>`;
+    : `<div class="callout callout--bad"><b>Nog geen referentieclip.</b> Upload een opname op de <a href="#/personage/${enc(v.id)}">instelpagina van ${escapeHtml(v.name)}</a>; Luisterstof maakt er de beste referentie van.${state.voices.fake_audio ? " In testmodus kun je toch takes maken." : ""}</div>`;
   let text = draft.text;
   if (text === undefined) { try { text = localStorage.getItem("luisterstof.voiceText") || ""; } catch { text = ""; } }
   $("#voice-text").value = text || $("[data-example]").dataset.example;
@@ -1422,7 +1430,7 @@ function renderVoiceEditor() {
 
 function knobValues() {
   const out = {};
-  for (const k of Object.keys(KNOBS)) { const el = $(`#knob-${k}`); if (el) out[k] = parseFloat(el.value); }
+  for (const k of Object.keys(KNOBS)) { const el = $(`#voice-sliders #knob-${k}`); if (el) out[k] = parseFloat(el.value); }
   return out;
 }
 
@@ -1474,7 +1482,7 @@ function renderTakes() {
         <p class="take__text">${escapeHtml(t.text)}</p>
         ${t.wer > 0 && t.transcript ? `<p class="take__heard">Whisper hoorde: ${escapeHtml(t.transcript)}</p>` : ""}
         <p class="take__meta">${Object.keys(KNOBS).map(k => `<span>${escapeHtml(knobText(k, t.params[k]))}</span>`).join("")}<span>seed ${t.seed}</span><span>${String(t.duration_s).replace(".", ",")} s</span><span>${fmtWhen(t.created_at)}</span></p>
-        <p class="take__chips">${wer}${saved ? chip("opgeslagen instellingen", "ok") : ""}</p>
+        <p class="take__chips">${wer}${saved ? chip("opgeslagen instellingen", "ok") : ""}${v.ref_hash && t.ref_hash && t.ref_hash !== v.ref_hash ? chip("met een eerdere clip", "", "Deze take is gemaakt met de referentieclip van voor de laatste wissel.") : ""}</p>
       </div>
       <div class="take__actions">
         <button class="btn btn--secondary btn--sm" data-use="${escapeHtml(t.id)}" title="Zet de knoppen, de seed en de zin terug zoals bij deze take.">Overnemen</button>
@@ -1526,6 +1534,204 @@ function useTake(take) {
   $("#voice-text").value = take.text;
   updateVoiceDirty();
   $(".voicecard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ------------------------------------------------------------ character setup
+// Who the character is, how they talk, a reference clip made from an upload, and the voice knobs. A new
+// character is a guest: the writer works with exactly two hosts, who are edited here but never added.
+const FIELD_INFO = {
+  name: ["Naam", "input", ""],
+  background: ["Achtergrond", "textarea", "Waar komt dit personage vandaan, wat deed het, wat maakt het tot wie het is."],
+  persona: ["Wie is het en hoe praat het", "textarea", "Beroep, achtergrond en manier van praten. De schrijver leest dit zodra de gast in een aflevering komt."],
+  domains: ["Vakgebieden", "list", "Eén per regel. Een hoofdstuk over een van deze onderwerpen kan deze gast uitnodigen; zonder vakgebied is het de gast voor alles."],
+  voice: ["Hoe praat dit personage", "list", "Tempo, woorden die vaak terugkomen, wat er gebeurt als iets moeilijk wordt."],
+  life: ["Leven", "list", "Mensen, plekken en gewoontes waar het over kan beginnen."],
+  stories: ["Verhalen", "list", "Anekdotes die het kan vertellen, elk op een eigen regel."],
+  wants: ["Wat wil het uit een gesprek", "input", ""],
+  behaviour: ["Gedrag", "list", "Wat het doet als het fout zit, zich verveelt of geraakt wordt."],
+  never: ["Nooit", "list", "Wat het nooit zegt of doet."],
+  strength: ["Sterk punt", "input", ""],
+  weakness: ["Zwak punt", "input", ""],
+  humour: ["Humor", "input", ""],
+  opinions: ["Meningen", "list", ""],
+  tics: ["Tics", "list", "Beschrijvingen, zoals: zegt soms 'oké dus' als een nieuwe gedachte begint."],
+  tic_markers: ["Vaste uitdrukkingen", "list", "Letterlijke woorden die alleen dit personage mag gebruiken. De controle blokkeert ze bij een ander en bij te vaak gebruik."],
+};
+const WHO_FIELDS = { host: ["name", "background"], guest: ["name", "domains", "persona"] };
+const TRAIT_FIELDS = { host: ["voice", "life", "stories", "wants", "behaviour", "never", "strength", "weakness", "humour", "opinions", "tics", "tic_markers"],
+  guest: ["tics", "tic_markers"] };
+
+function fieldHtml(key, value) {
+  const [label, type, help] = FIELD_INFO[key];
+  const id = `cf-${key}`;
+  const val = Array.isArray(value) ? value.join("\n") : (value ?? "");
+  const rows = type === "list" ? Math.min(8, Math.max(3, (Array.isArray(value) ? value.length : 0) + 1)) : 3;
+  const control = type === "input" ? `<input type="text" class="input" id="${id}" data-field="${key}" value="${escapeHtml(val)}">`
+    : `<textarea class="textarea" id="${id}" data-field="${key}" rows="${rows}">${escapeHtml(val)}</textarea>`;
+  return `<label class="charfield${type === "input" ? "" : " charfield--wide"}" for="${id}"><span class="field__label">${label}</span>${control}${help ? `<span class="charfield__help">${help}</span>` : ""}</label>`;
+}
+
+async function openCharacter(id) {
+  state.characterDirty = false;
+  if (!state.voices) await loadVoices();
+  if (!id) {
+    state.character = null;
+    $("#crumb-character").textContent = "Nieuw personage";
+    $("#character-title").textContent = "Een nieuw personage";
+    $("#character-lead").textContent = "Een nieuw personage is een gast: een expert die de schrijver erbij haalt als een hoofdstuk daarom vraagt. Begin met wie het is; daarna voeg je karakter, een referentieclip en de stem toe.";
+    $("#who-fields").innerHTML = WHO_FIELDS.guest.map(k => fieldHtml(k, "")).join("");
+    for (const sec of ["setup-traits", "setup-clip", "setup-voice"]) $(`#${sec}`).hidden = true;
+    $$("#setup-nav a").forEach((a, i) => a.classList.toggle("is-off", i > 0));
+    $("#character-save").textContent = "Personage aanmaken";
+    $("#character-state").textContent = "";
+    $("#cf-name").focus();
+    return;
+  }
+  let ch;
+  try { ch = await api.get(`/api/characters/${enc(id)}`); } catch (err) { fail(err, "Personage openen"); go("#/stemmen"); return; }
+  renderCharacter(ch);
+}
+
+function renderCharacter(ch) {
+  state.character = ch;
+  const host = ch.kind === "host";
+  $("#crumb-character").textContent = ch.name;
+  $("#character-title").textContent = ch.name;
+  $("#character-lead").textContent = host
+    ? `Host die ${ch.role === "explainer" ? "uitlegt" : "doorvraagt"}. Alles hieronder leest de schrijver bij elke aflevering, en de stem klinkt in elke aflevering.`
+    : "Gast. De schrijver haalt dit personage erbij als een hoofdstuk over een van de vakgebieden gaat.";
+  $("#who-fields").innerHTML = WHO_FIELDS[ch.kind].map(k => fieldHtml(k, ch.fields[k])).join("");
+  $("#trait-fields").innerHTML = TRAIT_FIELDS[ch.kind].map(k => fieldHtml(k, ch.fields[k])).join("");
+  for (const sec of ["setup-traits", "setup-clip", "setup-voice"]) $(`#${sec}`).hidden = false;
+  $$("#setup-nav a").forEach(a => a.classList.remove("is-off"));
+  $("#character-save").textContent = "Opslaan";
+  $("#character-state").textContent = "";
+  $("#setup-to-lab").href = `#/stemmen/${enc(ch.id)}`;
+  renderClips();
+  renderSetupSliders();
+  markSetupSteps();
+}
+
+function markSetupSteps() {
+  const ch = state.character;
+  if (!ch) return;
+  const done = { who: !!ch.fields.name, traits: TRAIT_FIELDS[ch.kind].some(k => (Array.isArray(ch.fields[k]) ? ch.fields[k].length : ch.fields[k])),
+    clip: ch.has_ref, voice: true };
+  $$("#setup-nav a").forEach(a => a.classList.toggle("is-done", !!done[a.dataset.step]));
+}
+
+function collectCharacter() {
+  const out = {};
+  $$("#character-form [data-field]").forEach(el => { out[el.dataset.field] = el.value; });
+  return out;
+}
+
+async function saveCharacter(e) {
+  e.preventDefault();
+  const fields = collectCharacter();
+  const btn = $("#character-save");
+  try {
+    if (!state.character) {
+      if (!fields.name || !fields.name.trim()) { toast("Geef het personage eerst een naam.", true); return; }
+      const ch = await busy(btn, "Aanmaken...", () => api.send("/api/characters", "POST", fields));
+      state.characterDirty = false;
+      await loadVoices();
+      loadCast();
+      toast(`${ch.name} is aangemaakt. Voeg nu karakter, een referentieclip en de stem toe.`);
+      go(`#/personage/${enc(ch.id)}`);
+      return;
+    }
+    const ch = await busy(btn, "Opslaan...", () => api.send(`/api/characters/${enc(state.character.id)}`, "PUT", fields));
+    state.characterDirty = false;
+    await loadVoices();
+    loadCast();
+    const scroll = window.scrollY;
+    renderCharacter(ch);
+    window.scrollTo(0, scroll);
+    $("#character-state").textContent = "Opgeslagen.";
+    toast(`${ch.name} is opgeslagen. De volgende aflevering gebruikt dit.`);
+  } catch (err) { fail(err, "Opslaan"); }
+}
+
+const CLIP_VERDICT = { ok: ["goed", "ok"], warn: ["let op", "warn"], bad: ["niet goed", "bad"] };
+function clipFacts(r) {
+  const b = r.before, a = r.after;
+  const row = (label, x, y, unit = "") => `<div><dt>${label}</dt><dd>${x ?? "-"}${unit} → <b>${y ?? "-"}${unit}</b></dd></div>`;
+  return `<dl class="clipfacts">${row("Lengte", b.seconds, a.seconds, " s")}${row("Stilte vooraf", b.lead_silence_s, a.lead_silence_s, " s")}
+    ${row("Bereik eerste 6 s", b.opening_semitones, a.opening_semitones, " halve tonen")}${row("Lange pauzes", b.long_pauses, a.long_pauses)}
+    ${row("Luidheid", b.lufs, a.lufs, " LUFS")}${row("Achtergrond", b.noise_db, a.noise_db, " dB")}</dl>`;
+}
+
+function renderClips() {
+  const ch = state.character;
+  $("#clip-current").innerHTML = ch.has_ref
+    ? `<span class="muted small">De clip die nu in gebruik is:</span><audio controls preload="none" src="/api/voices/${enc(ch.id)}/ref?${ch.ref_hash || ""}"></audio>`
+    : `<p class="callout">${escapeHtml(ch.name)} heeft nog geen referentieclip. Zonder clip kan de stem niet opgenomen worden.</p>`;
+  $("#clip-results").innerHTML = ch.clips.map((c, i) => {
+    const r = c.report, [label, kind] = CLIP_VERDICT[r.verdict] || ["?", ""];
+    const inUse = ch.ref_hash && c.hash === ch.ref_hash;
+    return `<article class="clipcard${inUse ? " is-used" : ""}" data-clip="${escapeHtml(c.id)}">
+      <div class="clipcard__head">${chip(label, kind)}<b>${escapeHtml(c.name || "opname")}</b><span class="muted small">${fmtWhen(`${c.id.slice(0, 4)}-${c.id.slice(4, 6)}-${c.id.slice(6, 8)}T${c.id.slice(9, 11)}:${c.id.slice(11, 13)}:${c.id.slice(13, 15)}Z`)}</span>${inUse ? chip("in gebruik", "ok") : ""}</div>
+      <div class="clipcard__players">
+        ${c.original ? `<div><span class="muted small">Zoals geüpload</span><audio controls preload="none" src="${escapeHtml(c.original)}"></audio></div>` : ""}
+        <div><span class="muted small">Verwerkt tot referentie</span><audio controls preload="none" src="${escapeHtml(c.clip)}"></audio></div>
+      </div>
+      <ul class="findings">${r.findings.map(f => `<li class="finding finding--${f.level}">${escapeHtml(f.text)}</li>`).join("")}</ul>
+      <details class="clipcard__more"><summary>Wat er gedaan is (${r.changes.length})</summary>
+        <ul class="bullets">${r.changes.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>${clipFacts(r)}</details>
+      <div class="actions">${inUse ? "" : `<button class="btn ${i === 0 ? "btn--primary" : "btn--secondary"} btn--sm" data-use-clip="${escapeHtml(c.id)}">Gebruik deze clip</button>`}</div>
+    </article>`;
+  }).join("");
+}
+
+async function uploadClip(file) {
+  const ch = state.character;
+  if (!ch || !file) return;
+  $("#clip-error").hidden = true;
+  $("#clip-drop").classList.add("is-busy");
+  $("#clip-drop-text").innerHTML = `<b>${escapeHtml(file.name)} wordt verwerkt...</b><br>Meten, knippen en gelijkzetten; dat duurt een paar seconden.`;
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`/api/characters/${enc(ch.id)}/clips`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await r.text());
+    state.character = await api.get(`/api/characters/${enc(ch.id)}`);
+    renderClips();
+    toast("Verwerkt. Luister het verschil en kies Gebruik deze clip als het beter klinkt.");
+    $("#clip-results").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    $("#clip-error").textContent = errorText(err);
+    $("#clip-error").hidden = false;
+  } finally {
+    $("#clip-drop").classList.remove("is-busy");
+    $("#clip-drop-text").innerHTML = "<b>Sleep een opname hierheen</b><br>of klik om een bestand te kiezen (WAV, FLAC, MP3 of OGG)";
+    $("#clip-file").value = "";
+  }
+}
+
+async function useClip(clipId, btn) {
+  const ch = state.character;
+  if (ch.has_ref && !confirm(`De stem van ${ch.name} verandert. Wat al opgenomen is, houdt de oude stem tot je het opnieuw opneemt. De oude clip blijft bewaard in cast/refs/backup.`)) return;
+  try {
+    const updated = await busy(btn, "Bezig...", () => api.send(`/api/characters/${enc(ch.id)}/clips/${enc(clipId)}/use`, "POST", {}));
+    state.character = updated;
+    await loadVoices();
+    renderClips();
+    markSetupSteps();
+    toast(`${ch.name} gebruikt nu deze clip. Probeer de stem in het stemmenlab.`);
+  } catch (err) { fail(err, "Clip gebruiken"); }
+}
+
+function renderSetupSliders() {
+  const ch = state.character;
+  if (!state.voices) return;
+  $("#setup-sliders").innerHTML = Object.entries(state.voices.params).map(([k, spec]) => sliderHtml(k, spec, ch.params[k], ch.params[k], "setup-")).join("");
+  $("#setup-voice-save").disabled = true;
+}
+function setupKnobs() {
+  const out = {};
+  for (const k of Object.keys(KNOBS)) { const el = $(`#setup-knob-${k}`); if (el) out[k] = parseFloat(el.value); }
+  return out;
 }
 
 // ----------------------------------------------------------------- engines
@@ -1704,6 +1910,35 @@ $("#journey").addEventListener("click", (e) => {
 $("#journey").addEventListener("change", (e) => { if (e.target.id === "run-book-quality") state.runQuality = e.target.checked; });
 $("#recheck").onclick = checkEngines;
 $("#voice-sliders").addEventListener("input", updateVoiceDirty);
+$("#character-form").addEventListener("submit", saveCharacter);
+$("#character-form").addEventListener("input", () => { state.characterDirty = true; $("#character-state").textContent = "Niet opgeslagen wijzigingen."; });
+$("#clip-file").onchange = (e) => uploadClip(e.target.files[0]);
+for (const t of ["dragenter", "dragover"]) $("#clip-drop").addEventListener(t, (e) => { e.preventDefault(); $("#clip-drop").classList.add("is-over"); });
+for (const t of ["dragleave", "drop"]) $("#clip-drop").addEventListener(t, () => $("#clip-drop").classList.remove("is-over"));
+$("#clip-drop").addEventListener("drop", (e) => { e.preventDefault(); e.stopPropagation(); const f = e.dataTransfer.files[0]; if (f) uploadClip(f); });
+$("#clip-results").addEventListener("click", (e) => { const b = e.target.closest("[data-use-clip]"); if (b) useClip(b.dataset.useClip, b); });
+$("#setup-nav").addEventListener("click", (e) => {
+  const a = e.target.closest("a[data-step]");
+  if (!a) return;
+  e.preventDefault();
+  if (a.classList.contains("is-off")) return;
+  $(a.getAttribute("href")).scrollIntoView({ behavior: "smooth", block: "start" });
+});
+$("#setup-sliders").addEventListener("input", () => {
+  const ch = state.character, now = setupKnobs();
+  for (const k of Object.keys(KNOBS)) { const o = $(`#setup-out-${k}`); if (o) o.textContent = Number(now[k]).toFixed(2); }
+  $("#setup-voice-save").disabled = !ch || sameParams(now, ch.params);
+});
+$("#setup-voice-save").onclick = async () => {
+  const ch = state.character;
+  try {
+    await busy($("#setup-voice-save"), "Opslaan...", () => api.send(`/api/voices/${enc(ch.id)}/params`, "PUT", setupKnobs()));
+    state.character = await api.get(`/api/characters/${enc(ch.id)}`);
+    await loadVoices();
+    renderSetupSliders();
+    toast(`De knoppen van ${ch.name} zijn opgeslagen.`);
+  } catch (err) { fail(err, "Knoppen opslaan"); }
+};
 $("#voice-go").onclick = makeTake;
 $("#voice-text").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); makeTake(); } });
 $("#seed-new").onclick = () => { $("#voice-seed").value = Math.floor(Math.random() * 999998) + 1; };
@@ -1734,7 +1969,7 @@ for (const t of ["dragleave", "drop"]) $("#drop").addEventListener(t, () => $("#
 // A PDF dropped anywhere opens the new-book page with that file instead of the browser opening the PDF.
 window.addEventListener("dragover", (e) => { if (e.target !== fileInput) e.preventDefault(); });
 window.addEventListener("drop", (e) => {
-  if (e.target === fileInput) return;
+  if (e.target === fileInput || e.target.closest("#clip-drop") || state.view === "character") return;
   e.preventDefault();
   const files = e.dataTransfer && e.dataTransfer.files;
   if (!files || !files.length) return;
@@ -1819,7 +2054,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 document.addEventListener("click", (e) => { if ($("#sys").open && !e.target.closest("#sys")) $("#sys").open = false; });
-window.addEventListener("beforeunload", (e) => { if (state.dirty) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("beforeunload", (e) => { if (state.dirty || state.characterDirty) { e.preventDefault(); e.returnValue = ""; } });
 
 // ------------------------------------------------------------------- start
 (async () => {

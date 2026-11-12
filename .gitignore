@@ -28,6 +28,9 @@ cast/stings/*
 # candidate pool is throwaway renders of them.
 cast/reactions/
 
+# Voice lab takes and uploaded recordings (originals and processed clips): the same voices.
+data/voicelab/
+
 # Appended after every episode: per-user state, and full of book content.
 cast/continuity.jsonl
 
