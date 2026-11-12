@@ -252,7 +252,10 @@ def chatterbox_checkpoint_dir() -> Path:
 # package would load the weights but feed them the wrong tokens and switch off the multilingual
 # alignment guard, so an old package is refused with the upgrade that fixes it.
 CHATTERBOX_MIN_VERSION = "0.1.5"
-CHATTERBOX_UPGRADE = 'uv pip install "chatterbox-tts==0.1.6"'
+# --no-deps: 0.1.6 pins numpy<1.26, which has no wheel for Python 3.12 and fails to build there.
+# Its other pins (torch 2.6, transformers 4.46.3, librosa 0.11) match 0.1.4, so the venv already
+# has them; omegaconf is the one new import the model needs.
+CHATTERBOX_UPGRADE = 'uv pip install --no-deps "chatterbox-tts==0.1.6", then: uv pip install omegaconf'
 
 
 class ChatterboxPackageTooOld(RuntimeError):

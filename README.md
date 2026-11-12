@@ -317,8 +317,16 @@ written with another checkpoint re-render rather than silently mixing two voices
 every worker in the pool loads the same file: a failed load is an error instead of a quiet fallback to
 V2, because two hosts on two checkpoints would sound like two different people mid-episode. The loader
 needs `chatterbox-tts` 0.1.5 or newer for the classes around the weights: 0.1.4 and older build T3 for
-the first multilingual vocabulary (2352 tokens, V3 has 2454) and tokenize without lowercasing, and the
-load stops with `uv pip install "chatterbox-tts==0.1.6"` as the fix. Point
+the first multilingual vocabulary (2352 tokens, V3 has 2454) and tokenize without lowercasing, so the
+load stops on them. Upgrading an existing venv goes with `--no-deps`, because 0.1.6 pins `numpy<1.26`
+and that numpy does not build on Python 3.12; the other pins match 0.1.4:
+
+```
+uv pip install --no-deps "chatterbox-tts==0.1.6"
+uv pip install omegaconf
+```
+
+Point
 `CHATTERBOX_CKPT_DIR` at a folder of weights (yours or a fine-tune) to skip the download entirely;
 otherwise they come from the Hugging Face cache, which is offline-safe once fetched. `studiepodcast
 doctor` prints which T3 file a render will load and whether the weights around it are all on disk, so
