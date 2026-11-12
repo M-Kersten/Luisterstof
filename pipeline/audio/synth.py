@@ -266,10 +266,14 @@ def _multilingual_from_local(ckpt_dir, device: str):
     ve.load_state_dict(torch.load(ckpt_dir / "ve.pt", map_location=map_location, weights_only=True))
     ve.to(device).eval()
 
-    t3 = T3(T3Config.multilingual())
     t3_state = load_safetensors(str(ckpt_dir / T3_CHECKPOINT))
     if "model" in t3_state:
         t3_state = t3_state["model"][0]
+    # chatterbox-tts 0.1.7 sizes the text embedding for the V2 vocabulary (2352 tokens); the V3
+    # checkpoint carries 2454. Take the size from the weights, so an old package still loads V3.
+    config = T3Config.multilingual()
+    config.text_tokens_dict_size = int(t3_state["text_emb.weight"].shape[0])
+    t3 = T3(config)
     t3.load_state_dict(t3_state)
     t3.to(device).eval()
 
