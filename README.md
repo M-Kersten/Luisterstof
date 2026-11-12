@@ -8,7 +8,7 @@ The build brief this implements is in `PLAN.md`.
 
 ```
 upload PDF
-  -> ingest            book.json          chapters, sections, figures and tables as sentences; exercises out
+  -> ingest            book.json          chapters, sections, figures and tables as sentences; exercises and source lists out
   -> content plan      chXX.plan.json     claims with source spans, definitions, misconceptions
   -> lexicon           glossary.json      loanwords, notation, abbreviations, resolved before render
   -> script            chXX.script.json   cold open, recap, body blocks, guest*, "wacht opnieuw"*, quiz, outro
@@ -204,7 +204,7 @@ studiepodcast ingest boek.pdf --book-id statistiek1 [--method auto|fonts|toc|llm
 
 Chapter detection tries font-size heuristics, then the PDF's bookmark TOC, then the model on the first pages. Figures keep the caption text that is next to them; there is no vision pass, the endpoint is text-only. Tables are spelled out as sentences. Check the chapter boundaries in `data/books/statistiek1/book.json` before going on.
 
-**What the ingest leaves out.** A study book prints things for a reader with a pen, and a podcast must not read them: exercises (from an "Oefening 3", "Opdrachten" or "Vragen bij ..." heading up to the next real heading), fill-in-the-blank copies of the text, paragraphs that repeat an earlier one, footnote numbers (superscript digits glued to a word; an exponent after a symbol stays) and footnote bodies. A caption under a picture becomes that figure's text; a row of names under portraits is dropped. A sentence cut by a page break is joined again. Word lists stay: they are the book's own definitions. `book.json` lists what was left out under `warnings`. A book without chapters becomes one episode with the book's title.
+**What the ingest leaves out.** A study book prints things for a reader with a pen, and a podcast must not read them: exercises (from an "Oefening 3", "Opdrachten" or "Vragen bij ..." heading up to the next real heading), source lists (from a "Bronnen", "Literatuur", "Referenties" or "Noten" heading up to the next real heading), fill-in-the-blank copies of the text, paragraphs that repeat an earlier one, footnote numbers (superscript digits glued to a word; an exponent after a symbol stays) and footnote bodies. A caption under a picture becomes that figure's text; a row of names under portraits is dropped. A sentence cut by a page break is joined again. Word lists stay: they are the book's own definitions. `book.json` lists what was left out under `warnings`. A book without chapters becomes one episode with the book's title.
 
 **M2 Content plan and lexicon** for one chapter, then verify the claims by hand:
 

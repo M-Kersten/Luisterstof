@@ -77,6 +77,32 @@ def test_an_exercise_block_is_left_out_up_to_the_next_heading():
     assert any("characters of exercises" in w for w in book.warnings)
 
 
+
+def test_a_source_list_is_left_out_up_to_the_next_heading():
+    from pipeline.ingest.cleanup import is_reference_heading
+    from pipeline.ingest.structure import Heading
+
+    for heading in ("Bronnen", "Literatuur", "Referenties", "Noten:", "Further reading"):
+        assert is_reference_heading(heading), heading
+    assert not is_reference_heading("Bronnen van stress in het dagelijks leven")  # a real section title
+    units = _units([
+        (1, "1 Wat is hoogtevrees?", 18, True, 0),
+        (1, "Op een glazen vloer gaat het hart binnen tien seconden sneller slaan, lang voordat je het zelf merkt. " * 4, 12, False, 1),
+        (2, "1.6 Bronnen", 14, True, 2),
+        (2, "Gibson, E. J., & Walk, R. D. (1960). The visual cliff. Scientific American, 202(4), 64-71.", 10, False, 3),
+        (3, "2 Het evenwicht en de ogen", 18, True, 4),
+        (3, "Rechtop staan is een kunststuk dat je evenwichtsorgaan, je ogen en je spieren samen leveren. " * 4, 12, False, 5),
+    ])
+    headings = [Heading("1 Wat is hoogtevrees?", 1, 1, 0, 18.0), Heading("1.6 Bronnen", 2, 2, 2, 14.0),
+                Heading("2 Het evenwicht en de ogen", 1, 3, 4, 18.0)]
+    book = build_book("b", "Hoogtevrees", units, headings)
+    text = " ".join(s.text for ch in book.chapters for s in ch.sections)
+    assert "Scientific American" not in text and "Bronnen" not in [s.title for ch in book.chapters for s in ch.sections]
+    assert "glazen vloer" in text and "kunststuk" in text
+    assert [ch.title for ch in book.chapters] == ["Wat is hoogtevrees?", "Het evenwicht en de ogen"]
+    assert any("characters of source lists" in w for w in book.warnings)
+
+
 def _page(blocks, pictures):
     return PageData(number=1, width=595, height=842, blocks=blocks, picture_boxes=pictures)
 

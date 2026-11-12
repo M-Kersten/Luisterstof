@@ -661,10 +661,13 @@ Er is ook een kanttekening vanuit de exposuretherapie. Als iemand een ademhaling
 - Associated Press (2002). The legacy of the Mohawk builders. Lawrence Journal-World, 18 augustus 2002 (met citaten van Kyle Karonhiaktatie Beauvais).
 - Balban, M. Y., Neri, E., Kogon, M. M., Weed, L., Nouriani, B., Jo, B., Holl, G., Zeitzer, J. M., Spiegel, D., & Huberman, A. D. (2023). Brief structured respiration practices enhance mood and reduce physiological arousal. Cell Reports Medicine, 4(1), 100895.
 - Canada’s History (z.j.). A community’s loss: The Quebec Bridge disaster and Kahnawake. Canadashistory.ca.
+- Daily Commercial News (2006). Mohawks who walk the high beams. Canada.constructconnect.com (met citaten van Mike Swamp).
 - Evans, T. T. (z.j.). Mohawk skywalkers: The ironworkers who built New York’s skyscrapers. History.com.
 - Fincham, G. W., Strauss, C., Montero-Marin, J., & Cavanagh, K. (2023). Effect of breathwork on stress and mental health: A meta-analysis of randomised-controlled trials. Scientific Reports, 13, 432.
+- History.com (z.j.). Lunch atop a skyscraper photo, 1932. History.com.
 - Hodgson, C. I., Draper, N., McMorris, T., Jones, G., Fryer, S., & Coleman, I. (2009). Perceived anxiety and plasma cortisol concentrations following rock climbing with differing safety rope protocols. British Journal of Sports Medicine, 43(7), 531-535.
 - McEwen, B. S. (1998). Protective and damaging effects of stress mediators. New England Journal of Medicine, 338(3), 171-179.
+- Ministerie van Sociale Zaken en Werkgelegenheid (2009). Analyse van ongevallen door vallen van hoogte: onderhoudsbedrijven. Arboportaal.nl.
 - Mitchell, J. (1949). The Mohawks in high steel. The New Yorker, september 1949.
 - Nederlandse Arbeidsinspectie (2025). Monitor Arbeidsongevallen 2024. Den Haag: Nederlandse Arbeidsinspectie.
 - Pijpers, J. R., Oudejans, R. R. D., & Bakker, F. C. (2005). Anxiety-induced changes in movement behaviour during the execution of a complex whole-body task. Quarterly Journal of Experimental Psychology A, 58(3), 421-445.

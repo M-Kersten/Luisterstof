@@ -19,6 +19,13 @@ EXERCISE_HEADING = re.compile(
     r"exercises?|questions|practice)(\s+(bij\s+)?[\w.‘’'\-]+){0,6}\s*[:.]?\s*$",
     re.IGNORECASE,
 )
+# A source list at the end of a chapter or book: "Bronnen", "Literatuur", "Referenties". Read aloud it is a
+# string of names and years, and a planner would make claims out of it.
+REFERENCE_HEADING = re.compile(
+    r"^(bronnen|bronvermelding|bronnenlijst|literatuur|literatuurlijst|literatuurverwijzingen|referenties|"
+    r"noten|verder lezen|references|bibliography|further reading|notes)\s*[:.]?\s*$",
+    re.IGNORECASE,
+)
 # Something a reader writes in: a blank, a dotted line, a box to tick.
 FILL_IN = re.compile(r"_{4,}|\.{8,}|…{3,}|\[\s*\]")
 # A footnote body ("* Wil je het Wilhelmus horen? ...") and its marker glued to a word ("Wilhelmus’*").
@@ -32,9 +39,23 @@ def is_exercise_heading(text: str) -> bool:
     return len(text) <= 80 and bool(EXERCISE_HEADING.match(text.strip()))
 
 
+def is_reference_heading(text: str) -> bool:
+    return len(text) <= 40 and bool(REFERENCE_HEADING.match(text.strip()))
+
+
+def skipped_zone(text: str) -> str | None:
+    """'exercises' or 'references' when a heading opens a zone that stays out of the episode, else None."""
+    if is_exercise_heading(text):
+        return "exercises"
+    if is_reference_heading(text):
+        return "references"
+    return None
+
+
 @dataclass
 class CleanupReport:
     exercise_chars: int = 0
+    reference_chars: int = 0
     fill_ins: int = 0
     repeats: int = 0
     footnotes: int = 0
@@ -44,6 +65,8 @@ class CleanupReport:
         parts = []
         if self.exercise_chars:
             parts.append(f"{self.exercise_chars} characters of exercises")
+        if self.reference_chars:
+            parts.append(f"{self.reference_chars} characters of source lists")
         if self.fill_ins:
             parts.append(f"{self.fill_ins} fill-in paragraph(s)")
         if self.repeats:

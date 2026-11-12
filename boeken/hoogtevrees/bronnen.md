@@ -1,6 +1,8 @@
 # Bronnen bij Hoogtevrees
 
-Alle bronnen uit het boek in één alfabetische lijst. Tussen haakjes staat in welk hoofdstuk of welke hoofdstukken de bron wordt gebruikt. Per hoofdstuk staat dezelfde lijst ook aan het eind van het hoofdstuk zelf.
+Alle bronnen uit het boek in één alfabetische lijst. Tussen haakjes staat in welk hoofdstuk of welke hoofdstukken de bron wordt gebruikt. Dezelfde bronnen staan ook aan het eind van elk hoofdstuk.
+
+Hoofdstukken: Hoofdstuk 1 Wat is hoogtevrees?; Hoofdstuk 2 Het evenwicht en de ogen; Hoofdstuk 3 De stressreactie in het lichaam; Hoofdstuk 4 De stressreactie in het brein; Hoofdstuk 5 Angst leren en onthouden; Hoofdstuk 6 Denken boven de afgrond; Hoofdstuk 7 Behandeling; Hoofdstuk 8 Stress, werk en hoogte; Hoofdstuk 9 Mensen aan de rand.
 
 - Adkin, A. L., Frank, J. S., Carpenter, M. G., & Peysar, G. W. (2000). Postural control is scaled to level of postural threat. Gait & Posture, 12(2), 87-93. (hoofdstuk 2)
 - Adolph, K. E., Kretch, K. S., & LoBue, V. (2014). Fear of heights in infants? Current Directions in Psychological Science, 23(1), 60-66. (hoofdstuk 1)
@@ -31,6 +33,7 @@ Alle bronnen uit het boek in één alfabetische lijst. Tussen haakjes staat in w
 - Craske, M. G., Treanor, M., Conway, C. C., Zbozinek, T., & Vervliet, B. (2014). Maximizing exposure therapy: An inhibitory learning approach. Behaviour Research and Therapy, 58, 10-23. (hoofdstuk 7)
 - Cristea, I. A., Kok, R. N., & Cuijpers, P. (2015). Efficacy of cognitive bias modification interventions in anxiety and depression: Meta-analysis. British Journal of Psychiatry, 206(1), 7-16. (hoofdstuk 6)
 - Critchley, H. D., Wiens, S., Rotshtein, P., Öhman, A., & Dolan, R. J. (2004). Neural systems supporting interoceptive awareness. Nature Neuroscience, 7(2), 189-195. (hoofdstuk 4)
+- Daily Commercial News (2006). Mohawks who walk the high beams. Canada.constructconnect.com (met citaten van Mike Swamp). (hoofdstuk 8)
 - Davey, G. C. L., Menzies, R., & Gallardo, B. (1997). Height phobia and biases in the interpretation of bodily sensations: Some links between acrophobia and agoraphobia. Behaviour Research and Therapy, 35(11), 997-1001. (hoofdstuk 6)
 - Depla, M. F., ten Have, M. L., van Balkom, A. J., & de Graaf, R. (2008). Specific fears and phobias in the general population: Results from the Netherlands Mental Health Survey and Incidence Study (NEMESIS). Social Psychiatry and Psychiatric Epidemiology, 43(3), 200-208. (hoofdstuk 1)
 - Dickerson, S. S., & Kemeny, M. E. (2004). Acute stressors and cortisol responses: A theoretical integration and synthesis of laboratory research. Psychological Bulletin, 130(3), 355-391. (hoofdstuk 3)
@@ -55,6 +58,7 @@ Alle bronnen uit het boek in één alfabetische lijst. Tussen haakjes staat in w
 - Harris, B. (1979). Whatever happened to Little Albert? American Psychologist, 34(2), 151-160. (hoofdstuk 5)
 - Harrison, O. K., Köchli, L., Marino, S., e.a. (2021). Interoception of breathing and its relationship with anxiety. Neuron, 109(24), 4080-4093. (hoofdstuk 4)
 - Hashemi, M. M., Gladwin, T. E., de Valk, N. M., Zhang, W., Kaldewaij, R., van Ast, V., Koch, S. B. J., Klumpers, F., & Roelofs, K. (2019). Neural dynamics of shooting decisions and the switch from freeze to fight. Scientific Reports, 9, 4240. (hoofdstuk 3)
+- History.com (z.j.). Lunch atop a skyscraper photo, 1932. History.com. (hoofdstuk 8)
 - History.com (z.j.). Philippe Petit’s high-wire walk between the Twin Towers. History.com. (hoofdstuk 9)
 - Hitchcock, A. (regie) (1958). Vertigo. Paramount Pictures. (hoofdstuk 9)
 - Hodgson, C. I., Draper, N., McMorris, T., Jones, G., Fryer, S., & Coleman, I. (2009). Perceived anxiety and plasma cortisol concentrations following rock climbing with differing safety rope protocols. British Journal of Sports Medicine, 43(7), 531-535. (hoofdstuk 8)
@@ -76,6 +80,7 @@ Alle bronnen uit het boek in één alfabetische lijst. Tussen haakjes staat in w
 - McNally, R. J. (1987). Preparedness and phobias: A review. Psychological Bulletin, 101(2), 283-303. (hoofdstuk 1)
 - Menzies, R. G., & Clarke, J. C. (1993). The etiology of fear of heights and its relationship to severity and individual response patterns. Behaviour Research and Therapy, 31(4), 355-365. (hoofdstuk 1)
 - Milad, M. R., & Quirk, G. J. (2002). Neurons in medial prefrontal cortex signal memory for fear extinction. Nature, 420(6911), 70-74. (hoofdstuk 4)
+- Ministerie van Sociale Zaken en Werkgelegenheid (2009). Analyse van ongevallen door vallen van hoogte: onderhoudsbedrijven. Arboportaal.nl. (hoofdstuk 8)
 - Mitchell, J. (1949). The Mohawks in high steel. The New Yorker, september 1949. (hoofdstuk 8)
 - Möller, A., Söndergaard, H. P., & Helström, L. (2017). Tonic immobility during sexual assault: A common reaction predicting post-traumatic stress disorder and severe depression. Acta Obstetricia et Gynecologica Scandinavica, 96(8), 932-938. (hoofdstuk 3)
 - Mowrer, O. H. (1947). On the dual nature of learning: A re-interpretation of ‘conditioning’ and ‘problem-solving’. Harvard Educational Review, 17, 102-148. (hoofdstuk 5)

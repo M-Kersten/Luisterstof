@@ -17,7 +17,7 @@ from statistics import median
 from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
-from pipeline.ingest.cleanup import CleanupReport, clean_paragraphs, is_exercise_heading
+from pipeline.ingest.cleanup import CleanupReport, clean_paragraphs, skipped_zone
 from pipeline.ingest.pdf import PageData, body_font_size, join_lines
 from pipeline.models import Book, Chapter, Section
 
@@ -331,20 +331,28 @@ def build_book(
 
     report = CleanupReport()
     lines_per_block = Counter(u.block_id for u in units if u.kind == "line")
-    in_exercises = False  # from an exercise heading up to the next real heading
+    zone: str | None = None  # exercises or a source list, from its heading up to the next real heading
     skip_until = -1
+
+    def count(kind: str, text: str) -> None:
+        if kind == "references":
+            report.reference_chars += len(text)
+        else:
+            report.exercise_chars += len(text)
+
     for u in units:
         if u.index < skip_until:
             continue
         h = heading_at.get(u.index)
-        if h is not None and (is_exercise_heading(h.clean_title) or is_exercise_heading(h.text)):
+        kind = (skipped_zone(h.clean_title) or skipped_zone(h.text)) if h is not None else None
+        if kind:
             skip_until = u.index + max(1, h.span)
             flush(section)
-            in_exercises = True
-            report.exercise_chars += len(h.text)
+            zone = kind
+            count(kind, h.text)
             continue
         if h is not None:
-            in_exercises = False
+            zone = None
             skip_until = u.index + h.span
             flush(section)
             if h.level == 1 or current is None:
@@ -359,12 +367,12 @@ def build_book(
                 pass
             else:
                 continue
-        if u.kind == "line" and not in_exercises and is_exercise_heading(u.text) \
-                and (u.bold or lines_per_block[u.block_id] == 1):
+        kind = skipped_zone(u.text) if u.kind == "line" and zone is None else None
+        if kind and (u.bold or lines_per_block[u.block_id] == 1):
             flush(section)
-            in_exercises = True
-        if in_exercises:
-            report.exercise_chars += len(u.text)
+            zone = kind
+        if zone:
+            count(zone, u.text)
             continue
         if current is None:
             current = new_chapter(None)
