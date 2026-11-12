@@ -78,3 +78,17 @@ def test_fresh_redoes_finished_work(ingested):
     calls = len(p.llm.calls)
     p.run_book("demo", upto="plan", chapters=["ch01"], resume=False)
     assert "plan_section" in _tasks(p, calls)
+
+
+def test_a_writing_model_that_is_gone_stops_the_book_at_once(ingested):
+    from pipeline.llm import LLMUnavailable
+
+    p = ingested
+
+    def gone(req):
+        raise LLMUnavailable("OpenCode runs, but the model server behind provider 'strata' does not answer.")
+
+    p.llm.on("plan_section", gone)
+    with pytest.raises(StageError, match="Stopped at ch01; chapters done in this run: none"):
+        p.run_book("demo", upto="plan")
+    assert sum(1 for c in p.llm.calls if c.task == "plan_section") == 1  # not tried again for ch02 and ch03

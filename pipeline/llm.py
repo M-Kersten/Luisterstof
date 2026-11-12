@@ -43,6 +43,11 @@ class LLMTruncated(LLMError):
     pass
 
 
+class LLMUnavailable(LLMError):
+    """The writing model cannot be reached at all: OpenCode is not running, or the model server behind it
+    refuses the connection. Every following call would fail the same way, so a book run stops on it."""
+
+
 @dataclass
 class LLMRequest:
     task: str

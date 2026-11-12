@@ -48,6 +48,7 @@ from pipeline.llm import (
     LLMError,
     LLMRequest,
     LLMTruncated,
+    LLMUnavailable,
     Usage,
     clean_answer,
     content_text,
@@ -76,6 +77,30 @@ MODEL_URL = re.compile(r"url: '(https?://[^']+)'")
 class LLMTransient(LLMError):
     """The server or its model stumbled this time — a plain retry can fix it: a dropped stream, a
     5xx, a server that was restarting while the call was in flight."""
+
+
+# The model server behind OpenCode is not there: nothing listens on its port, its host does not resolve.
+UNREACHABLE = re.compile(r"ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|Unable to connect|fetch failed|connect ECONN", re.I)
+PING_PROMPT = "Antwoord met precies één woord: ok"
+WAKE_POLL_S = 10.0  # how often a waking model is asked whether it answers yet
+WAKE_COOLDOWN_S = 600.0  # one wake per ten minutes: a model that will not start is reported, not hammered
+WAKE_TITLE = "Luisterstof: model starten"
+# Where OpenCode takes a first prompt: the v2 HttpApi this pipeline talks to, then the v1 server routes.
+SESSION_ROUTES = (("/api/session", "/api/session/{id}/prompt", "/api/session/{id}"),
+                  ("/session", "/session/{id}/prompt_async", "/session/{id}"))
+
+
+def _reason(text: str) -> str:
+    """The provider's own words for the failure ("ECONNREFUSED: Unable to connect"), without the JSON around them."""
+    match = re.search(r'"message"\s*:\s*"([^"]+)"', text)
+    return match.group(1) if match else text[:200]
+
+
+def _session_id(data: object) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return data.get("id") or data.get("sessionID") or inner.get("id")
 
 
 def _stumbled(status: int, text: str) -> bool:
@@ -117,6 +142,53 @@ def _desktop_log_url() -> str | None:
     return None
 
 
+def _strip_jsonc(text: str) -> str:
+    """opencode.jsonc allows comments and trailing commas; json does not. Strings (URLs!) are left alone."""
+    out, i, in_str = [], 0, False
+    while i < len(text):
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 1
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+            out.append(c)
+        elif text.startswith("//", i):
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = len(text) if end < 0 else end + 2
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+def provider_url(provider_id: str) -> str | None:
+    """The base URL OpenCode's own config gives this provider, if a global opencode.json(c) says so."""
+    config_home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    for folder in (Path(config_home) / "opencode", Path.home() / ".config" / "opencode"):
+        for name in ("opencode.json", "opencode.jsonc"):
+            path = folder / name
+            try:
+                if path.is_file():
+                    config = json.loads(_strip_jsonc(path.read_text(encoding="utf-8")))
+                    options = ((config.get("provider") or {}).get(provider_id) or {}).get("options") or {}
+                    url = options.get("baseURL") or options.get("baseUrl")
+                    if url:
+                        return str(url)
+            except (OSError, ValueError, AttributeError):
+                continue
+    return None
+
+
 def discover(settings: Settings) -> tuple[str, str | None]:
     """(base_url, password) for the OpenCode server, from settings, its service file and the desktop logs."""
     service = _service_file()
@@ -152,6 +224,9 @@ class OpenCodeLLM:
         self.provider_id, self.model_id, self.variant = split_model(settings.opencode_model)
         self._abort = threading.Event()
         self.on_tokens = None  # set by the runner: (task, answer tokens, seconds), for the progress display
+        self.on_status = None  # set by the runner: a sentence for the log ("model wordt gestart")
+        self._woken_at: float | None = None
+        self._start_command_run = False
         headers = {}
         if password:
             token = base64.b64encode(f"{AUTH_USERNAME}:{password}".encode()).decode()
@@ -220,14 +295,23 @@ class OpenCodeLLM:
 
     def _post_resilient(self, prompt: str, task: str) -> str:
         """``_post`` with a ladder for stumbles that are not this prompt's fault. The wait is an
-        abort-wait, so a Stop interrupts the backoff immediately rather than after it."""
+        abort-wait, so a Stop interrupts the backoff immediately rather than after it. A model server
+        that is not running is started the way the OpenCode app starts it (see ``wake``) before the
+        ladder goes on."""
+        woke = False
         for attempt in range(TRANSIENT_RETRIES + 1):
             try:
                 return self._post_abortable(prompt)
             except LLMTransient as exc:
                 if self._abort.is_set():
                     raise Cancelled() from exc
+                if self._provider_down(exc) and not woke:
+                    woke = True
+                    if self.wake():
+                        continue
                 if attempt == TRANSIENT_RETRIES:
+                    if self._unreachable(exc):
+                        raise LLMUnavailable(self._unavailable_message(exc, TRANSIENT_RETRIES)) from exc
                     raise LLMError(f"{exc} (also after {TRANSIENT_RETRIES} retries)") from exc
                 wait = min(RETRY_WAIT_S * 2 ** attempt, 60.0)
                 log.warning("OpenCode stumbled on %s (attempt %d/%d): %s — retrying in %.0f s",
@@ -235,6 +319,119 @@ class OpenCodeLLM:
                 if self._abort.wait(wait):
                     raise Cancelled() from exc
         raise AssertionError("unreachable")
+
+    # ------------------------------------------------------------------ the model behind OpenCode
+    def _unreachable(self, exc: Exception) -> bool:
+        return isinstance(exc.__cause__, httpx.HTTPError) or bool(UNREACHABLE.search(str(exc)))
+
+    def _provider_down(self, exc: Exception) -> bool:
+        """OpenCode answered, but the model server behind it is not there."""
+        return not isinstance(exc.__cause__, httpx.HTTPError) and bool(UNREACHABLE.search(str(exc)))
+
+    def _status(self, message: str) -> None:
+        log.info(message)
+        if self.on_status:
+            try:
+                self.on_status(message)
+            except Exception:  # noqa: BLE001 - a log line must never end the call
+                pass
+
+    def _unavailable_message(self, exc: Exception, retries: int) -> str:
+        if isinstance(exc.__cause__, httpx.HTTPError):
+            return (f"OpenCode at {self.base_url} is not reachable (also after {retries} retries). Is the OpenCode app "
+                    "running? Start it or `opencode serve`, then run again; 'Hele boek doorlopen' carries on where it "
+                    "stopped.")
+        url = provider_url(self.provider_id)
+        where = f" at {url} (from opencode.json)" if url else ""
+        return (f"OpenCode runs, but the model server behind provider '{self.provider_id}'{where} does not answer: "
+                f"{_reason(str(exc))}. Starting it through a first prompt in OpenCode did not help within "
+                f"{self.settings.opencode_wake_timeout_s:.0f} s. Start that model server yourself (or set "
+                "OPENCODE_MODEL_START to the command that does), then run again; 'Hele boek doorlopen' carries on "
+                "where it stopped.")
+
+    def _first_prompt(self) -> str | None:
+        """Send one short prompt in a new OpenCode session, without waiting for the answer: that is what the
+        OpenCode app does on your first prompt, and what makes OpenCode (or a plugin in it) start a local model
+        server. The stateless generate endpoint the pipeline uses does not. Returns the route that deletes the
+        session again, or None when neither route set worked."""
+        body = {"parts": [{"type": "text", "text": PING_PROMPT}],
+                "model": {"providerID": self.provider_id, "modelID": self.model_id}}
+        for create, prompt, delete in SESSION_ROUTES:
+            try:
+                created = self.client.post(create, json={"title": WAKE_TITLE}, timeout=30.0)
+                session = _session_id(created.json()) if created.status_code < 400 else None
+                if not session:
+                    continue
+                sent = self.client.post(prompt.format(id=session), json=body, timeout=60.0)
+                if sent.status_code < 400:
+                    return delete.format(id=session)
+                self.client.delete(delete.format(id=session), timeout=15.0)
+            except (httpx.HTTPError, ValueError):
+                continue
+        return None
+
+    def _run_start_command(self) -> None:
+        command = self.settings.opencode_model_start
+        if not command or self._start_command_run:
+            return
+        self._start_command_run = True
+        import subprocess
+        import sys
+
+        flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+        try:
+            subprocess.Popen(command, shell=True, creationflags=flags, stdin=subprocess.DEVNULL,  # noqa: S602
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self._status(f"OPENCODE_MODEL_START gestart: {command}")
+        except OSError as exc:
+            self._status(f"OPENCODE_MODEL_START kon niet starten: {exc}")
+
+    def wake(self) -> bool:
+        """Start the model behind OpenCode and wait until it answers. True when it does, within
+        OPENCODE_WAKE_TIMEOUT. At most once per WAKE_COOLDOWN_S: a model that will not come is reported."""
+        now = time.monotonic()
+        if self._woken_at is not None and now - self._woken_at < WAKE_COOLDOWN_S:
+            return False
+        self._woken_at = now
+        self._status(f"het model achter '{self.provider_id}' draait niet: het wordt gestart via een eerste prompt "
+                     "in OpenCode (dat kan een minuut duren)")
+        cleanup = self._first_prompt()
+        self._run_start_command()
+        deadline = now + self.settings.opencode_wake_timeout_s
+        try:
+            while True:
+                try:
+                    self._post_abortable(PING_PROMPT)
+                    self._status(f"het model achter '{self.provider_id}' antwoordt na {time.monotonic() - now:.0f} s")
+                    return True
+                except LLMTransient:
+                    if time.monotonic() >= deadline:
+                        return False
+                if self._abort.wait(WAKE_POLL_S):
+                    raise Cancelled()
+        finally:
+            if cleanup:
+                try:
+                    self.client.delete(cleanup, timeout=15.0)
+                except httpx.HTTPError:
+                    pass
+
+    def ping(self) -> float:
+        """One tiny answer from the model before a job that will need hundreds: seconds it took. A model server
+        that is not running is started first (``wake``). Raises LLMUnavailable when OpenCode or the model
+        cannot be reached, so a night's run fails in seconds with a clear message instead of an hour in."""
+        started = time.monotonic()
+        if self._abort.is_set():
+            raise Cancelled()
+        try:
+            self._post_abortable(PING_PROMPT)
+            return time.monotonic() - started
+        except LLMTransient as exc:
+            if self._provider_down(exc) and self.wake():
+                return time.monotonic() - started
+            if self._unreachable(exc):
+                raise LLMUnavailable(self._unavailable_message(exc, 0)) from exc
+            raise LLMUnavailable(f"The model behind OpenCode does not answer: {str(exc)[:300]}") from exc
 
     def generate(self, request: LLMRequest) -> BaseModel:
         if self._abort.is_set():
@@ -300,3 +497,20 @@ class OpenCodeLLM:
                            + (" ..." if len(listed) > 12 else "") + ". Pick one or set OPENCODE_MODEL=provider/model.")
         except httpx.HTTPError as exc:
             return False, f"not reachable at {self.base_url} ({type(exc).__name__}: {exc}). Is the OpenCode app running?"
+
+
+def startup_check() -> int:
+    """For start-app.bat: 0 when OpenCode runs and its model answers (starting it when needed), 2 when OpenCode
+    runs but the model does not answer (the web app can still start), 1 when OpenCode is not reachable."""
+    llm = OpenCodeLLM(Settings.from_env())
+    ok, message = llm.check()
+    print(("  ok: " if ok else "  FAIL: ") + message)
+    if not ok:
+        return 1
+    llm.on_status = lambda status: print("  " + status)
+    try:
+        print(f"  model: answers in {llm.ping():.1f} s")
+    except LLMError as exc:
+        print(f"  WARNING: {exc}")
+        return 2
+    return 0

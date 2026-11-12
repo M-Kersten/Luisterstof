@@ -17,7 +17,7 @@ from pipeline import fake_handlers as fh
 from pipeline import opencode_llm
 from pipeline.cancel import Cancelled
 from pipeline.config import Settings
-from pipeline.llm import LLMError, LLMRequest, LLMTruncated, make_llm, text_block
+from pipeline.llm import LLMError, LLMRequest, LLMTruncated, LLMUnavailable, make_llm, text_block
 from pipeline.offline import OfflineViolation
 from pipeline.opencode_llm import FALLBACK_URL, TRANSIENT_RETRIES, OpenCodeLLM, discover, split_model
 from pipeline.runner import Pipeline
@@ -445,3 +445,84 @@ def test_v3_loads_through_our_own_loader_because_the_pypi_package_only_knows_v2(
     mtl.ChatterboxMultilingualTTS = type("ChatterboxMultilingualTTS", (), {"from_pretrained": from_pretrained_v3})
     assert synth.load_multilingual_model("cuda") == "new-package-model"
     assert calls[-1]["from_pretrained"] == ("cuda", synth.T3_CHECKPOINT)
+
+
+STRATA_DOWN = (502, {"_tag": "ProviderRequestError", "providerID": "strata", "reason": "provider",
+                     "message": "ECONNREFUSED: Unable to connect. Is the computer able to access the url?"})
+
+
+class SleepyStrata:
+    """OpenCode with a model server that only starts on a first prompt in a session, like the app does."""
+
+    def __init__(self, v2=True, starts=True):
+        self.v2, self.starts, self.up = v2, starts, False
+        self.requests: list[tuple[str, str, dict]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        path = request.url.path
+        self.requests.append((request.method, path, body))
+        prefix = "/api/session" if self.v2 else "/session"
+        if path == GENERATE:
+            if not self.up:
+                return httpx.Response(STRATA_DOWN[0], json=STRATA_DOWN[1])
+            return httpx.Response(200, json={"data": {"text": '{"verdict": "ok", "score": 1}'}})
+        if request.method == "POST" and path == prefix:
+            return httpx.Response(200, json={"id": "ses_1", "title": body.get("title")})
+        if request.method == "POST" and path in (f"{prefix}/ses_1/prompt", f"{prefix}/ses_1/prompt_async"):
+            self.up = self.starts  # the first prompt is what starts the model server
+            return httpx.Response(200 if self.v2 else 204)
+        if request.method == "DELETE" and path == f"{prefix}/ses_1":
+            return httpx.Response(204)
+        return httpx.Response(404, json={"error": f"no such route: {request.method} {path}"})
+
+    def calls(self) -> list[tuple[str, str]]:
+        return [(m, p) for m, p, _ in self.requests if p != GENERATE]
+
+
+@pytest.fixture
+def no_wake_wait(monkeypatch):
+    monkeypatch.setattr(opencode_llm, "WAKE_POLL_S", 0.0)
+
+
+def test_a_model_that_is_not_running_is_started_like_the_app_does(no_wake_wait):
+    server = SleepyStrata()
+    llm = OpenCodeLLM(_settings(), transport=httpx.MockTransport(server))
+    heard: list[str] = []
+    llm.on_status = heard.append
+    assert llm.generate(_request()) == Answer(verdict="ok", score=1)
+    assert server.calls() == [("POST", "/api/session"), ("POST", "/api/session/ses_1/prompt"), ("DELETE", "/api/session/ses_1")]
+    prompt = next(b for m, p, b in server.requests if p.endswith("/prompt"))
+    assert prompt["model"] == {"providerID": "strata", "modelID": "strata"} and prompt["parts"][0]["type"] == "text"
+    assert heard and "wordt gestart" in heard[0] and "antwoordt" in heard[-1]
+
+
+def test_the_older_session_routes_work_too(no_wake_wait):
+    server = SleepyStrata(v2=False)
+    llm = OpenCodeLLM(_settings(), transport=httpx.MockTransport(server))
+    assert llm.ping() >= 0
+    assert ("POST", "/session/ses_1/prompt_async") in server.calls() and ("DELETE", "/session/ses_1") in server.calls()
+
+
+def test_a_model_that_will_not_start_is_reported_with_where_it_should_be(no_wake_wait, tmp_path, monkeypatch):
+    config = tmp_path / "opencode"
+    config.mkdir()
+    (config / "opencode.jsonc").write_text("""{
+      // Strata, started by hand or by a plugin
+      "provider": {"strata": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "http://127.0.0.1:8080/v1",},},},
+    }""", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    server = SleepyStrata(starts=False)
+    llm = OpenCodeLLM(_settings(opencode_wake_timeout_s=0.0), transport=httpx.MockTransport(server))
+    with pytest.raises(LLMUnavailable, match=r"provider 'strata' at http://127\.0\.0\.1:8080/v1 \(from opencode\.json\)"):
+        llm.ping()
+    with pytest.raises(LLMUnavailable, match="ECONNREFUSED"):
+        llm.generate(_request())  # within the cooldown: no second wake, the ladder ends in the same clear error
+    assert sum(1 for m, p in server.calls() if p == "/api/session" and m == "POST") == 1
+
+
+def test_jsonc_comments_go_and_urls_stay():
+    from pipeline.opencode_llm import _strip_jsonc
+
+    text = '{"a": "http://x//y", /* weg */ "b": [1, 2,], // weg\n "c": "/* blijft */"}'
+    assert json.loads(_strip_jsonc(text)) == {"a": "http://x//y", "b": [1, 2], "c": "/* blijft */"}

@@ -18,8 +18,14 @@ if not exist "%STUDIE%" (
     exit /b 1
 )
 
-echo [studiepodcast] Checking the OpenCode server (the model that writes the scripts)...
-"%~dp0.venv\Scripts\python.exe" -c "from pipeline.config import Settings; from pipeline.opencode_llm import OpenCodeLLM; ok, msg = OpenCodeLLM(Settings.from_env()).check(); print('  ok: ' + msg if ok else '  FAIL: ' + msg); raise SystemExit(0 if ok else 1)"
+echo [studiepodcast] Checking OpenCode and its model; a model that is not running is started now (can take a minute)...
+"%~dp0.venv\Scripts\python.exe" -c "from pipeline.opencode_llm import startup_check; raise SystemExit(startup_check())"
+if errorlevel 2 (
+    echo.
+    echo The model does not answer yet. The web app starts anyway; every job tries to start the model again.
+    echo.
+    goto serve
+)
 if errorlevel 1 (
     echo.
     echo The OpenCode server is not reachable, so the pipeline cannot write any text.
@@ -30,6 +36,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:serve
 echo [studiepodcast] Web app: http://%HOST%:%PORT%  -  close this window to stop it.
 start "" /b cmd /c "ping -n 4 127.0.0.1 >nul & start http://%HOST%:%PORT%"
 "%STUDIE%" serve --host %HOST% --port %PORT%

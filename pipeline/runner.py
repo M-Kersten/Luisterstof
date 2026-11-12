@@ -19,7 +19,7 @@ from pipeline.audio.synth import Synth
 from pipeline.cancel import Cancelled
 from pipeline.config import Settings
 from pipeline.ingest.run import ingest_book
-from pipeline.llm import LLM, make_llm
+from pipeline.llm import LLM, LLMUnavailable, make_llm
 from pipeline.models import Approval, AuditResult, Book, Cast, ContentPlan, Glossary, RenderManifest, Script
 from pipeline.paths import BookPaths, list_books
 from pipeline.plan.glossary import load_or_create_glossary
@@ -104,7 +104,19 @@ class Pipeline:
         if hasattr(self._llm, "on_tokens") and self._llm.on_tokens is None:
             self._llm.on_tokens = lambda task, tokens, seconds: self.emit("llm", "tokens", task=task, tokens=tokens,
                                                                           seconds=round(seconds))
+        if hasattr(self._llm, "on_status") and self._llm.on_status is None:
+            self._llm.on_status = lambda message: self.emit("llm", "wake", message=message)
         return self._llm
+
+    def check_writer(self) -> None:
+        """Before a job that needs the writing model: make sure it answers, starting it the way OpenCode does
+        when it is not running. Raises LLMUnavailable within minutes instead of failing an hour into a run."""
+        ping = getattr(self.llm, "ping", None)
+        if not callable(ping):
+            return  # the fake model of the tests and the dry run
+        self.emit("llm", "check", message="kijken of het schrijfmodel antwoordt")
+        seconds = ping()
+        self.emit("llm", "ready", seconds=round(seconds, 1))
 
     def abort(self) -> None:
         """Stop at the next checkpoint: the next event, or the next answer of a model call in flight."""
@@ -513,6 +525,10 @@ class Pipeline:
             try:
                 with self._timed(book_id, ch.id, "chapter"):
                     results[ch.id] = self.run_chapter(book_id, ch.id, upto=upto, llm_checks=llm_checks, resume=resume)
+            except LLMUnavailable as exc:
+                # Every next chapter would hit the same wall: stop the book here and say how to go on.
+                done = ", ".join(results) or "none"
+                raise StageError(f"{exc} Stopped at {ch.id}; chapters done in this run: {done}.") from exc
             except Exception as exc:  # noqa: BLE001 - Cancelled is a BaseException and still ends the run
                 log.exception("chapter %s failed; going on with the next one", ch.id)
                 failed[ch.id] = str(exc)

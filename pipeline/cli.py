@@ -177,6 +177,7 @@ def run(book_id: str, pdf: Path | None = None, upto: str = "script", chapters: s
 
     p = _pipeline(**_pass_overrides(reviews=reviews, part_chars=part_chars, revise_rounds=revise_rounds))
     with keep_awake():  # a run of a whole night must not stop when the laptop wants to sleep
+        p.check_writer()  # starts a model server that is not running, or fails now rather than at chapter one
         if pdf is not None:
             p.ingest(pdf, book_id, method=method)
         wanted = [c.strip() for c in chapters.split(",")] if chapters else None
@@ -428,6 +429,17 @@ def _doctor_llm(settings: Settings) -> None:
     try:
         ok, detail = llm.check()
         typer.echo(f"  server: {'ok' if ok else '!!'} {detail}")
+        from pipeline.opencode_llm import provider_url
+
+        url = provider_url(llm.provider_id)
+        if url:
+            typer.echo(f"  provider {llm.provider_id}: {url} (from opencode.json)")
+        if ok:
+            llm.on_status = lambda message: typer.echo(f"  {message}")
+            try:
+                typer.echo(f"  model: ok, answers in {llm.ping():.1f} s")
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"  model: !! {exc}")
         if settings.offline:
             typer.echo("  offline: ok, the OpenCode server runs on this machine")
     except Exception as exc:  # noqa: BLE001

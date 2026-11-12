@@ -112,6 +112,8 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         paths.source_pdf.write_bytes(payload)
 
         def work(p: Pipeline):
+            if auto:
+                p.check_writer()  # a model that is not running is started now, not found missing at chapter one
             p.ingest(paths.source_pdf, name, method=method)
             if auto:
                 return {ch: {k: str(v) for k, v in out.items() if k == "render"} for ch, out in p.run_book(name, upto=upto).items()}
@@ -158,6 +160,7 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
             raise HTTPException(400, "upto must be plan, glossary or script")
 
         def work(p: Pipeline):
+            p.check_writer()
             out = p.run_book(book_id, upto=req.upto, resume=not req.fresh)
             return {ch: True for ch in out}
 
@@ -234,6 +237,8 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         stage = req.stage
 
         def work(p: Pipeline):
+            if stage in ("plan", "glossary", "script", "audit", "all"):
+                p.check_writer()
             if stage == "plan":
                 return p.plan(book_id, chapter_id)
             if stage == "glossary":

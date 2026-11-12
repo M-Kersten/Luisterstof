@@ -83,6 +83,11 @@ class Settings:
     opencode_password: str | None = None
     opencode_model: str = "strata/strata"
     opencode_timeout_s: float = 1800.0
+    # A local model server that OpenCode starts on the first prompt (Strata, a llama.cpp launcher plugin) is
+    # started the same way by the pipeline, then given this long to answer. OPENCODE_MODEL_START is an
+    # optional command that starts it directly, for setups where a prompt in OpenCode does not.
+    opencode_wake_timeout_s: float = 300.0
+    opencode_model_start: str | None = None
 
     # Content plan and lexicon: per section, quotes checked against the source, then a chapter pass
     # and review rounds (pipeline/plan/thorough.py).
@@ -146,6 +151,8 @@ class Settings:
             opencode_password=_env_str("OPENCODE_PASSWORD"),
             opencode_model=_env_str("OPENCODE_MODEL", "strata/strata"),
             opencode_timeout_s=float(passes("OPENCODE_TIMEOUT", "opencode_timeout_s")),
+            opencode_wake_timeout_s=_env_float("OPENCODE_WAKE_TIMEOUT", 300.0),
+            opencode_model_start=_env_str("OPENCODE_MODEL_START"),
             data_dir=Path(_env_str("STUDIEPODCAST_DATA_DIR", "data")),
             cast_dir=Path(_env_str("STUDIEPODCAST_CAST_DIR", "cast")),
             device=_env_str("STUDIEPODCAST_DEVICE", "cuda"),

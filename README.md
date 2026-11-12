@@ -103,6 +103,16 @@ What this means in practice:
   it if you want a stalled server noticed sooner. A Stop ends the job right away, also in the
   middle of a call; the endpoint does not stream, so OpenCode finishes that answer in the
   background and the pipeline drops it. Everything saved before the Stop stays.
+- **A model that is not running is started.** OpenCode starts some local model servers (Strata, a
+  llama.cpp launcher plugin) only on the first prompt in a session, and the stateless endpoint the
+  pipeline writes through does not count as one. So when the model behind OpenCode refuses the
+  connection, the pipeline sends one short prompt in a new OpenCode session, the way the app does,
+  waits until the model answers (`OPENCODE_WAKE_TIMEOUT`, default 300 s) and deletes that session again.
+  If a prompt does not start your model, `OPENCODE_MODEL_START` can hold the command that does. Every
+  job checks the model before it starts, so a missing model shows in the first minute, not at chapter
+  one; a book run that loses the model halfway stops at once with what to do, instead of failing every
+  chapter after it. `start-app.bat` and `studiepodcast doctor` start the model as well, so it is warm
+  before you upload.
 - **The pipeline cannot unload the writing model**: what OpenCode keeps loaded is OpenCode's
   business. If that model runs on the same GPU as Chatterbox, unload it before a render.
   The render checks the card first (`nvidia-smi`) and warns in the log when more than 4 GB is
@@ -388,6 +398,7 @@ The web UI shows the same summary (verified turns, alignment fallback count) in 
 | `STUDIEPODCAST_REVISE_ROUNDS` | `1` | How often a script the audit blocks is rewritten before it is accepted as it is |
 | `OPENCODE_URL`, `OPENCODE_PASSWORD` | service.json, then the desktop app's log, then `http://127.0.0.1:4096` | OpenCode server (backend `opencode`) and its Basic-auth password |
 | `OPENCODE_MODEL` | `strata/strata` | `provider/id` (optionally `#variant`) as OpenCode lists them |
+| `OPENCODE_WAKE_TIMEOUT`, `OPENCODE_MODEL_START` | `300`, empty | How long a model that is being started may take; an optional command that starts it directly |
 | `OPENCODE_TIMEOUT` | `1800` | Seconds per OpenCode call; a long chapter takes minutes |
 | `STUDIEPODCAST_DEVICE` | `cuda` | Chatterbox device |
 | `CHATTERBOX_CKPT_DIR` | the Hugging Face cache | Use a local folder of Chatterbox V3 weights instead of downloading |
