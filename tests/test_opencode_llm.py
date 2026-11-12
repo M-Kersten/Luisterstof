@@ -447,14 +447,9 @@ def test_v3_loads_through_our_own_loader_because_the_pypi_package_only_knows_v2(
     assert calls[-1]["from_pretrained"] == ("cuda", synth.T3_CHECKPOINT)
 
 
-def test_v3_text_vocabulary_is_read_from_the_checkpoint(tmp_path, monkeypatch):
-    """V3 has 2454 text tokens, the 0.1.7 package builds 2352: the loader sizes T3 from the weights."""
-    from pipeline.audio import synth
-
-    built: dict = {}
-
+def _fake_mtl(monkeypatch, package_vocab: int, checkpoint_vocab: int, built: dict):
     class Cfg:
-        text_tokens_dict_size = 2352
+        text_tokens_dict_size = package_vocab
 
         @classmethod
         def multilingual(cls):
@@ -474,7 +469,7 @@ def test_v3_text_vocabulary_is_read_from_the_checkpoint(tmp_path, monkeypatch):
             return self
 
     class Weight:
-        shape = (2454, 1024)
+        shape = (checkpoint_vocab, 1024)
 
     class Plain:
         def __init__(self, *a, **kw):
@@ -497,14 +492,54 @@ def test_v3_text_vocabulary_is_read_from_the_checkpoint(tmp_path, monkeypatch):
     mtl.VoiceEncoder = mtl.S3Gen = Plain
     mtl.MTLTokenizer = Plain
     mtl.Conditionals = Plain
-    mtl.ChatterboxMultilingualTTS = lambda *a, **kw: "v3-model"
+    class Model:
+        def __new__(cls, *a, **kw):
+            return "v3-model"
+
+        @classmethod
+        def from_pretrained(cls, device):  # the PyPI signature: no t3_model, so our loader runs
+            raise AssertionError("the packaged V2 loader must not be used")
+
+    mtl.ChatterboxMultilingualTTS = Model
     mtl.load_safetensors = lambda path: {"text_emb.weight": Weight()}
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "chatterbox", types.ModuleType("chatterbox"))
     monkeypatch.setitem(sys.modules, "chatterbox.mtl_tts", mtl)
 
+
+def test_v3_loads_on_a_package_with_the_2454_token_vocabulary(tmp_path, monkeypatch):
+    from pipeline.audio import synth
+
+    built: dict = {}
+    _fake_mtl(monkeypatch, 2454, 2454, built)
     assert synth._multilingual_from_local(tmp_path, "cuda") == "v3-model"
     assert built["vocab"] == 2454
+
+
+def test_a_pre_v2_package_is_refused_with_the_upgrade_not_a_download_hint(tmp_path, monkeypatch):
+    """chatterbox-tts 0.1.4 builds 2352 text tokens and its tokenizer does not lowercase: resizing
+    T3 would load V3 and then feed it the wrong tokens, so the load stops and names the upgrade."""
+    import pytest
+
+    from pipeline.audio import synth
+
+    _fake_mtl(monkeypatch, 2352, 2454, {})
+    monkeypatch.setattr(synth, "chatterbox_version", lambda: "0.1.4")
+    monkeypatch.setattr(synth, "chatterbox_checkpoint_dir", lambda: tmp_path)
+    with pytest.raises(synth.ChatterboxPackageTooOld) as err:
+        synth.load_multilingual_model("cuda")
+    message = str(err.value)
+    assert "0.1.4" in message and synth.CHATTERBOX_UPGRADE in message
+    assert "STUDIEPODCAST_OFFLINE" not in message
+
+
+def test_chatterbox_version_floor():
+    from pipeline.audio.synth import chatterbox_version_ok
+
+    assert not chatterbox_version_ok("0.1.4")
+    assert chatterbox_version_ok("0.1.5")
+    assert chatterbox_version_ok("0.1.7")
+    assert chatterbox_version_ok("0.2.0")
 
 
 STRATA_DOWN = (502, {"_tag": "ProviderRequestError", "providerID": "strata", "reason": "provider",

@@ -397,8 +397,21 @@ def _doctor_chatterbox(settings: Settings) -> None:
     """Whether the V3 weights the render loads are on disk (offline mode can only use what is there)."""
     import os
 
-    from pipeline.audio.synth import T3_CHECKPOINT, chatterbox_required
+    from pipeline.audio.synth import (
+        CHATTERBOX_MIN_VERSION,
+        CHATTERBOX_UPGRADE,
+        T3_CHECKPOINT,
+        chatterbox_required,
+        chatterbox_version,
+        chatterbox_version_ok,
+    )
 
+    found = chatterbox_version()
+    if found and not chatterbox_version_ok(found):
+        typer.echo(f"chatterbox-tts: {found} is too old for {T3_CHECKPOINT} (needs {CHATTERBOX_MIN_VERSION}+, "
+                   f"the 2454-token vocabulary). Upgrade: {CHATTERBOX_UPGRADE}")
+    elif found:
+        typer.echo(f"chatterbox-tts: {found}")
     local = os.environ.get("CHATTERBOX_CKPT_DIR")
     if local:
         roots = [Path(local).expanduser()]

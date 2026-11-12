@@ -30,7 +30,7 @@ dependencies = [
 # Local synthesis. Installed separately because torch is large and platform-specific.
 # 24GB CUDA box: Chatterbox V3 x3 workers, faster-whisper on GPU, WhisperX alignment.
 cuda = [
-    "chatterbox-tts",
+    "chatterbox-tts>=0.1.5",  # 0.1.4 and older only know the first multilingual vocabulary
     "faster-whisper>=1.0",
     "whisperx",
 ]

@@ -15,6 +15,7 @@ import io
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -245,6 +246,45 @@ def chatterbox_checkpoint_dir() -> Path:
                                   allow_patterns=chatterbox_files(), token=os.environ.get("HF_TOKEN") or None))
 
 
+# chatterbox-tts 0.1.4 and older carry the first multilingual model: a 2352-token text vocabulary,
+# a tokenizer that neither lowercases nor NFKD-normalizes, and T3Config.is_multilingual tied to
+# 2352. V2 and V3 share the 2454-token vocabulary that 0.1.5 introduced. Resizing T3 on an old
+# package would load the weights but feed them the wrong tokens and switch off the multilingual
+# alignment guard, so an old package is refused with the upgrade that fixes it.
+CHATTERBOX_MIN_VERSION = "0.1.5"
+CHATTERBOX_UPGRADE = 'uv pip install "chatterbox-tts==0.1.6"'
+
+
+class ChatterboxPackageTooOld(RuntimeError):
+    pass
+
+
+def chatterbox_version() -> str | None:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("chatterbox-tts")
+    except PackageNotFoundError:
+        return None
+
+
+def chatterbox_version_ok(found: str | None) -> bool:
+    def parts(v: str) -> tuple[int, ...]:
+        return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+    return found is None or parts(found) >= parts(CHATTERBOX_MIN_VERSION)
+
+
+def check_text_vocabulary(checkpoint: int, package: int) -> None:
+    if checkpoint == package:
+        return
+    found = chatterbox_version() or "unknown"
+    raise ChatterboxPackageTooOld(
+        f"{T3_CHECKPOINT} has a {checkpoint}-token text vocabulary, the installed chatterbox-tts "
+        f"({found}) builds {package}. That package predates V2/V3 (needs {CHATTERBOX_MIN_VERSION} or "
+        f"newer). Upgrade it in this venv: {CHATTERBOX_UPGRADE}")
+
+
 def _multilingual_from_local(ckpt_dir, device: str):
     """ChatterboxMultilingualTTS.from_local with our T3 file instead of the packaged V2."""
     import torch  # type: ignore
@@ -269,10 +309,8 @@ def _multilingual_from_local(ckpt_dir, device: str):
     t3_state = load_safetensors(str(ckpt_dir / T3_CHECKPOINT))
     if "model" in t3_state:
         t3_state = t3_state["model"][0]
-    # chatterbox-tts 0.1.7 sizes the text embedding for the V2 vocabulary (2352 tokens); the V3
-    # checkpoint carries 2454. Take the size from the weights, so an old package still loads V3.
     config = T3Config.multilingual()
-    config.text_tokens_dict_size = int(t3_state["text_emb.weight"].shape[0])
+    check_text_vocabulary(int(t3_state["text_emb.weight"].shape[0]), int(config.text_tokens_dict_size))
     t3 = T3(config)
     t3.load_state_dict(t3_state)
     t3.to(device).eval()
@@ -304,6 +342,8 @@ def load_multilingual_model(device: str):
     ckpt_dir = chatterbox_checkpoint_dir()
     try:
         return _multilingual_from_local(ckpt_dir, device)
+    except ChatterboxPackageTooOld:
+        raise  # the weights are fine; the download hint below would send you the wrong way
     except Exception as exc:
         raise RuntimeError(f"could not load Chatterbox {T3_CHECKPOINT} from {ckpt_dir} ({type(exc).__name__}: {exc}). "
                            "Run once with STUDIEPODCAST_OFFLINE=0 to download it, or put the files in "
