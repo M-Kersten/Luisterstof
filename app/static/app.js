@@ -1,9 +1,11 @@
-/* Luisterstof UI: hand in a book, follow the night's run, review and edit a chapter's script, render and listen. */
+/* Luisterstof: a website that walks you through it. Hand in a book, let it write overnight, read and approve each
+   chapter, let the voices record it, listen. One page per step, one orange button for what to do now. */
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const state = {
-  book: null, chapter: null, data: null, glossary: null, sources: {}, timings: null, status: null,
-  books: [], jobs: [], health: null, view: null, dirty: false, nextAction: null, engineDetail: { writer: "", voice: "" },
+  view: null, book: null, chapter: null, step: null, data: null, glossary: null, timings: null, status: null,
+  books: [], jobs: [], health: null, names: {}, hosts: [], dirty: false, stageOpen: {}, runQuality: false,
+  engineDetail: { writer: "", voice: "" },
 };
 
 const api = {
@@ -25,9 +27,9 @@ function chip(text, kind = "", title = "", extra = "") {
   const cls = ["chip", kind && `chip--${kind}`, extra].filter(Boolean).join(" ");
   return `<span class="${cls}"${title ? ` title="${escapeHtml(title)}"` : ""}>${escapeHtml(text)}</span>`;
 }
-const dash = '<span class="subtle">-</span>';
 function remember(key, value) { try { localStorage.setItem(`luisterstof.${key}`, value); } catch { /* private window */ } }
 function recall(key) { try { return localStorage.getItem(`luisterstof.${key}`); } catch { return null; } }
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 let toastTimer = null;
 function toast(text, bad = false) {
@@ -49,12 +51,12 @@ function fail(err, what) {
   log(`fout${what ? " bij " + what.toLowerCase() : ""}: ${msg}`);
   toast(`${what ? what + " mislukt: " : ""}${msg}`, true);
 }
-// What a failure means for the user, in Dutch, next to the raw message.
+// What a failure means, in Dutch, next to the raw message.
 function explainError(err) {
   if (!err) return "";
-  if (/worker restarted/i.test(err)) return "De app stopte terwijl deze taak liep (herstart of gesloten venster). Hele boek doorlopen gaat verder waar hij was.";
+  if (/worker restarted/i.test(err)) return "De app stopte terwijl dit liep (herstart of gesloten venster). Verder schrijven gaat door waar het was.";
   if (/opencode|not reachable|does not answer|LLMUnavailable/i.test(err)) return "Het schrijfmodel antwoordde niet. Start OpenCode en probeer het opnieuw.";
-  if (/chapters failed/i.test(err)) return "De andere hoofdstukken zijn wel gemaakt. Hele boek doorlopen maakt alleen wat ontbreekt.";
+  if (/chapters failed/i.test(err)) return "De andere hoofdstukken zijn wel gemaakt. Verder schrijven maakt alleen wat ontbreekt.";
   return "";
 }
 async function busy(btn, label, fn) {
@@ -79,11 +81,11 @@ function fmtDuration(ms) {
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-const STAGES = { ingest: "Inlezen", pipeline: "Boek verwerken", plan: "Plan", glossary: "Lexicon", script: "Script",
-  audit: "Audit", continuity: "Continuïteit", render: "Chatterbox render",
-  approve: "Goedkeuren", all: "Hoofdstuk", book: "Boek", run: "Hoofdstuk" };
-const PASS_NAMES = { ingest: "inlezen", plan: "plan", glossary: "lexicon", script: "script schrijven", audit: "audit",
-  revise: "herschrijven", polish: "tafellezing", continuity: "continuïteit", render: "render", chapter: "hele hoofdstuk" };
+const STAGES = { ingest: "Inlezen", pipeline: "Boek verwerken", plan: "Plan", glossary: "Uitspraak", script: "Script schrijven",
+  audit: "Controle", continuity: "Continuïteit", render: "Opname", approve: "Goedkeuren", all: "Hoofdstuk schrijven",
+  book: "Boek", run: "Hoofdstuk" };
+const PASS_NAMES = { ingest: "inlezen", plan: "plan", glossary: "uitspraak", script: "script schrijven", audit: "controle",
+  revise: "herschrijven", polish: "tafellezing", continuity: "continuïteit", render: "opname", chapter: "hele hoofdstuk" };
 const passTitle = (p) => p.title || ((PASS_NAMES[p.pass_name] || p.pass_name) + (p.label ? ` (${p.label})` : ""));
 const SEGMENTS = { cold_open: "Koude opening", recap: "Terugblik", body: "Blok", guest: "Gast", reexplain: "Nog eens uitgelegd",
   quiz: "Quiz", outro: "Afsluiting" };
@@ -94,77 +96,76 @@ const JOB_STATUS = { queued: ["in de wachtrij", ""], running: ["bezig", "run"], 
 const TIMING_STATUS = { done: "", failed: chip("mislukt", "bad"), stopped: chip("gestopt", "warn"), skipped: chip("overgeslagen") };
 const ACTIVE = ["running", "queued"];
 const jobName = (j) => `${STAGES[j.stage] || j.stage}${j.chapter_id ? " " + j.chapter_id : ""}`;
+const STEP_SLUG = { review: "nalezen", record: "opnemen", listen: "luisteren" };
+const SLUG_STEP = Object.fromEntries(Object.entries(STEP_SLUG).map(([k, v]) => [v, k]));
+const STEP_ORDER = ["review", "record", "listen"];
 
-// ------------------------------------------------------------------- views
+// ------------------------------------------------------------------ routes
+// #/  #/nieuw  #/boek/<id>  #/boek/<id>/<hoofdstuk>  #/boek/<id>/<hoofdstuk>/<stap>
+const bookHash = (id) => `#/boek/${enc(id)}`;
+const chapterHash = (book, ch, step) => `${bookHash(book)}/${enc(ch)}${step && STEP_SLUG[step] ? "/" + STEP_SLUG[step] : ""}`;
+
+function parseHash() {
+  const h = decodeURIComponent(location.hash.replace(/^#/, ""));
+  if (h === "/nieuw") return { view: "new" };
+  const m = h.match(/^\/boek\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?$/);
+  if (m) return { view: m[2] ? "chapter" : "book", book: m[1], chapter: m[2] || null, step: SLUG_STEP[m[3]] || null };
+  return { view: "home" };
+}
+
+function go(hash) {
+  if (location.hash === hash) route();
+  else location.hash = hash;
+}
+
+let lastHash = location.hash;
+window.addEventListener("hashchange", () => {
+  const r = parseHash();
+  const stays = r.view === "chapter" && r.book === state.book && r.chapter === state.chapter;
+  if (state.dirty && !stays) {
+    if (!confirm("Je wijzigingen in het script zijn nog niet opgeslagen. Toch verlaten?")) { history.replaceState(null, "", lastHash); return; }
+    setDirty(false);
+  }
+  lastHash = location.hash;
+  route();
+});
+
+async function route() {
+  const r = parseHash();
+  $("#sys").open = false;
+  if (r.view === "new") { showView("new"); renderEngineWarning(); return; }
+  if (r.view === "home") { showView("home"); renderHome(); return; }
+  if (!state.books.some(b => b.book_id === r.book)) {
+    try { await loadBooks(); } catch { /* shown below */ }
+    if (!state.books.some(b => b.book_id === r.book)) { toast(`Het boek ${r.book} bestaat niet (meer).`, true); go("#/"); return; }
+  }
+  if (r.book !== state.book || !state.status || r.view === "book") {
+    try { await loadBook(r.book); } catch (err) { fail(err, "Boek openen"); return; }
+  }
+  if (r.view === "book") { state.chapter = null; state.data = null; showView("book"); renderBook(); return; }
+  if (!state.status.chapters.some(c => c.id === r.chapter)) { toast(`Hoofdstuk ${r.chapter} bestaat niet.`, true); go(bookHash(r.book)); return; }
+  await openChapter(r.chapter, r.step);
+}
+
 function showView(name) {
   const changed = name !== state.view;
   state.view = name;
-  $("#upload-view").hidden = name !== "upload";
-  $("#book-panel").hidden = name !== "book";
-  $("#chapter-panel").hidden = name !== "chapter";
-  const noBooks = !state.books.length;
-  $("#sidebar").hidden = noBooks;
-  $("#cols").classList.toggle("is-single", noBooks);
-  $("#upload-cancel").hidden = noBooks;
-  if (changed) $("#content").scrollTop = 0;
-  markNav();
-  syncHash();
+  for (const v of ["home", "new", "book", "chapter"]) $(`#view-${v}`).hidden = v !== name;
+  $$(".site-nav a").forEach(a => a.toggleAttribute("aria-current", (a.dataset.nav === "home" && ["home", "book", "chapter"].includes(name)) || (a.dataset.nav === "new" && name === "new")));
+  $("#savebar").hidden = !(state.dirty && name === "chapter");
+  if (changed) window.scrollTo(0, 0);
+  document.title = name === "chapter" && state.data ? `${$("#chapter-title").textContent} · Luisterstof`
+    : name === "book" && state.status ? `${state.status.title || state.status.book_id} · Luisterstof` : "Luisterstof";
 }
 
-function syncHash() {
-  let h = "";
-  if (state.view === "upload") h = "#nieuw";
-  else if (state.book) h = `#/${enc(state.book)}` + (state.view === "chapter" && state.chapter ? `/${enc(state.chapter)}` : "");
-  if (location.hash !== h) history.replaceState(null, "", h || location.pathname + location.search);
-}
-
-function markNav() {
-  const set = (el, on) => on ? el.setAttribute("aria-current", "page") : el.removeAttribute("aria-current");
-  set($("#nav-overview"), state.view === "book");
-  $$("#chapter-list [data-chapter]").forEach(b => set(b, state.view === "chapter" && b.dataset.chapter === state.chapter));
-}
-
-// Leaving a chapter with unsaved edits asks first.
-function leaveChapter() {
-  if (!state.dirty) return true;
-  if (!confirm("Je wijzigingen in het script zijn nog niet opgeslagen. Toch verlaten?")) return false;
-  setDirty(false);
-  return true;
-}
-function goOverview() {
-  if (!leaveChapter()) return;
-  if (!state.book) { showView("upload"); return; }
-  state.chapter = null;
-  state.data = null;
-  renderOverview();
-  showView("book");
-}
-async function goChapter(id) {
-  if (id !== state.chapter && !leaveChapter()) return;
-  await openChapter(id);
-}
-function goUpload() {
-  if (!leaveChapter()) return;
-  showView("upload");
-  renderEngineWarning();
-}
-
-// ------------------------------------------------------------------ books
+// ------------------------------------------------------------------ data
 async function loadBooks() {
-  const books = await api.get("/api/books");
-  state.books = books;
-  const sel = $("#books");
-  sel.innerHTML = books.map(b => {
-    const name = b.title ? `${b.title.length > 48 ? b.title.slice(0, 46) + "..." : b.title} (${b.book_id})` : `${b.book_id} (nog niet ingelezen)`;
-    return `<option value="${escapeHtml(b.book_id)}" ${b.book_id === state.book ? "selected" : ""}>${escapeHtml(name)}</option>`;
-  }).join("");
-  $("#bookpick").hidden = !books.length;
-  return books;
+  state.books = await api.get("/api/books");
+  return state.books;
 }
 
-// Status, timings and jobs of a book; renders the chapter list and the overview but leaves the view alone.
 async function loadBook(bookId) {
-  if (bookId !== state.book) { state.chapter = null; state.data = null; }
+  if (bookId !== state.book) { state.chapter = null; state.data = null; state.stageOpen = {}; }
   state.book = bookId;
   remember("book", bookId);
   const [s, timings] = await Promise.all([
@@ -173,15 +174,9 @@ async function loadBook(bookId) {
   ]);
   state.status = s;
   state.timings = timings;
+  const i = state.books.findIndex(b => b.book_id === bookId);
+  if (i >= 0) state.books[i] = s;
   await loadJobs();
-  renderSidebar();
-  renderOverview();
-  if ($("#books").value !== bookId) loadBooks();
-}
-
-async function openBook(bookId) {
-  try { await loadBook(bookId); } catch (err) { fail(err, "Boek openen"); return; }
-  showView("book");
 }
 
 let refreshTimer = null, refreshChapter = false;
@@ -193,10 +188,10 @@ function refreshBookSoon(chapter = false) {
   refreshTimer = setTimeout(async () => {
     const withChapter = refreshChapter;
     refreshChapter = false;
-    if (!state.book) return;
     try {
-      await loadBook(state.book);
-      if (withChapter && state.view === "chapter" && state.chapter && !state.dirty) await openChapter(state.chapter, { keepTab: true });
+      if (state.book) await loadBook(state.book);
+      else await loadJobs();
+      if (withChapter && state.view === "chapter" && state.chapter && !state.dirty) await openChapter(state.chapter, state.step, { keep: true });
       else afterJobsChanged();
     } catch { /* the next refresh catches up */ }
   }, 1200);
@@ -213,9 +208,11 @@ function chapterTiming(id) {
   return { run: runId, passes, seconds };
 }
 function chapterInfo(id) { return state.status ? state.status.chapters.find(c => c.id === id) : null; }
-function chapterJob(id) { return state.jobs.find(j => j.chapter_id === id && ACTIVE.includes(j.status)); }
+const isActive = (j) => ACTIVE.includes(j.status);
+function chapterJob(id) { return state.jobs.find(j => j.book_id === state.book && j.chapter_id === id && isActive(j)); }
+function bookJob(bookId = state.book) { return state.jobs.find(j => j.book_id === bookId && !j.chapter_id && isActive(j)); }
 function chapterBusy(id) { return !!chapterJob(id) || (!!run.job && !run.job.chapter_id && run.job.book_id === state.book && run.chapterId === id); }
-function bookBusy() { return state.jobs.some(j => j.book_id === state.book && ACTIVE.includes(j.status)); }
+function bookBusy(bookId = state.book) { return state.jobs.some(j => j.book_id === bookId && isActive(j)); }
 
 // The latest run that touched a chapter: did a pass fail or stop, and why.
 function lastFailure(id) {
@@ -225,120 +222,15 @@ function lastFailure(id) {
   if (!bad.length) return null;
   const pass = bad.find(p => p.pass_name !== "chapter") || bad[0];
   const whole = bad.find(p => p.pass_name === "chapter");
-  return { status: pass.status, title: passTitle(pass), error: pass.error || (whole && whole.error) || "" };
+  return { status: pass.status, pass: pass.pass_name, title: passTitle(pass), error: pass.error || (whole && whole.error) || "" };
+}
+function failureText(f) {
+  if (!f) return "";
+  return `De laatste keer ${f.status === "stopped" ? "is het gestopt" : "liep het vast"} bij ${f.title}` +
+    (f.error ? `: ${f.error}` : ".") + (explainError(f.error) ? ` ${explainError(f.error)}` : "");
 }
 
-// One status per chapter for the list and the overview: a label, a colour, the next step, and whether it waits on you.
-function chapterState(ch) {
-  let st;
-  if (!ch.plan && !ch.script) st = { label: "nog niet gemaakt", kind: "", next: "Hele boek doorlopen" };
-  else if (!ch.script) st = { label: "plan klaar", kind: "", next: "Script schrijven" };
-  else if (!ch.audit) st = { label: "audit nodig", kind: "warn", next: "Audit draaien" };
-  else if (ch.audit_passed === false) st = { label: `${ch.audit_blocking} blokkerend`, kind: "bad", next: "Problemen oplossen", you: true };
-  else if (!ch.approved) st = { label: "nakijken", kind: "warn", next: "Lezen en goedkeuren", you: true };
-  else if (!ch.final) st = { label: "goedgekeurd", kind: "ok", next: "Render starten", you: true };
-  else if (ch.flagged_turns) st = { label: `klaar, ${ch.flagged_turns} gevlagd`, kind: "warn", next: "Gevlagde beurten beluisteren", you: true };
-  else st = { label: "klaar", kind: "ok", next: "Beluisteren" };
-  const fail = lastFailure(ch.id);
-  if (fail) {
-    st.fail = fail;
-    if (!ch.script || !ch.audit) {
-      Object.assign(st, { label: fail.status === "stopped" ? "gestopt" : "mislukt", kind: fail.status === "stopped" ? "warn" : "bad",
-        next: "Hele boek doorlopen", you: false, broken: fail.status === "failed" });
-    }
-  }
-  if (chapterBusy(ch.id)) Object.assign(st, { label: "bezig", kind: "run", busy: true, you: false, broken: false });
-  return st;
-}
-
-function renderSidebar() {
-  const s = state.status;
-  const ul = $("#chapter-list");
-  if (!s) { ul.innerHTML = ""; return; }
-  $("#chapter-count").textContent = s.chapters.length || "";
-  if (!s.chapters.length) {
-    ul.innerHTML = `<li class="navempty">${bookBusy()
-      ? "Het boek wordt ingelezen. De hoofdstukken verschijnen hier zodra dat klaar is."
-      : "Nog geen hoofdstukken: het boek is niet ingelezen. Het overzicht zegt waarom."}</li>`;
-    markNav();
-    return;
-  }
-  ul.innerHTML = s.chapters.map(ch => {
-    const st = chapterState(ch);
-    const t = chapterTiming(ch.id);
-    return `<li><button class="navitem" data-chapter="${escapeHtml(ch.id)}" title="${escapeHtml(`${ch.id} ${ch.title}`)}">
-      <span class="navitem__label"><span class="navitem__id">${escapeHtml(ch.id)}</span><span class="navitem__title">${escapeHtml(ch.title)}</span></span>
-      <span class="navitem__state">${chip(st.label, st.kind)}${t && t.seconds ? `<span>${fmtSeconds(t.seconds)}</span>` : ""}</span>
-    </button></li>`;
-  }).join("");
-  markNav();
-}
-
-// ----------------------------------------------------------- book overview
-function renderOverview() {
-  const s = state.status;
-  if (!s) return;
-  const list = s.chapters.map(ch => ({ ch, st: chapterState(ch) }));
-  $("#book-title").textContent = s.title || s.book_id;
-  $("#book-meta").textContent = s.ingested
-    ? `${s.chapters.length} hoofdstukken · lexicon ${s.glossary_entries} termen · structuur gevonden via ${s.structure_method || "-"} · ${s.book_id}`
-    : `${s.book_id} · nog niet ingelezen`;
-
-  // Last run of the whole book: when, how long, how many chapters, and how the last book job ended.
-  const latest = latestBookRun();
-  const going = state.jobs.some(j => j.book_id === s.book_id && !j.chapter_id && j.status === "running");
-  const tally = (r) => [r.done && `${r.done} ${r.done === 1 ? "hoofdstuk" : "hoofdstukken"} gemaakt`,
-    r.skipped && `${r.skipped} overgeslagen omdat ${r.skipped === 1 ? "het" : "ze"} al klaar ${r.skipped === 1 ? "was" : "waren"}`,
-    r.failed && `${r.failed} mislukt`, r.stopped && `${r.stopped} gestopt`].filter(Boolean).join(", ");
-  $("#book-run").textContent = !latest ? (going ? "De run is net begonnen." : "Nog geen run van het hele boek.")
-    : going ? `Loopt sinds ${fmtWhen(latest.started)}.` + (tally(latest) ? ` Tot nu toe: ${tally(latest)}.` : "")
-    : `Begonnen ${fmtWhen(latest.started)}, laatste stap klaar ${fmtWhen(latest.finished)}, ${fmtSeconds(latest.seconds)} in totaal.` +
-      (tally(latest) ? ` ${tally(latest).charAt(0).toUpperCase()}${tally(latest).slice(1)}.` : "");
-  const job = state.jobs.find(j => j.book_id === s.book_id && !j.chapter_id);
-  const [label, kind] = job ? JOB_STATUS[job.status] || [job.status, ""] : ["", ""];
-  $("#run-chip").innerHTML = job ? chip(`${STAGES[job.stage] || job.stage}: ${label}`, kind, `Taak ${job.id}, ${fmtWhen(job.updated_at)}`) : "";
-  $("#run-error").innerHTML = !job ? "" : job.status === "failed"
-    ? `<div class="errorbox"><b>Mislukt:</b> ${escapeHtml(job.error || "onbekende fout")}${explainError(job.error) ? `<br><span class="muted">${escapeHtml(explainError(job.error))}</span>` : ""}</div>`
-    : job.status === "cancelled" ? '<p class="muted">Gestopt. Wat klaar was, is bewaard; Hele boek doorlopen gaat verder waar de run was.</p>' : "";
-  const n = s.chapters.length;
-  const count = (f) => list.filter(f).length;
-  const tiles = [
-    ["Hoofdstukken", n, ""],
-    ["Met script", `${count(x => x.ch.script)}/${n}`, ""],
-    ["Nakijken", count(x => x.ch.audit_passed && !x.ch.approved), "warn"],
-    ["Blokkeert", count(x => x.ch.audit_passed === false), "bad"],
-    ["Mislukt", count(x => x.st.broken), "bad"],
-    ["Goedgekeurd", count(x => x.ch.approved), "ok"],
-    ["Gerenderd", count(x => x.ch.final), "ok"],
-  ];
-  $("#book-stats").innerHTML = s.ingested ? tiles.map(([dt, dd, k]) => {
-    const show = k && parseInt(dd, 10) > 0 ? ` tile--${k}` : "";
-    return `<div class="tile${show}"><dt>${dt}</dt><dd>${dd}</dd></div>`;
-  }).join("") : "";
-
-  renderBookNext(s, list);
-  $("#chapters-card").hidden = !s.chapters.length;
-
-  const tbody = $("#chapters tbody");
-  tbody.innerHTML = list.map(({ ch, st }) => {
-    const audit = ch.audit_passed === null ? dash : ch.audit_passed
-      ? chip("ok", "ok", "Geen blokkerende problemen gevonden.")
-      : chip(`${ch.audit_blocking} blokkerend`, "bad", "Open het hoofdstuk en kijk bij Audit wat er mis is.");
-    const why = st.fail && (!ch.script || !ch.audit) ? `<span class="why">${st.fail.status === "stopped" ? "Gestopt" : "Mislukt"} bij ${escapeHtml(st.fail.title)}${st.fail.error ? `: ${escapeHtml(st.fail.error)}` : ""}</span>` : "";
-    return `<tr class="clickable" tabindex="0" data-chapter="${escapeHtml(ch.id)}">
-      <td><div class="chtitle"><b>${escapeHtml(ch.id)} ${escapeHtml(ch.title)}</b><span class="muted small">p${ch.pages[0]}-${ch.pages[1]}, ${ch.chars.toLocaleString("nl-NL")} tekens</span>${why}</div></td>
-      <td class="opt-1">${ch.plan ? chip("klaar", "ok") : dash}</td>
-      <td class="opt-2">${ch.script ? chip(`rev ${ch.script_revision}`, "ok", `Revisie ${ch.script_revision}: zo vaak is het script opgeslagen.`) : dash}</td>
-      <td>${audit}</td>
-      <td class="opt-1">${ch.approved ? chip("ja", "ok") : dash}</td>
-      <td class="opt-2">${ch.final ? chip("klaar", "ok") : dash}${ch.flagged_turns ? " " + chip(`${ch.flagged_turns} gevlagd`, "warn", "Beurten waarvan geen enkele opname het script goed genoeg volgde. Beluister ze bij Audio.") : ""}</td>
-      <td class="num">${durationCell(chapterTiming(ch.id))}</td>
-      <td class="nextcell${st.you ? " is-you" : ""}">${st.busy ? chip("bezig", "run") : escapeHtml(st.next)}</td>
-    </tr>`;
-  }).join("") || `<tr><td colspan="8" class="muted">Nog geen hoofdstukken.</td></tr>`;
-}
-
-// The newest run that went over the book (an upload or Hele boek doorlopen), not a single step on one chapter.
+// The newest run that went over the whole book (an upload or Verder schrijven).
 function latestBookRun() {
   const entries = (state.timings && state.timings.entries) || [];
   const ids = [...new Set(entries.filter(e => e.pass_name === "chapter" || e.pass_name === "ingest").map(e => e.run))].sort();
@@ -354,109 +246,309 @@ function latestBookRun() {
     chapters: chapters.length, done: n("done") - skipped, skipped, failed: n("failed"), stopped: n("stopped") };
 }
 
-function durationCell(chapter) {
-  if (!chapter) return dash;
-  const parts = chapter.passes.filter(p => p.pass_name !== "chapter" && p.status !== "skipped")
-    .map(p => `${passTitle(p)}: ${fmtSeconds(p.seconds)}`);
-  return `<span title="${escapeHtml(parts.join("\n"))}">${fmtSeconds(chapter.seconds)}</span>`;
+// Where a chapter stands, for the book page and the home page.
+function phase(ch) {
+  if (!ch.script || !ch.audit) return "write";
+  if (!ch.approved) return "review";
+  if (!ch.final) return "record";
+  return "listen";
+}
+function bookCounts(s) {
+  const c = { n: s.chapters.length, write: 0, review: 0, record: 0, listen: 0, scripted: 0 };
+  for (const ch of s.chapters) { c[phase(ch)] += 1; if (ch.script) c.scripted += 1; }
+  return c;
 }
 
-// One next step for the whole book, with one primary button.
-function renderBookNext(s, list) {
-  const box = $("#book-next"), text = $("#book-next-text"), action = $("#book-next-action"), runBtn = $("#run-book");
-  box.classList.remove("callout--done");
-  action.hidden = true;
-  action.onclick = null;
-  let runIsPrimary = false;
-  const mine = list.filter(x => x.st.you);
-  const firstMine = mine[0];
-  const offerMine = (primary) => {
-    if (!firstMine) return;
-    action.hidden = false;
-    action.className = `btn ${primary ? "btn--primary" : "btn--secondary"}`;
-    action.textContent = `${firstMine.ch.id} openen`;
-    action.title = `${firstMine.ch.id} ${firstMine.ch.title}: ${firstMine.st.next.toLowerCase()}.`;
-    action.onclick = () => goChapter(firstMine.ch.id);
+// ------------------------------------------------------------------ home
+function renderHome() {
+  const books = state.books;
+  $("#home-welcome").hidden = books.length > 0;
+  $("#home-books").hidden = !books.length;
+  if (!books.length) return;
+  const last = recall("book");
+  const sorted = [...books].sort((a, b) => (b.book_id === last) - (a.book_id === last));
+  $("#book-cards").innerHTML = sorted.map((s, i) => {
+    const c = bookCounts(s);
+    const working = bookBusy(s.book_id);
+    let line, kind;
+    if (!s.ingested) [line, kind] = working ? ["Wordt ingelezen", "run"] : ["Inlezen is niet gelukt", "bad"];
+    else if (working) [line, kind] = ["Luisterstof is aan het werk", "run"];
+    else if (c.review) [line, kind] = [`${plural(c.review, "hoofdstuk wacht", "hoofdstukken wachten")} op je goedkeuring`, "warn"];
+    else if (c.record) [line, kind] = [`${plural(c.record, "hoofdstuk is", "hoofdstukken zijn")} klaar om op te nemen`, "warn"];
+    else if (c.write) [line, kind] = [`${plural(c.write, "hoofdstuk moet", "hoofdstukken moeten")} nog geschreven worden`, ""];
+    else [line, kind] = ["Alle afleveringen zijn klaar", "ok"];
+    const pct = (x) => c.n ? (100 * x / c.n).toFixed(1) : 0;
+    return `<a class="bookcard${i === 0 ? " is-recent" : ""}" href="${bookHash(s.book_id)}">
+      <span class="bookcard__title">${escapeHtml(s.title || s.book_id)}</span>
+      <span class="bookcard__meta">${s.ingested ? `${plural(c.n, "hoofdstuk", "hoofdstukken")} · ${plural(c.listen, "aflevering", "afleveringen")} klaar` : escapeHtml(s.book_id)}</span>
+      ${s.ingested ? `<span class="meter" title="${c.listen} opgenomen, ${c.record} goedgekeurd, ${c.review} geschreven, ${c.write} nog te schrijven">
+        <i class="meter__listen" style="width:${pct(c.listen)}%"></i><i class="meter__record" style="width:${pct(c.record)}%"></i><i class="meter__review" style="width:${pct(c.review)}%"></i></span>` : ""}
+      <span class="bookcard__status">${chip(line, kind)}<span class="bookcard__go">${i === 0 ? "Verder" : "Openen"} →</span></span>
+    </a>`;
+  }).join("");
+}
+
+// ------------------------------------------------------------- book journey
+function renderBook() {
+  const s = state.status;
+  if (!s) return;
+  const title = s.title || s.book_id;
+  $("#crumb-book").textContent = title;
+  $("#book-title").textContent = title;
+  const c = bookCounts(s);
+  $("#book-meta").textContent = s.ingested
+    ? `${plural(c.n, "hoofdstuk", "hoofdstukken")}, elk wordt één aflevering. Hieronder zie je waar je bent en wat de volgende stap is.`
+    : "Hieronder zie je hoe het met het inlezen staat.";
+  let primaryUsed = false;
+  const button = (label, attrs, { primary = true, disabled = false } = {}) => {
+    const isPrimary = primary && !disabled && !primaryUsed;
+    if (isPrimary) primaryUsed = true;
+    return `<button class="btn ${isPrimary ? "btn--primary" : "btn--secondary"}" ${attrs}${disabled ? " disabled" : ""}>${escapeHtml(label)}</button>`;
   };
-  if (!s.ingested) {
-    text.textContent = bookBusy()
-      ? "Het boek wordt ingelezen. Daarna begint het schrijven vanzelf, als dat bij het uploaden aan stond."
-      : "Het boek is nog niet ingelezen. Hieronder staat wat er misging: los dat op en upload de PDF opnieuw.";
-  } else if (bookBusy()) {
-    text.textContent = "Er loopt een taak voor dit boek. Je kunt dit venster sluiten: de taak gaat door zolang de app draait. Kijk later hier wat er klaar is.";
-    offerMine(false);
+  const stages = journeyStages(s, c, button);
+  // One step open: the first one that needs you (and a step that is running, to follow it). The rest is a line.
+  const focus = (stages.find(st => st.status === "failed" || st.status === "active") || {}).key;
+  $("#journey").innerHTML = stages.map((st, i) => {
+    const open = state.stageOpen[st.key] ?? (st.key === focus || st.status === "running");
+    const mark = st.status === "done" ? "✓" : st.status === "failed" ? "!" : String(i + 1);
+    return `<li class="jstep jstep--${st.status}">
+      <details data-key="${st.key}"${open ? " open" : ""}>
+        <summary><span class="jstep__mark" aria-hidden="true">${mark}</span>
+          <span class="jstep__head"><span class="jstep__title">${escapeHtml(st.title)}</span><span class="jstep__summary">${st.summary}</span></span></summary>
+        <div class="jstep__body">${st.body}</div>
+      </details></li>`;
+  }).join("");
+  $("#run-book-quality") && ($("#run-book-quality").checked = state.runQuality);
+  applyQualityMode();
+}
+
+function chapterRows(items, action) {
+  return `<ul class="chrows">${items.map(({ ch, note, btn }) => `<li>
+    <span class="chrows__title"><span class="chrows__id">${escapeHtml(ch.id)}</span> ${escapeHtml(ch.title)}${note ? `<span class="chrows__note">${note}</span>` : ""}</span>
+    ${btn || ""}</li>`).join("")}</ul>${action || ""}`;
+}
+
+function journeyStages(s, c, button) {
+  const stages = [];
+  const job = bookJob(s.book_id);
+  const lastBookJob = state.jobs.find(j => j.book_id === s.book_id && !j.chapter_id);
+  const writerDown = $("#engine-writer").dataset.state === "down";
+  const writerWarn = writerDown ? `<div class="callout callout--bad"><b>Het schrijfmodel staat uit.</b> Start de OpenCode-app en klik bovenaan op het statuslampje om opnieuw te controleren.</div>` : "";
+
+  // 1 read the book in
+  if (s.ingested) {
+    stages.push({ key: "ingest", title: "Boek inlezen", status: "done", summary: `${plural(c.n, "hoofdstuk", "hoofdstukken")} gevonden`,
+      body: `<ol class="toc">${s.chapters.map(ch => `<li><span>${escapeHtml(ch.title)}</span><span class="muted small">p. ${ch.pages[0]}-${ch.pages[1]}</span></li>`).join("")}</ol>
+        <p class="muted small">Klopt de indeling niet? Voeg het boek opnieuw toe en kies onder Meer opties een andere manier om hoofdstukken te vinden.</p>` });
+  } else if (bookBusy(s.book_id)) {
+    stages.push({ key: "ingest", title: "Boek inlezen", status: "running", summary: "Bezig",
+      body: "<p>Luisterstof zoekt de hoofdstukken in de PDF. Dat duurt meestal een paar minuten.</p>" });
   } else {
-    const todo = list.filter(x => !x.ch.script || (x.st.fail && !x.ch.audit));
-    const broken = todo.filter(x => x.st.broken).length;
-    if (todo.length) {
-      runIsPrimary = true;
-      text.textContent = `${todo.length === 1 ? "1 hoofdstuk heeft" : `${todo.length} hoofdstukken hebben`} nog geen script met audit` +
-        (broken ? ` (${broken} mislukt)` : "") + ". Hele boek doorlopen maakt wat ontbreekt en slaat over wat al klaar is." +
-        (mine.length ? ` Intussen ${mine.length === 1 ? "wacht 1 hoofdstuk" : `wachten ${mine.length} hoofdstukken`} op jou.` : "");
-      offerMine(false);
-    } else if (firstMine) {
-      text.textContent = `${mine.length === 1 ? "1 hoofdstuk wacht" : `${mine.length} hoofdstukken wachten`} op jou. Begin bij ${firstMine.ch.id} ${firstMine.ch.title}: ${firstMine.st.next.toLowerCase()}.`;
-      offerMine(true);
+    const err = lastBookJob && lastBookJob.error;
+    stages.push({ key: "ingest", title: "Boek inlezen", status: "failed", summary: "Niet gelukt",
+      body: `<p>Het inlezen van dit boek is niet gelukt.</p>${err ? `<div class="errorbox">${escapeHtml(err)}</div>` : ""}
+        <p>Voeg de PDF opnieuw toe. Onder Meer opties kun je een andere manier kiezen om de hoofdstukken te vinden.</p>
+        <div class="actions">${button("Opnieuw toevoegen", 'data-action="new"')}</div>` });
+  }
+
+  // 2 write the scripts
+  const latest = latestBookRun();
+  const runLine = latest ? `<p class="muted">De laatste run begon ${fmtWhen(latest.started)} en duurde ${fmtSeconds(latest.seconds)}.</p>` : "";
+  if (!s.ingested) {
+    stages.push({ key: "write", title: "Scripts laten schrijven", status: "locked", summary: "Na het inlezen", body: "<p>Zodra de hoofdstukken bekend zijn, schrijft Luisterstof per hoofdstuk een script.</p>" });
+  } else if (job) {
+    const at = run.job && run.job.id === job.id && run.book ? `Nu bij hoofdstuk ${run.book.index} van ${run.book.total}: ${escapeHtml(run.book.label)}.` : "Bezig.";
+    stages.push({ key: "write", title: "Scripts laten schrijven", status: "running", summary: job.status === "queued" ? "In de wachtrij" : "Bezig",
+      body: `<p>${at} Je kunt dit venster sluiten: het werk gaat door zolang de app draait. Kijk morgen weer.</p>
+        <p class="muted">${plural(c.n - c.write, "script is", "scripts zijn")} al klaar, ${c.write} nog te gaan. Wat klaar is, verschijnt meteen hieronder bij Nalezen.</p>
+        <div class="actions"><button class="btn btn--outline" data-action="stop" data-job="${escapeHtml(job.id)}">Stoppen</button></div>` });
+  } else if (!c.write) {
+    stages.push({ key: "write", title: "Scripts laten schrijven", status: "done", summary: `Alle ${c.n} scripts geschreven en gecontroleerd`, body: runLine || "<p>Alle scripts zijn er.</p>" });
+  } else {
+    const failed = s.chapters.filter(ch => phase(ch) === "write" && lastFailure(ch.id));
+    const quality = `<label class="check" title="Meer controlerondes en herschrijfrondes. Kan uren per hoofdstuk duren."><input type="checkbox" id="run-book-quality" class="quality-box"> grondig (langzamer, beter)</label>`;
+    const jobErr = lastBookJob && lastBookJob.status === "failed" && lastBookJob.error
+      ? `<div class="errorbox"><b>De laatste run stopte:</b> ${escapeHtml(lastBookJob.error)}${explainError(lastBookJob.error) ? `<br>${escapeHtml(explainError(lastBookJob.error))}` : ""}</div>` : "";
+    if (!c.scripted) {
+      stages.push({ key: "write", title: "Scripts laten schrijven", status: "active", summary: "Nog niet begonnen",
+        body: `<p>Luisterstof maakt voor elk hoofdstuk een plan van wat er feitelijk in moet, schrijft daar een gesprek tussen Tessa en Joris bij en controleert dat gesprek tegen het boek. Voor dit boek duurt dat uren: start het als de computer een nacht kan doorwerken.</p>
+          ${writerWarn}${jobErr}<div class="actions">${button("Start met schrijven", 'data-action="run-book"')}${quality}</div>` });
     } else {
-      box.classList.add("callout--done");
-      text.textContent = "Alle afleveringen zijn klaar. Open een hoofdstuk om te luisteren.";
+      stages.push({ key: "write", title: "Scripts laten schrijven", status: "active", summary: `${c.n - c.write} van ${c.n} geschreven`,
+        body: `<p>${plural(c.write, "hoofdstuk heeft", "hoofdstukken hebben")} nog geen gecontroleerd script. Verder schrijven slaat over wat al klaar is.</p>
+          ${failed.length ? `<ul class="fails">${failed.map(ch => `<li><b>${escapeHtml(ch.id)} ${escapeHtml(ch.title)}</b>: ${escapeHtml(failureText(lastFailure(ch.id)))}</li>`).join("")}</ul>` : ""}
+          ${runLine}${writerWarn}${jobErr}<div class="actions">${button("Verder schrijven", 'data-action="run-book"')}${quality}</div>` });
     }
   }
-  runBtn.className = `btn ${runIsPrimary ? "btn--primary" : "btn--secondary"}`;
-  const bookJob = state.jobs.some(j => j.book_id === s.book_id && !j.chapter_id && ACTIVE.includes(j.status));
-  runBtn.disabled = !s.ingested || bookJob;
-  runBtn.dataset.busy = bookJob ? "1" : "";
+
+  // 3 read and approve
+  const toReview = s.chapters.filter(ch => phase(ch) === "review");
+  const approved = s.chapters.filter(ch => ch.approved).length;
+  if (!c.scripted) {
+    stages.push({ key: "review", title: "Nalezen en goedkeuren", status: "locked", summary: "Zodra er scripts zijn",
+      body: "<p>Jij leest elk script na voordat het opgenomen wordt. Luisterstof wijst aan waar het iets niet vertrouwt.</p>" });
+  } else if (toReview.length) {
+    const rows = toReview.map(ch => {
+      const busyNow = chapterBusy(ch.id);
+      const note = busyNow ? chip("bezig", "run") : ch.audit_passed === false ? chip(plural(ch.audit_blocking, "probleem", "problemen") + " om op te lossen", "bad") : chip("klaar om na te lezen", "warn");
+      return { ch, note, btn: button(ch.audit_passed === false ? "Oplossen" : "Nalezen", `data-action="chapter" data-chapter="${escapeHtml(ch.id)}" data-step="review"`) };
+    });
+    stages.push({ key: "review", title: "Nalezen en goedkeuren", status: "active", summary: `${plural(toReview.length, "hoofdstuk wacht", "hoofdstukken wachten")} op jou`,
+      body: `<p>Lees elk gesprek na zoals de luisteraar het hoort. Klopt het, dan keur je het goed en kan het opgenomen worden.</p>${chapterRows(rows)}
+        ${approved ? `<p class="muted small">${plural(approved, "hoofdstuk is", "hoofdstukken zijn")} al goedgekeurd.</p>` : ""}` });
+  } else if (approved === c.n) {
+    stages.push({ key: "review", title: "Nalezen en goedkeuren", status: "done", summary: "Alles goedgekeurd", body: "<p>Je hebt alle scripts goedgekeurd. Je kunt ze altijd nog teruglezen via het hoofdstuk.</p>" });
+  } else {
+    stages.push({ key: "review", title: "Nalezen en goedkeuren", status: "waiting", summary: "Wacht op de volgende scripts",
+      body: `<p>${plural(approved, "hoofdstuk is", "hoofdstukken zijn")} goedgekeurd. De rest verschijnt hier zodra het geschreven is.</p>` });
+  }
+
+  // 4 record
+  const toRecord = s.chapters.filter(ch => phase(ch) === "record");
+  const voiceDown = $("#engine-voice").dataset.state === "down";
+  if (!toRecord.length && !c.listen) {
+    stages.push({ key: "record", title: "Opnemen", status: "locked", summary: "Na je goedkeuring",
+      body: "<p>Tessa en Joris lezen een goedgekeurd script in. Dat kost per hoofdstuk een paar uur rekentijd op de videokaart.</p>" });
+  } else if (toRecord.length) {
+    const rows = toRecord.map(ch => ({ ch, note: chapterBusy(ch.id) ? chip("wordt opgenomen", "run") : "",
+      btn: button("Opnemen", `data-action="chapter" data-chapter="${escapeHtml(ch.id)}" data-step="record"`, { primary: !chapterBusy(ch.id) }) }));
+    stages.push({ key: "record", title: "Opnemen", status: "active", summary: `${plural(toRecord.length, "hoofdstuk is", "hoofdstukken zijn")} klaar om op te nemen`,
+      body: `<p>Elke beurt wordt een paar keer opgenomen en de opname die het script het best volgt, wordt gekozen. Reken op een paar uur per hoofdstuk.</p>
+        ${voiceDown ? '<div class="callout callout--bad"><b>De stemmen zijn niet geïnstalleerd.</b> Draai <code>studiepodcast doctor</code> in de map van Luisterstof om te zien wat er ontbreekt.</div>' : ""}
+        ${chapterRows(rows)}` });
+  } else if (c.listen === c.n) {
+    stages.push({ key: "record", title: "Opnemen", status: "done", summary: "Alles opgenomen", body: "<p>Alle afleveringen zijn opgenomen.</p>" });
+  } else {
+    stages.push({ key: "record", title: "Opnemen", status: "waiting", summary: "Wacht op je goedkeuring", body: "<p>Keur een script goed, dan kan het hier opgenomen worden.</p>" });
+  }
+
+  // 5 listen
+  const done = s.chapters.filter(ch => ch.final);
+  if (!done.length) {
+    stages.push({ key: "listen", title: "Luisteren", status: "locked", summary: "Na het opnemen", body: "<p>Hier staan straks de afleveringen.</p>" });
+  } else {
+    const rows = done.map(ch => ({ ch, note: ch.flagged_turns ? chip(`${ch.flagged_turns} twijfelachtige ${ch.flagged_turns === 1 ? "beurt" : "beurten"}`, "warn", "Beurten waarvan geen opname het script goed genoeg volgde. Beluister ze even.") : "",
+      btn: button("Beluisteren", `data-action="chapter" data-chapter="${escapeHtml(ch.id)}" data-step="listen"`, { primary: false }) }));
+    stages.push({ key: "listen", title: "Luisteren", status: done.length === c.n ? "done" : "ready", summary: `${plural(done.length, "aflevering", "afleveringen")} klaar`,
+      body: chapterRows(rows) });
+  }
+  return stages;
 }
 
-// --------------------------------------------------------------- chapters
-async function openChapter(chapterId, { keepTab = false } = {}) {
-  const same = chapterId === state.chapter && state.view === "chapter";
-  const scroll = $("#content").scrollTop;
+async function runBook(btn) {
+  if (!state.book) return;
+  try {
+    const job = await busy(btn, "Starten...", () => api.send(bookUrl("/run"), "POST", { upto: "script", quality: state.runQuality }));
+    log("schrijven gestart: wat al klaar is wordt overgeslagen");
+    toast("Luisterstof is begonnen met schrijven. Je kunt dit venster sluiten.");
+    watch(job);
+  } catch (err) { fail(err, "Schrijven starten"); }
+}
+
+// --------------------------------------------------------------- chapter
+function chapterPhase(data) {
+  if (!data.script) return "missing";
+  if (!data.approved) return "review";
+  if (!data.final.audio) return "record";
+  return "listen";
+}
+
+async function openChapter(chapterId, step = null, { keep = false } = {}) {
   let data;
   try { data = await api.get(`/api/books/${enc(state.book)}/chapters/${enc(chapterId)}`); } catch (err) { fail(err, "Hoofdstuk openen"); return; }
+  const scroll = window.scrollY;
+  const same = chapterId === state.chapter && state.view === "chapter";
   state.chapter = chapterId;
   state.data = data;
   setDirty(false);
-  showView("chapter");
   const info = chapterInfo(chapterId);
+  const title = (data.plan && data.plan.chapter_title) || (info && info.title) || chapterId;
+  $("#crumb-chapter-book").textContent = state.status.title || state.book;
+  $("#crumb-chapter-book").href = bookHash(state.book);
+  $("#crumb-chapter").textContent = `Hoofdstuk ${chapterId}`;
   $("#chapter-overline").textContent = `Hoofdstuk ${chapterId}`;
-  $("#chapter-title").textContent = (data.plan && data.plan.chapter_title) || (info && info.title) || chapterId;
+  $("#chapter-title").textContent = title;
   const meta = [];
-  if (info) meta.push(`p${info.pages[0]}-${info.pages[1]}`, `${info.chars.toLocaleString("nl-NL")} tekens`);
-  if (data.script) meta.push(`script revisie ${data.script.revision}`, `streef ${data.script.target_minutes} min`);
+  if (info) meta.push(`pagina ${info.pages[0]} tot ${info.pages[1]}`);
+  if (data.script) meta.push(`aflevering van ongeveer ${data.script.target_minutes} minuten`);
   $("#chapter-meta").textContent = meta.join(" · ");
-  renderChapterActions(data);
-  renderScript(data);
+  const current = chapterPhase(data);
+  const allowed = current === "missing" ? [] : STEP_ORDER.slice(0, STEP_ORDER.indexOf(current) + 1);
+  state.step = current === "missing" ? "missing" : allowed.includes(step) ? step : current;
+  showView("chapter");
+  renderTracker(current);
+  renderChapter();
   renderAudit(data);
   renderPlan(data);
-  renderAudio(data);
   renderArtifacts();
   renderTimings(chapterId);
   loadGlossary();
-  renderSidebar();
-  if (same || keepTab) { $("#content").scrollTop = same ? scroll : 0; autosizeAll(); }
-  else { showTab("script"); $("#content").scrollTop = 0; }
+  window.scrollTo(0, keep && same ? scroll : 0);
+  const want = chapterHash(state.book, chapterId, state.step === "missing" ? null : state.step);
+  if (location.hash !== want) { history.replaceState(null, "", want); lastHash = want; }
 }
 
-const RENDER_TITLE = $("#render").title;
-function setStepLabel(btn, text) { btn.innerHTML = `<i></i>${escapeHtml(text)}`; }
+function renderTracker(current) {
+  const ci = STEP_ORDER.indexOf(current);
+  $$("#tracker button").forEach(b => {
+    const i = STEP_ORDER.indexOf(b.dataset.step);
+    const st = current === "missing" ? "todo" : i < ci ? "done" : i === ci ? "current" : "todo";
+    b.dataset.state = st;
+    b.disabled = st === "todo";
+    b.toggleAttribute("aria-current", b.dataset.step === state.step);
+    $(".tracker__n", b).textContent = st === "done" ? "✓" : String(i + 1);
+  });
+}
 
-function renderChapterActions(data) {
-  const approveBtn = $("#approve"), renderBtn = $("#render");
-  approveBtn.disabled = !(data.audit && data.audit.passed) || data.approved;
-  setStepLabel(approveBtn, data.approved ? "5 Goedgekeurd" : "5 Goedkeuren");
-  approveBtn.title = approveReason(data);
-  renderBtn.disabled = !data.approved;
-  renderBtn.title = data.approved ? RENDER_TITLE : "Stap 6. Kan pas na je goedkeuring van deze scriptversie (stap 5). De render kost uren GPU-tijd, lees daarom eerst het script en de audit.";
-  const a = auditState(data);
-  const set = (step, st) => { $(`.step[data-step="${step}"]`).dataset.state = st || ""; };
-  set("plan", data.plan ? "done" : "next");
-  set("glossary", state.status && state.status.glossary_entries ? "done" : "");
-  set("script", data.script ? "done" : data.plan ? "next" : "");
-  set("audit", a === "passed" ? "done" : a === "blocked" ? "bad" : a === "stale" ? "next" : "");
-  set("approve", data.approved ? "done" : a === "passed" ? "next" : "");
-  set("render", data.final.audio ? "done" : data.approved ? "next" : "");
-  renderNext(data);
+function renderChapter() {
+  const data = state.data;
+  if (!data) return;
+  for (const s of ["missing", "review", "record", "listen"]) $(`#step-${s}`).hidden = s !== state.step;
+  $("#tracker").hidden = state.step === "missing";
+  if (state.step === "missing") renderMissing(data);
+  if (state.step === "review") { renderScript(data); renderReviewGuide(data); }
+  if (state.step === "record") renderRecord(data);
+  if (state.step === "listen") renderAudio(data);
+}
+
+function actionButtons(el, items) {
+  el.innerHTML = "";
+  for (const it of items) {
+    if (!it) continue;
+    const b = document.createElement("button");
+    b.className = `btn ${it.primary ? "btn--primary" : it.outline ? "btn--outline" : "btn--secondary"}`;
+    b.textContent = it.label;
+    b.disabled = !!it.disabled;
+    if (it.title) b.title = it.title;
+    b.onclick = it.action;
+    el.appendChild(b);
+  }
+}
+function setGuide(prefix, title, text) {
+  $(`#${prefix}-title`).textContent = title;
+  $(`#${prefix}-text`).textContent = text;
+}
+
+function renderMissing(data) {
+  const busyNow = chapterBusy(state.chapter);
+  const f = lastFailure(state.chapter);
+  $("#missing-why").hidden = true;
+  if (busyNow) {
+    setGuide("missing", "Dit hoofdstuk wordt nu geschreven", "Kijk straks terug. De balk bovenaan laat zien hoe ver het is.");
+    actionButtons($("#missing-actions"), [{ label: "Terug naar het boek", action: () => go(bookHash(state.book)) }]);
+    return;
+  }
+  if (f) {
+    setGuide("missing", "Het schrijven liep vast", "Dit hoofdstuk heeft nog geen script.");
+    $("#missing-why").textContent = failureText(f);
+    $("#missing-why").hidden = false;
+  } else {
+    setGuide("missing", "Nog geen script", "Dit hoofdstuk is nog niet geschreven. Je kunt het hele boek laten schrijven vanaf de boekpagina, of alleen dit hoofdstuk.");
+  }
+  actionButtons($("#missing-actions"), [
+    { label: "Schrijf dit hoofdstuk", primary: true, action: () => runStage(data.plan ? "script" : "all") },
+    { label: "Terug naar het boek", action: () => go(bookHash(state.book)) },
+  ]);
 }
 
 // The audit only counts when it checked the script revision that is on disk now.
@@ -466,79 +558,91 @@ function auditState(data) {
   return data.audit.passed ? "passed" : "blocked";
 }
 
-function approveReason(data) {
-  if (data.approved) return `Stap 5. Revisie ${data.script.revision} is goedgekeurd. Sla je het script opnieuw op, dan vervalt dit.`;
-  if (!data.script) return "Stap 5. Er is nog geen script om goed te keuren.";
-  const a = auditState(data);
-  if (a === "blocked") return "Stap 5. Kan nog niet: de audit vond blokkerende problemen. Los ze op in het script, sla op en draai de audit opnieuw.";
-  if (!data.audit) return "Stap 5. Kan nog niet: draai eerst de audit.";
-  if (a === "stale") return "Stap 5. De audit hoort bij een oudere revisie. Goedkeuren draait de audit eerst opnieuw op deze versie.";
-  return "Stap 5. Jouw akkoord op deze scriptversie. Lees eerst het script en de audit; daarna mag de Chatterbox-render.";
+function firstBlocking(data) {
+  const blocking = data.audit ? data.audit.issues.filter(i => i.severity === "blocking") : [];
+  return blocking.find(i => i.line_id && data.script.segments.some(s => s.lines.some(l => l.id === i.line_id)));
 }
 
-// The one next step for this chapter: a sentence and the primary button that does it.
-function nextStep(data) {
+function renderReviewGuide(data) {
+  const busyNow = chapterBusy(state.chapter);
+  const a = auditState(data);
+  const blocking = data.audit ? data.audit.issues.filter(i => i.severity === "blocking").length : 0;
+  const toEnd = () => $("#review-end").scrollIntoView({ behavior: "smooth", block: "center" });
+  const recheck = (primary) => ({ label: "Opnieuw controleren", primary, action: () => runStage("audit") });
+  let top = [], end = [];
+  if (busyNow) {
+    const job = chapterJob(state.chapter);
+    setGuide("review", "Luisterstof werkt aan dit hoofdstuk", `${job ? STAGES[job.stage] || job.stage : "Schrijven"} is bezig. Het script kan nog veranderen, dus wacht even met aanpassen.`);
+    setGuide("end", "Even wachten", "Goedkeuren kan zodra Luisterstof klaar is met dit hoofdstuk.");
+    end = [{ label: "Goedkeuren", disabled: true }];
+  } else if (data.approved) {
+    setGuide("review", "Goedgekeurd", `Je hebt deze versie goedgekeurd. Pas je nog iets aan, dan vervalt de goedkeuring en wordt het script opnieuw gecontroleerd.`);
+    top = [{ label: "Naar opnemen", primary: true, action: () => go(chapterHash(state.book, state.chapter, "record")) }];
+    setGuide("end", "Goedgekeurd", "De stemmen kunnen dit hoofdstuk opnemen.");
+    end = [{ label: "Naar opnemen", action: () => go(chapterHash(state.book, state.chapter, "record")) }];
+  } else if (a === "stale") {
+    setGuide("review", "Eerst opnieuw controleren", data.audit
+      ? "Het script is aangepast sinds de laatste controle. Laat Luisterstof het opnieuw tegen het boek leggen voordat je goedkeurt."
+      : "Dit script is nog niet gecontroleerd. Laat Luisterstof het tegen het boek leggen voordat je goedkeurt.");
+    top = [recheck(true)];
+    setGuide("end", "Eerst opnieuw controleren", "Goedkeuren kan als de controle van deze versie geslaagd is.");
+    end = [recheck(false)];
+  } else if (a === "blocked") {
+    setGuide("review", `${plural(blocking, "probleem", "problemen")} om op te lossen`,
+      "Luisterstof vond regels die niet kloppen met het boek of tegen de regels ingaan. Ze staan hieronder rood gemarkeerd, met uitleg. Pas de tekst aan en sla op; daarna wordt het opnieuw gecontroleerd. Liever een heel nieuw script? Dat kan onder Meer over dit hoofdstuk.");
+    const first = firstBlocking(data);
+    top = [{ label: first ? "Naar het eerste probleem" : "Bekijk de problemen", primary: true,
+      action: () => first ? jumpToLine(first.line_id) : openMore("audit") }];
+    setGuide("end", "Nog niet goed te keuren", `Los eerst ${blocking === 1 ? "het rode probleem" : "de rode problemen"} op.`);
+    end = [{ label: "Goedkeuren", disabled: true }];
+  } else {
+    const tips = data.audit ? data.audit.issues.filter(i => i.severity === "warning").length : 0;
+    setGuide("review", "Lees het gesprek na", "Lees het zoals de luisteraar het straks hoort." +
+      (tips ? ` Waar Luisterstof een tip heeft, staat die in oranje onder de regel; tips mogen blijven staan.` : "") +
+      " Iets aanpassen? Klik in de tekst. Klopt alles, keur het dan onderaan goed.");
+    top = [{ label: "Direct naar goedkeuren", action: toEnd }];
+    setGuide("end", "Klaar met lezen?", "Na je goedkeuring kunnen de stemmen dit hoofdstuk opnemen.");
+    end = [{ label: "Goedkeuren", primary: true, action: approve }];
+  }
   if (state.dirty) {
-    return { text: "Je hebt het script aangepast. Sla het op; daarna draai je de audit opnieuw op de nieuwe versie.",
-      label: "Script opslaan", action: saveScript };
+    setGuide("end", "Eerst opslaan", "Sla je wijzigingen op; daarna wordt het script opnieuw gecontroleerd.");
+    end = [{ label: "Goedkeuren", disabled: true }];
   }
-  const job = chapterJob(state.chapter);
-  if (job || chapterBusy(state.chapter)) {
-    return { text: job ? `${STAGES[job.stage] || job.stage} ${job.status === "queued" ? "staat in de wachtrij" : "is bezig"} voor dit hoofdstuk. De voortgang staat bovenaan.`
-      : "De run van het hele boek werkt nu aan dit hoofdstuk. De voortgang staat bovenaan.", label: "Bezig...", disabled: true };
-  }
-  if (!data.plan) {
-    return { text: "Dit hoofdstuk heeft nog geen plan. Zonder plan weet het script niet wat het feitelijk moet overbrengen.",
-      label: "Plan maken", action: () => runStage("plan"), title: $('.step[data-step="plan"]').title };
-  }
-  if (!data.script) {
-    return { text: "Het plan is klaar. Wil je eerst de uitspraak van vaktermen laten zoeken, gebruik dan stap 2 Lexicon. Het script wordt meteen geaudit.",
-      label: "Script schrijven", action: () => runStage("script"), title: $('.step[data-step="script"]').title };
-  }
-  const a = auditState(data);
-  if (a === "stale") {
-    return { text: "Het script is gewijzigd sinds de laatste controle. Draai de audit op deze versie.",
-      label: "Audit draaien", action: () => runStage("audit"), title: $('.step[data-step="audit"]').title };
-  }
-  if (a === "blocked") {
-    const blocking = data.audit.issues.filter(i => i.severity === "blocking");
-    const first = blocking.find(i => i.line_id && data.script.segments.some(s => s.lines.some(l => l.id === i.line_id)));
-    return { text: `${blocking.length === 1 ? "1 blokkerend probleem" : `${blocking.length} blokkerende problemen`} oplossen. Pas de regels aan in het script, sla op en draai de audit opnieuw. Of laat stap 3 Script alles opnieuw schrijven.`,
-      label: first ? "Naar het eerste probleem" : "Problemen bekijken", action: () => first ? jumpToLine(first.line_id) : showTab("audit") };
-  }
-  if (!data.approved) {
-    return { text: "Lees het script en de bevindingen van de audit. Klopt de inhoud, keur dan goed; daarna mag de render.",
-      label: "Goedkeuren", action: approve, title: approveReason(data) };
-  }
-  if (!data.final.audio) {
-    return { text: "Goedgekeurd. De render met Chatterbox duurt uren; de voortgang staat bovenaan.",
-      label: "Render starten", action: () => runStage("render"), title: RENDER_TITLE };
-  }
-  const flagged = data.manifest ? data.manifest.turns.filter(t => t.flagged).length : 0;
-  if (flagged) {
-    return { text: `De aflevering is klaar. ${flagged === 1 ? "1 beurt is" : `${flagged} beurten zijn`} gevlagd: beluister ze bij Audio.`,
-      label: "Naar de audio", action: () => showTab("audio") };
-  }
-  return { text: "Klaar. De aflevering staat bij Audio.", label: "Beluisteren", action: () => showTab("audio"), done: true };
+  actionButtons($("#review-actions"), top);
+  actionButtons($("#end-actions"), end);
 }
 
-function renderNext(data) {
-  if (!data) return;
-  const n = nextStep(data);
-  $("#next-step").textContent = n.text;
-  const failure = !state.dirty && (!data.script || !data.audit) ? lastFailure(state.chapter) : null;
-  $("#next-why").hidden = !failure;
-  if (failure) {
-    $("#next-why").textContent = `De laatste run ${failure.status === "stopped" ? "is gestopt" : "liep vast"} bij ${failure.title}` +
-      (failure.error ? `: ${failure.error}` : ".") + (explainError(failure.error) ? ` ${explainError(failure.error)}` : "");
+function renderRecord(data) {
+  const job = chapterJob(state.chapter);
+  const voiceDown = $("#engine-voice").dataset.state === "down";
+  const f = lastFailure(state.chapter);
+  $("#record-why").hidden = true;
+  if (job && job.stage === "render") {
+    setGuide("record", "De stemmen nemen op", "Dit duurt een paar uur. De balk bovenaan laat zien hoe ver het is; je kunt dit venster sluiten.");
+    actionButtons($("#record-actions"), []);
+    return;
   }
-  const btn = $("#next-action");
-  btn.hidden = !n.label;
-  btn.textContent = n.label || "";
-  btn.title = n.title || "";
-  btn.disabled = !!n.disabled;
-  state.nextAction = n.action || null;
-  $("#next-box").classList.toggle("callout--done", !!n.done);
+  if (data.final.audio) {
+    setGuide("record", "Opgenomen", "Deze aflevering is opgenomen. Opnieuw opnemen kan, bijvoorbeeld nadat je het script hebt aangepast en opnieuw goedgekeurd.");
+    actionButtons($("#record-actions"), [
+      { label: "Beluisteren", primary: true, action: () => go(chapterHash(state.book, state.chapter, "listen")) },
+      { label: "Opnieuw opnemen", disabled: !!job, action: () => confirm("Opnieuw opnemen? Dit kost weer een paar uur.") && runStage("render", { force: true }) },
+    ]);
+    return;
+  }
+  setGuide("record", "Laat de stemmen het opnemen",
+    "Tessa en Joris lezen het goedgekeurde script in. Elke beurt wordt een paar keer opgenomen en de opname die het script het best volgt, wordt gekozen. Reken op een paar uur rekentijd op de videokaart; start het als je de computer even niet nodig hebt.");
+  if (voiceDown) {
+    $("#record-why").textContent = "De stemmen zijn niet geïnstalleerd. Draai studiepodcast doctor in de map van Luisterstof om te zien wat er ontbreekt.";
+    $("#record-why").hidden = false;
+  } else if (f && f.pass === "render") {
+    $("#record-why").textContent = failureText(f);
+    $("#record-why").hidden = false;
+  }
+  actionButtons($("#record-actions"), [
+    { label: "Start de opname", primary: true, disabled: !!job, action: () => runStage("render") },
+    { label: "Het script nog eens lezen", action: () => go(chapterHash(state.book, state.chapter, "review")) },
+  ]);
 }
 
 // ------------------------------------------------------------------ script
@@ -552,33 +656,26 @@ function autosizeAll() { if (!FIELD_SIZING) $$("#script-lines textarea.text").fo
 
 function issueLine(i) {
   const blocking = i.severity === "blocking";
-  return `<div class="lineissue">${chip(blocking ? "blokkerend" : "waarschuwing", blocking ? "bad" : "warn")}<span><span class="rule">${escapeHtml(i.rule)}</span> ${escapeHtml(i.message)}${i.suggestion ? ` <span class="muted">${escapeHtml(i.suggestion)}</span>` : ""}</span></div>`;
+  return `<div class="lineissue lineissue--${blocking ? "bad" : "warn"}"><span class="lineissue__kind">${blocking ? "Probleem" : "Tip"}</span><span>${escapeHtml(i.message)}${i.suggestion ? ` <span class="muted">${escapeHtml(i.suggestion)}</span>` : ""} <span class="rule">${escapeHtml(i.rule)}</span></span></div>`;
 }
 
 function renderScript(data) {
   const root = $("#script-lines");
   root.innerHTML = "";
-  $("#save-script").disabled = !data.script;
-  if (!data.script) {
-    root.innerHTML = `<p class="empty">Nog geen script. ${chapterBusy(state.chapter) ? "Het wordt nu gemaakt; de voortgang staat bovenaan." : data.plan ? "Kies hierboven Script schrijven." : "Eerst een plan, dan een script."}</p>`;
-    $("#script-meta").textContent = "";
-    updateIssueFilter(0);
-    return;
-  }
   const issues = {};
-  for (const i of (data.audit ? data.audit.issues : [])) if (i.line_id) (issues[i.line_id] ||= []).push(i);
+  for (const i of (data.audit && auditState(data) !== "stale" ? data.audit.issues : [])) if (i.line_id) (issues[i.line_id] ||= []).push(i);
   const total = data.script.segments.reduce((n, s) => n + s.lines.length, 0);
-  const stale = auditState(data) === "stale" && data.audit;
-  $("#script-meta").textContent = `revisie ${data.script.revision} · ${total} regels · streef ${data.script.target_minutes} min` +
-    (stale ? " · opmerkingen horen bij een oudere revisie" : "");
-  const speakers = [...new Set(data.script.segments.flatMap(s => s.lines.map(l => l.speaker)))];
+  $("#script-meta").textContent = `${total} regels · versie ${data.script.revision}`;
+  // The cast order fixes each host's colour, so Tessa looks the same in every chapter.
+  const speakers = [...new Set([...state.hosts, ...data.script.segments.flatMap(s => s.lines.map(l => l.speaker))])];
+  const name = (id) => state.names[id] || id.charAt(0).toUpperCase() + id.slice(1);
   const frag = document.createDocumentFragment();
-  let flagged = 0;
+  let flagged = 0, blockNo = 0;
   for (const seg of data.script.segments) {
     const h = document.createElement("div");
     h.className = "segment" + (seg.lines.some(l => issues[l.id]) ? " has-issues" : "");
-    h.innerHTML = `<span class="segment__type">${escapeHtml(SEGMENTS[seg.type] || seg.type)}</span>` +
-      (seg.title && seg.title.toLowerCase() !== (SEGMENTS[seg.type] || seg.type).toLowerCase() ? `<span class="segment__title">${escapeHtml(seg.title)}</span>` : "") +
+    const label = seg.type === "body" ? `Blok ${++blockNo}` : SEGMENTS[seg.type] || seg.type;
+    h.innerHTML = `<span class="segment__type">${escapeHtml(label)}</span>` +
       (seg.covers.length ? `<span class="segment__covers">dekt ${escapeHtml(seg.covers.join(", "))}</span>` : "");
     frag.appendChild(h);
     for (const line of seg.lines) {
@@ -586,34 +683,34 @@ function renderScript(data) {
       if (li.length) flagged += 1;
       const blocking = li.some(i => i.severity === "blocking");
       const div = document.createElement("div");
-      div.className = "line" + (blocking ? " has-issue" : li.length ? " has-warning" : "");
+      div.className = "line" + (blocking ? " has-issue" : li.length ? " has-warning" : "") + (line.overlap.mode === "backchannel" ? " is-backchannel" : "");
       div.dataset.id = line.id;
       div.dataset.spk = String(speakers.indexOf(line.speaker));
       const mode = line.overlap.mode;
-      div.innerHTML = `<span class="id">${escapeHtml(line.id)}</span>
-        <div class="meta-who"><select class="speaker" aria-label="Spreker van ${escapeHtml(line.id)}">${speakers.map(s => `<option ${s === line.speaker ? "selected" : ""}>${escapeHtml(s)}</option>`).join("")}</select></div>
-        <textarea class="text" rows="1" aria-label="Tekst van ${escapeHtml(line.id)}">${escapeHtml(line.text)}</textarea>
-        <div class="line__meta">
-          <label class="mf" title="De emotie waarmee de regel wordt uitgesproken, gescheiden door komma's."><span>tags</span><input class="tags" type="text" value="${escapeHtml(line.tags.join(", "))}"></label>
-          <label class="mf" title="Welke beweringen uit het plan deze regel overbrengt (c1, c2)."><span>dekt</span><input class="covers" type="text" value="${escapeHtml(line.covers.join(", "))}"></label>
-          <label class="mf" title="geen: een gewone beurt. onderbreekt: valt de vorige spreker in de rede. reactie: kort onder de ander door (ja, precies, een lach)."><span>overlap</span><select class="overlap${mode === "none" ? " is-none" : ""}">${Object.entries(OVERLAP).map(([v, t]) => `<option value="${v}" ${mode === v ? "selected" : ""}>${t}</option>`).join("")}</select></label>
-          <label class="mf" title="Een bewuste stilte na de regel, in milliseconden."><span>pauze</span><input class="pause" type="number" min="0" step="250" placeholder="ms" value="${line.pause_after_ms || ""}"></label>
-        </div>
-        ${li.length ? `<div class="issues">${li.map(issueLine).join("")}</div>` : ""}`;
+      div.innerHTML = `<div class="line__who">
+          <select class="speaker" aria-label="Spreker van regel ${escapeHtml(line.id)}">${speakers.map(s => `<option value="${escapeHtml(s)}" ${s === line.speaker ? "selected" : ""}>${escapeHtml(name(s))}</option>`).join("")}</select>
+          <span class="id">${escapeHtml(line.id)}</span></div>
+        <div class="line__main">
+          <textarea class="text" rows="1" aria-label="Tekst van regel ${escapeHtml(line.id)}">${escapeHtml(line.text)}</textarea>
+          <div class="line__meta">
+            <label class="mf" title="De emotie waarmee de regel wordt uitgesproken, gescheiden door komma's."><span>emotie</span><input class="tags" type="text" value="${escapeHtml(line.tags.join(", "))}"></label>
+            <label class="mf" title="Welke beweringen uit het plan deze regel overbrengt (c1, c2)."><span>dekt</span><input class="covers" type="text" value="${escapeHtml(line.covers.join(", "))}"></label>
+            <label class="mf" title="geen: een gewone beurt. onderbreekt: valt de vorige spreker in de rede. reactie: kort onder de ander door."><span>overlap</span><select class="overlap${mode === "none" ? " is-none" : ""}">${Object.entries(OVERLAP).map(([v, t]) => `<option value="${v}" ${mode === v ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+            <label class="mf" title="Een bewuste stilte na de regel, in milliseconden."><span>pauze</span><input class="pause" type="number" min="0" step="250" placeholder="ms" value="${line.pause_after_ms || ""}"></label>
+          </div>
+          ${li.length ? `<div class="issues">${li.map(issueLine).join("")}</div>` : ""}
+        </div>`;
       frag.appendChild(div);
     }
   }
   root.appendChild(frag);
-  updateIssueFilter(flagged);
-  autosizeAll();
-}
-
-function updateIssueFilter(n) {
   const box = $("#only-issues");
-  box.disabled = !n;
-  if (!n) box.checked = false;
-  box.parentElement.lastChild.textContent = ` alleen regels met opmerkingen${n ? ` (${n})` : ""}`;
-  $("#script-lines").classList.toggle("only-issues", box.checked);
+  box.disabled = !flagged;
+  if (!flagged) box.checked = false;
+  box.parentElement.lastChild.textContent = ` alleen regels met opmerkingen${flagged ? ` (${flagged})` : ""}`;
+  root.classList.toggle("only-issues", box.checked);
+  root.classList.toggle("show-details", $("#show-details").checked);
+  autosizeAll();
 }
 
 function collectScript() {
@@ -621,7 +718,7 @@ function collectScript() {
   const byId = {};
   for (const seg of script.segments) for (const l of seg.lines) byId[l.id] = l;
   let prev = null;
-  for (const div of document.querySelectorAll("#script-lines .line")) {
+  for (const div of $$("#script-lines .line")) {
     const l = byId[div.dataset.id];
     l.speaker = $(".speaker", div).value;
     l.text = $(".text", div).value.trim();
@@ -637,35 +734,41 @@ function collectScript() {
 
 function setDirty(on) {
   state.dirty = on;
-  $("#dirty-note").hidden = !on;
-  $("#save-script").className = `btn ${on ? "btn--primary" : "btn--secondary"} btn--sm`;
+  $("#savebar").hidden = !(on && state.view === "chapter");
+  document.body.classList.toggle("has-savebar", on && state.view === "chapter");
 }
 function markDirty() {
   if (state.dirty || !state.data || !state.data.script) return;
   setDirty(true);
-  renderNext(state.data);
+  renderReviewGuide(state.data);
 }
 
 async function saveScript() {
-  if (!state.data || !state.data.script) return;
+  if (!state.data || !state.data.script || !state.dirty) return;
   if (chapterBusy(state.chapter)) {
-    toast("Er loopt een taak voor dit hoofdstuk. Opslaan kan als die klaar is; je wijzigingen blijven staan.", true);
+    toast("Luisterstof werkt nog aan dit hoofdstuk. Opslaan kan als dat klaar is; je wijzigingen blijven staan.", true);
     return;
   }
   try {
     const out = await busy($("#save-script"), "Opslaan...", () => api.send(chapterUrl("/script"), "PUT", collectScript()));
-    log(`script opgeslagen als revisie ${out.revision}; audit en goedkeuring vervallen`);
-    toast(`Script opgeslagen als revisie ${out.revision}. Draai de audit opnieuw voor deze versie.`);
+    log(`script opgeslagen als versie ${out.revision}; controle en goedkeuring vervallen`);
     setDirty(false);
-    await openChapter(state.chapter, { keepTab: true });
+    await runStage("audit", {}, "Opgeslagen. Luisterstof controleert het script nu opnieuw.");
+    await openChapter(state.chapter, "review", { keep: true });
     refreshBookSoon();
   } catch (err) { fail(err, "Script opslaan"); }
 }
 
+async function discardEdits() {
+  if (!confirm("Je wijzigingen weggooien?")) return;
+  setDirty(false);
+  await openChapter(state.chapter, "review", { keep: true });
+}
+
 function jumpToLine(id) {
-  showTab("script");
-  const el = document.querySelector(`#script-lines .line[data-id="${CSS.escape(id)}"]`);
+  const el = $(`#script-lines .line[data-id="${CSS.escape(id)}"]`);
   if (!el) return;
+  if ($("#only-issues").checked && !el.matches(".has-issue, .has-warning")) { $("#only-issues").checked = false; $("#script-lines").classList.remove("only-issues"); }
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   el.classList.remove("is-flash");
   void el.offsetWidth;
@@ -678,7 +781,7 @@ function renderAudit(data) {
   const a = data.audit;
   const count = $("#audit-count");
   if (!a) {
-    $("#audit-summary").innerHTML = `<p class="empty">Nog geen audit. ${data.script ? "Draai stap 4 Audit." : "Eerst een script."}</p>`;
+    $("#audit-summary").innerHTML = `<p class="empty">Nog geen controle. ${data.script ? "Laat het script controleren via de stappen bovenaan." : "Eerst een script."}</p>`;
     $("#audit-issues").innerHTML = "";
     count.hidden = true;
     return;
@@ -688,31 +791,27 @@ function renderAudit(data) {
   count.hidden = !a.issues.length;
   count.textContent = blocking.length || warnings.length;
   count.className = `count${blocking.length ? " count--bad" : ""}`;
-  count.title = `${blocking.length} blokkerend, ${warnings.length} waarschuwingen`;
   const stale = data.script && a.script_revision !== data.script.revision;
-  const stats = Object.entries(a.stats).map(([k, v]) => `${k}=${v}`).join(" · ");
   $("#audit-summary").innerHTML = `<section class="card">
     <div class="verdict">${a.passed ? chip("GESLAAGD", "ok", "", "chip--lg") : chip("GEBLOKKEERD", "bad", "", "chip--lg")}
-      <h2>${blocking.length} blokkerend, ${warnings.length} ${warnings.length === 1 ? "waarschuwing" : "waarschuwingen"}</h2>
-      ${a.script_revision ? `<span class="muted small">revisie ${a.script_revision}</span>` : ""}
-      ${stale ? chip("hoort bij een oudere revisie", "warn", "Het script is daarna opgeslagen. Draai de audit opnieuw.") : ""}</div>
+      <h2>${plural(blocking.length, "probleem", "problemen")}, ${plural(warnings.length, "tip", "tips")}</h2>
+      ${stale ? chip("hoort bij een oudere versie", "warn", "Het script is daarna aangepast. Laat het opnieuw controleren.") : ""}</div>
     <div class="auditstats">
-      <span>dekking: ${a.coverage.covered.length}/${a.coverage.required.length} vereiste beweringen${a.coverage.missing.length ? ", ontbreekt: " + escapeHtml(a.coverage.missing.join(", ")) : ""}</span>
-      <span>ondersteuning: ${a.support.checked} regels gecontroleerd, ${a.support.unsupported} niet ondersteund${a.support.skipped ? " (overgeslagen, geen LLM)" : ""}</span>
+      <span>dekking: ${a.coverage.covered.length} van ${a.coverage.required.length} beweringen${a.coverage.missing.length ? ", ontbreekt: " + escapeHtml(a.coverage.missing.join(", ")) : ""}</span>
+      <span>tegen het boek gelegd: ${a.support.checked} regels, ${a.support.unsupported} niet onderbouwd${a.support.skipped ? " (overgeslagen, geen model)" : ""}</span>
     </div>
-    ${stats ? `<div class="auditstats">${escapeHtml(stats)}</div>` : ""}
   </section>`;
   const group = (title, items) => items.length ? `<div class="issuegroup"><h3>${title} (${items.length})</h3>${items.map(i => `
     <div class="issue ${i.severity}">
-      ${chip(i.severity === "blocking" ? "blokkerend" : "waarschuwing", i.severity === "blocking" ? "bad" : "warn")}
-      <div class="issue__head"><span class="issue__rule">${escapeHtml(i.check)}/${escapeHtml(i.rule)}</span>
-        ${i.line_id ? `<a href="#" class="lineref" data-line="${escapeHtml(i.line_id)}" title="Naar deze regel in het script.">${escapeHtml(i.line_id)}</a>` : ""}
+      ${chip(i.severity === "blocking" ? "probleem" : "tip", i.severity === "blocking" ? "bad" : "warn")}
+      <div class="issue__head"><span class="issue__rule">${escapeHtml(i.rule)}</span>
+        ${i.line_id ? `<a href="#" class="lineref" data-line="${escapeHtml(i.line_id)}" title="Naar deze regel in het script.">regel ${escapeHtml(i.line_id)}</a>` : ""}
         ${i.claim_id ? chip(i.claim_id, "", "Bewering uit het plan.") : ""}</div>
       <div class="issue__msg">${escapeHtml(i.message)}</div>
       ${i.suggestion ? `<div class="issue__tip">${escapeHtml(i.suggestion)}</div>` : ""}
     </div>`).join("")}</div>` : "";
-  $("#audit-issues").innerHTML = group("Blokkerend", blocking) + group("Waarschuwingen", warnings) ||
-    '<p class="empty">De audit vond niets. Lees het script toch even door voordat je goedkeurt.</p>';
+  $("#audit-issues").innerHTML = group("Problemen", blocking) + group("Tips", warnings) ||
+    '<p class="empty">De controle vond niets. Lees het script toch even door voordat je goedkeurt.</p>';
 }
 
 // -------------------------------------------------------------------- plan
@@ -724,20 +823,19 @@ function renderPlan(data) {
     <p class="plan__summary">${escapeHtml(p.summary)}</p>
     <section><h3>Leerdoelen</h3><ul class="bullets">${p.learning_objectives.map(o => `<li>${escapeHtml(o)}</li>`).join("")}</ul></section>
     <section><h3>Beweringen (${p.key_claims.length})</h3>${p.key_claims.map(c => `<div class="claim"><span class="id">${escapeHtml(c.id)}</span><span>${escapeHtml(c.claim)}</span>
-      <div class="claim__meta">${chip(`moeilijkheid ${c.difficulty}`, "", "1 tot 5: hoe lastig voor een eerstejaars.")} ${chip(`tentamen ${c.exam_relevance}`, "", "1 tot 5: hoe zeker dit tentamenstof is.")}
+      <div class="claim__meta">${chip(`moeilijkheid ${c.difficulty}`)} ${chip(`tentamen ${c.exam_relevance}`)}
         <span title="${escapeHtml(scoreTitle(c.source_span.match_score))}">${escapeHtml(c.source_span.section)} (citaatscore ${c.source_span.match_score ?? "-"})</span></div></div>`).join("")}</section>
     <section><h3>Definities</h3><ul class="bullets">${p.definitions.map(d => `<li><b>${escapeHtml(d.term)}</b>: ${escapeHtml(d.definition)}</li>`).join("") || '<li class="muted">geen</li>'}</ul></section>
-    <section><h3>Misvattingen</h3><ul class="bullets">${p.misconceptions.map(m => `<li><b>fout:</b> ${escapeHtml(m.wrong)} <b>juist:</b> ${escapeHtml(m.right)} <span class="muted">${escapeHtml(m.why_tempting)}</span></li>`).join("") || '<li class="muted">geen</li>'}</ul></section>
-    <div class="planfacts">${chip(`expert nodig: ${p.needs_expert ? `ja${p.expert_domain ? ` (${p.expert_domain})` : ""}` : "nee"}`)} ${chip(`notatiezwaar: ${p.formula_dense_sections.join(", ") || "-"}`)}</div>
-    ${p.warnings.length ? `<p class="muted">waarschuwingen: ${p.warnings.map(escapeHtml).join("; ")}</p>` : ""}
+    <section><h3>Misvattingen</h3><ul class="bullets">${p.misconceptions.map(m => `<li><b>fout:</b> ${escapeHtml(m.wrong)} <b>klopt wel:</b> ${escapeHtml(m.right)} <span class="muted">${escapeHtml(m.why_tempting)}</span></li>`).join("") || '<li class="muted">geen</li>'}</ul></section>
+    <div class="planfacts">${chip(`gastexpert: ${p.needs_expert ? `ja${p.expert_domain ? ` (${p.expert_domain})` : ""}` : "nee"}`)} ${chip(`veel formules: ${p.formula_dense_sections.join(", ") || "nee"}`)}</div>
   </div>`;
 }
 
 function scoreTitle(score) {
   if (score === null || score === undefined) return "Citaatscore onbekend.";
-  if (score >= 100) return "Citaatscore 100: het citaat staat letterlijk in deze sectie.";
-  if (score > 0) return `Citaatscore ${score}: het citaat staat er bijna letterlijk in. De audit legt de regel naast die passage.`;
-  return "Citaatscore 0: het citaat is niet gevonden. De hele sectie geldt als bron, dus de controle is zwakker.";
+  if (score >= 100) return "Het citaat staat letterlijk in deze sectie.";
+  if (score > 0) return `Het citaat staat er bijna letterlijk in (${score}).`;
+  return "Het citaat is niet gevonden. De hele sectie geldt als bron, dus de controle is zwakker.";
 }
 
 // ------------------------------------------------------------------- audio
@@ -745,32 +843,30 @@ function renderAudio(data) {
   const url = data.final.audio;
   $("#final-audio").innerHTML = url
     ? `<div class="player"><audio controls preload="metadata" src="${escapeHtml(url)}"></audio><a class="btn btn--secondary btn--sm" href="${escapeHtml(url)}" download>Downloaden</a></div>`
-    : `<p class="muted">Nog niet gerenderd. ${data.approved ? "Start de render met stap 6." : "Keur eerst het script goed (stap 5), dan kan de render."}</p>`;
+    : '<p class="muted">Nog niet opgenomen.</p>';
   const q = data.manifest_quality;
-  const qualityEl = $("#audio-quality");
   if (q && q.verifiable_turns) {
     const verOk = q.verified_turns === q.verifiable_turns;
-    const bits = [chip(`verificatie ${q.verified_turns}/${q.verifiable_turns}`, verOk ? "ok" : "bad", verOk ? "" : "Niet elke beurt kon worden geverifieerd, zie `studiepodcast doctor`.")];
-    if (q.alignment_fallback_turns) bits.push(chip(`${q.alignment_fallback_turns} geschatte uitlijning`, "warn"));
-    qualityEl.innerHTML = bits.join(" ");
+    const bits = [chip(`${q.verified_turns} van ${q.verifiable_turns} beurten nagecontroleerd`, verOk ? "ok" : "bad", verOk ? "" : "Niet elke opname kon worden teruggeluisterd; zie studiepodcast doctor.")];
+    if (q.alignment_fallback_turns) bits.push(chip(`${q.alignment_fallback_turns} met geschatte timing`, "warn"));
+    $("#audio-quality").innerHTML = bits.join(" ");
   } else {
-    qualityEl.innerHTML = "";
+    $("#audio-quality").innerHTML = "";
   }
   const flagged = data.manifest ? data.manifest.turns.filter(t => t.flagged) : [];
-  $("#flagged").innerHTML = flagged.length ? `<section class="card"><div class="cardhead"><h2>Gevlagde beurten</h2>${chip(String(flagged.length), "warn")}</div>
+  $("#flagged").innerHTML = flagged.length ? `<section class="card"><div class="cardhead"><h2>Even beluisteren</h2>${chip(String(flagged.length), "warn")}</div>
+    <p class="muted">Bij deze beurten volgde geen enkele opname het script goed genoeg. Luister ze na; klinkt het fout, pas dan de tekst aan en neem opnieuw op.</p>
     <div class="flagged">${flagged.map(t => `<div class="issue warning">${chip(t.turn_id, "warn")}<div class="issue__head"><b>${escapeHtml(t.speaker)}</b> <span class="muted">${escapeHtml(t.flag_reason || "")}</span></div><div class="issue__msg">${escapeHtml(t.text_spoken)}</div></div>`).join("")}</div></section>` : "";
   const root = $("#blocks");
   root.innerHTML = "";
   const spans = (data.final.transcript && data.final.transcript.blocks) || [];
   const paths = Object.fromEntries(spans.map(s => [s.block_id, s.path]));
-  if (!data.blocks.length) { root.innerHTML = '<p class="empty" style="margin:0 16px 16px">Nog geen blokken: eerst een script.</p>'; return; }
   for (const b of data.blocks) {
     const div = document.createElement("div");
     div.className = "block";
     const src = paths[b.id] ? bookUrl(`/artifacts/render/${enc(state.chapter)}/blocks/${enc(b.id)}.mp3`) : null;
-    div.innerHTML = `<b>${escapeHtml(b.id)}</b><span class="block__info">${b.line_ids.length} regels, ${b.chars} tekens, ${escapeHtml(b.segment_types.map(t => SEGMENTS[t] || t).join(" / "))}
-      ${b.too_long ? chip("te lang", "bad") : ""}</span>
-      ${src ? `<audio controls preload="none" src="${src}"></audio>` : '<span class="muted small">nog geen audio</span>'}`;
+    div.innerHTML = `<b>${escapeHtml(b.id)}</b><span class="block__info">${b.line_ids.length} regels, ${escapeHtml(b.segment_types.map(t => SEGMENTS[t] || t).join(" / "))}</span>
+      ${src ? `<audio controls preload="none" src="${src}"></audio>` : '<span class="muted small">geen los bestand</span>'}`;
     root.appendChild(div);
   }
 }
@@ -786,15 +882,14 @@ function renderTimings(chapterId) {
     const total = rows.find(e => e.pass_name === "chapter");
     const passes = rows.filter(e => e.pass_name !== "chapter");
     const longest = Math.max(1, ...passes.map(e => e.seconds || 0));
-    const head = `Run van ${fmtWhen(rows[0].started_at)}` + (total ? `, hoofdstuk in ${fmtSeconds(total.seconds)}` : "");
+    const head = `Run van ${fmtWhen(rows[0].started_at)}` + (total ? `, in totaal ${fmtSeconds(total.seconds)}` : "");
     return `<section class="card card--flush runblock"><div class="cardhead"><h3>${escapeHtml(head)}</h3>${total ? TIMING_STATUS[total.status] || "" : ""}</div>
-      <div class="tablewrap"><table class="table timings"><thead><tr><th>Stap</th><th class="opt-3">Begon</th><th class="opt-3">Klaar</th><th class="num">Duur</th><th class="opt-2" style="width:20%"><span class="sr-only">Verhouding</span></th>
-      <th class="num opt-2" title="Hoeveel keer het schrijfmodel werd aangeroepen in deze stap.">Modelaanroepen</th><th></th></tr></thead><tbody>` +
+      <div class="tablewrap"><table class="table timings"><thead><tr><th>Stap</th><th class="opt-3">Begon</th><th class="opt-3">Klaar</th><th class="num">Duur</th><th class="opt-2" style="width:20%"><span class="sr-only">Verhouding</span></th><th></th></tr></thead><tbody>` +
       passes.map(e => `<tr class="${e.status === "failed" ? "is-failed" : ""}"><td>${escapeHtml(passTitle(e))}${e.error ? `<div class="why">${escapeHtml(e.error)}</div>` : ""}</td>
         <td class="opt-3">${fmtClock(e.started_at)}</td><td class="opt-3">${fmtClock(e.finished_at)}</td>
         <td class="num">${e.status === "skipped" ? "-" : fmtSeconds(e.seconds)}</td>
-        <td class="opt-2">${e.status === "skipped" ? "" : `<div class="timebar" title="${Math.round((e.seconds / longest) * 100)}% van de langste stap"><i style="width:${Math.max(2, (e.seconds / longest) * 100).toFixed(1)}%"></i></div>`}</td>
-        <td class="num opt-2">${e.llm_calls || ""}</td><td>${TIMING_STATUS[e.status] || ""}</td></tr>`).join("") + "</tbody></table></div></section>";
+        <td class="opt-2">${e.status === "skipped" ? "" : `<div class="timebar"><i style="width:${Math.max(2, (e.seconds / longest) * 100).toFixed(1)}%"></i></div>`}</td>
+        <td>${TIMING_STATUS[e.status] || ""}</td></tr>`).join("") + "</tbody></table></div></section>";
   }).join("");
 }
 
@@ -814,7 +909,7 @@ async function loadGlossary() {
     state.glossary = g;
     $("#glossary tbody").innerHTML = "";
     loadGlossaryRows(g.entries);
-  } catch (err) { fail(err, "Lexicon laden"); }
+  } catch (err) { fail(err, "Uitspraak laden"); }
 }
 
 function loadGlossaryRows(entries) {
@@ -832,7 +927,7 @@ function loadGlossaryRows(entries) {
 
 function collectGlossary() {
   const entries = [];
-  for (const tr of document.querySelectorAll("#glossary tbody tr")) {
+  for (const tr of $$("#glossary tbody tr")) {
     const get = (k) => tr.querySelector(`[data-k=${k}]`);
     const surface = get("surface").value.trim();
     if (!surface) continue;
@@ -844,33 +939,21 @@ function collectGlossary() {
 // -------------------------------------------------------------------- jobs
 async function loadJobs() {
   let jobs;
-  try { jobs = await api.get("/api/jobs" + (state.book ? `?book_id=${enc(state.book)}` : "")); } catch { return state.jobs; }
+  try { jobs = await api.get("/api/jobs"); } catch { return state.jobs; }
   state.jobs = jobs;
   $("#jobs").innerHTML = jobs.slice(0, 20).map(j => {
     const [label, kind] = JOB_STATUS[j.status] || [j.status, ""];
-    const stop = ACTIVE.includes(j.status)
+    const stop = isActive(j)
       ? `<button class="link" data-cancel="${escapeHtml(j.id)}" title="${j.status === "queued" ? "Haalt deze taak uit de wachtrij." : "Stopt deze taak bij het volgende controlepunt."}">stop</button>` : "";
-    return `<li class="${j.status}"><span class="job__name" title="Taak ${escapeHtml(j.id)}">${escapeHtml(jobName(j))}</span>
+    return `<li class="${j.status}"><span class="job__name" title="Taak ${escapeHtml(j.id)}">${escapeHtml(j.book_id)} · ${escapeHtml(jobName(j))}</span>
       <span class="job__side">${chip(label, kind)}${stop}</span>
       <span class="job__when">${fmtWhen(j.created_at)}</span>
       ${j.error ? `<span class="job__err" title="${escapeHtml(j.error)}">${escapeHtml(j.error)}</span>` : ""}</li>`;
   }).join("") || '<li class="muted">Nog geen taken.</li>';
-  renderDrawerSummary();
+  const running = jobs.filter(j => j.status === "running").length;
+  const queued = jobs.filter(j => j.status === "queued").length;
+  $("#drawer-summary").innerHTML = [running && chip(`${running} bezig`, "run"), queued && chip(`${queued} in de wachtrij`)].filter(Boolean).join("");
   return jobs;
-}
-
-function renderDrawerSummary() {
-  const running = state.jobs.filter(j => j.status === "running").length;
-  const queued = state.jobs.filter(j => j.status === "queued").length;
-  const last = state.jobs.find(j => !ACTIVE.includes(j.status));
-  const parts = [];
-  if (running) parts.push(chip(`${running} bezig`, "run"));
-  if (queued) parts.push(chip(`${queued} in de wachtrij`));
-  if (last) {
-    const [label, kind] = JOB_STATUS[last.status] || [last.status, ""];
-    parts.push(`<span class="last">laatste: ${escapeHtml(jobName(last))} ${chip(label, kind)} ${escapeHtml(fmtWhen(last.updated_at))}</span>`);
-  }
-  $("#drawer-summary").innerHTML = parts.join("");
 }
 
 // Events that announce the step about to start; "turn" reports a finished one.
@@ -929,14 +1012,13 @@ function trackEvent(job, ev) {
 function renderProgress() {
   if (!run.job) return;
   const now = Date.now();
-  const where = run.job.chapter_id ? ` · ${run.job.chapter_id}` : ` · ${run.job.book_id}`;
-  $("#progress-title").textContent = `${STAGES[run.stage] || STAGES[run.job.stage] || run.job.stage}${where}`;
+  const book = (state.books.find(b => b.book_id === run.job.book_id) || {}).title || run.job.book_id;
+  $("#progress-title").textContent = `${STAGES[run.stage] || STAGES[run.job.stage] || run.job.stage} · ${book}${run.job.chapter_id ? ", " + run.job.chapter_id : ""}`;
   $("#progress-panel").classList.toggle("stopping", run.stopping);
   const outer = [];
   if (run.book) outer.push(`hoofdstuk ${run.book.index} van ${run.book.total}: ${run.book.label}`);
   if (run.outer) outer.push(`stap ${run.outer.index} van ${run.outer.total}: ${run.outer.label}`);
   $("#progress-outer").textContent = outer.join(" · ");
-  $("#progress-outer").title = outer.join("\n");
   const bar = $("#progress-bar");
   const detail = [];
   if (run.inner) {
@@ -945,25 +1027,21 @@ function renderProgress() {
     detail.push(`${run.inner.index} van ${run.inner.total}${run.inner.label ? ": " + run.inner.label : ""}`);
     if (run.inner.done > 0 && run.inner.done < run.inner.total) {
       const per = (now - run.innerStart) / run.inner.done;
-      detail.push(`nog ~${fmtDuration(per * (run.inner.total - run.inner.done))} voor ${STAGES[run.inner.stage] || run.inner.stage}`);
+      detail.push(`nog ~${fmtDuration(per * (run.inner.total - run.inner.done))}`);
     }
   } else {
     bar.removeAttribute("value");  // no known total: an indeterminate bar
   }
-  if (run.tokens && now - run.tokens.at < 10000) {
-    const rate = run.tokens.seconds ? ` (${(run.tokens.tokens / run.tokens.seconds).toFixed(1)} per s)` : "";
-    detail.push(`model schrijft: ${run.tokens.tokens} tokens${rate}`);
-  }
+  if (run.tokens && now - run.tokens.at < 10000) detail.push(`model schrijft: ${run.tokens.tokens} tokens`);
   detail.push(`bezig ${fmtDuration(now - run.started)}`);
-  const queued = state.jobs.filter(j => j.status === "queued").length;
-  if (queued) detail.push(`${queued} in de wachtrij`);
   if (run.stopping) detail.push("stopt bij het volgende controlepunt");
+  detail.push("je kunt dit venster sluiten");
   $("#progress-detail").textContent = detail.join(" · ");
 }
 
 async function stopJob(jobId) {
   const job0 = state.jobs.find(j => j.id === jobId);
-  if (job0 && job0.status === "running" && !confirm(`${jobName(job0)} stoppen? Wat al klaar is, blijft bewaard; de stap die bezig is, start je later opnieuw.`)) return;
+  if (job0 && job0.status === "running" && !confirm("Stoppen? Wat al klaar is, blijft bewaard; de stap die bezig is, begint later opnieuw.")) return;
   try {
     const job = await api.send(`/api/jobs/${enc(jobId)}/cancel`, "POST", {});
     log(`■ stop gevraagd voor ${STAGES[job.stage] || job.stage} ${job.chapter_id || ""} (${job.status})`);
@@ -981,13 +1059,13 @@ async function stopJob(jobId) {
 function watch(job) {
   if (watching.has(job.id)) return;
   watching.add(job.id);
-  log(`▶ job ${job.id} ${STAGES[job.stage] || job.stage} ${job.chapter_id || ""}`);
+  log(`▶ ${job.book_id} · ${jobName(job)} (taak ${job.id})`);
   // The browser reconnects on its own and sends the last event id, so a render that outlives one stream continues.
   const es = new EventSource(`/api/jobs/${enc(job.id)}/events`);
   es.addEventListener("stage", (e) => {
     const ev = JSON.parse(e.data);
     trackEvent(job, ev);
-    if (ev.stage === "llm" && ev.status === "tokens") return;  // heartbeat: progress strip only
+    if (ev.stage === "llm" && ev.status === "tokens") return;  // heartbeat: progress banner only
     const at = ev.ts ? fmtClock(ev.ts) + " " : "";
     if (ev.stage === "timing") {
       const t = ev.data;
@@ -1003,7 +1081,7 @@ function watch(job) {
   es.addEventListener("job", (e) => {
     const j = JSON.parse(e.data);
     if (["done", "failed", "cancelled"].includes(j.status)) {
-      log(`■ job ${j.id} ${j.status}${j.error ? ": " + j.error : ""}`);
+      log(`■ ${jobName(j)} ${j.status}${j.error ? ": " + j.error : ""}`);
       es.close();
       watching.delete(j.id);
       endRun(j);
@@ -1011,7 +1089,7 @@ function watch(job) {
       else if (j.status === "failed") toast(`${jobName(j)} is mislukt. ${explainError(j.error) || j.error || "Onbekende fout."}`, true);
       else toast(`${jobName(j)} is gestopt. Wat klaar was, is bewaard.`);
       if (j.status === "failed" && /opencode|not reachable|does not answer/i.test(j.error || "")) {
-        setEngine("writer", "down", "antwoordt niet", j.error);
+        setEngine("writer", "down", "staat uit", j.error);
         clearTimeout(engineTimer);
         engineTimer = setTimeout(checkEngines, 60000);
       }
@@ -1023,82 +1101,81 @@ function watch(job) {
 
 async function refreshAfterJob(j) {
   await loadJobs();
-  if (!state.book) { await loadBooks(); return; }
   try {
     await loadBooks();
-    if (j.book_id === state.book) await loadBook(state.book);
-    if (state.view === "chapter" && state.chapter && !state.dirty) await openChapter(state.chapter, { keepTab: true });
+    if (state.book && j.book_id === state.book) await loadBook(state.book);
+    if (state.view === "chapter" && state.chapter && !state.dirty && j.book_id === state.book) {
+      // A recording that just finished takes you to the episode; anything else leaves you where you were.
+      const next = j.status === "done" && j.stage === "render" && j.chapter_id === state.chapter && state.step === "record" ? "listen" : state.step;
+      await openChapter(state.chapter, next, { keep: next === state.step });
+    }
     else afterJobsChanged();
   } catch { /* the next refresh catches up */ }
 }
 
-// Jobs decide what is busy: the overview, the chapter's next step and the list follow them.
+// Jobs decide what is busy: the page you look at follows them.
 function afterJobsChanged() {
-  if (!state.status) return;
-  renderSidebar();
-  renderOverview();
-  if (state.view === "chapter") renderNext(state.data);
+  if (state.view === "home") renderHome();
+  else if (state.view === "book") renderBook();
+  else if (state.view === "chapter" && state.data) {
+    renderTracker(chapterPhase(state.data));
+    if (state.step === "review") renderReviewGuide(state.data);
+    else if (state.step === "missing") renderMissing(state.data);
+    else if (state.step === "record") renderRecord(state.data);
+  }
 }
 
-async function runStage(stage, extra = {}) {
+async function runStage(stage, extra = {}, message = null) {
   const box = $("#quality");
   const opts = { ...(box && box.checked && !box.disabled ? { quality: true } : {}), ...extra };
   try {
     const job = await api.send(chapterUrl("/run"), "POST", { stage, ...opts });
-    toast(`${STAGES[stage] || stage} voor ${state.chapter} is gestart. De voortgang staat bovenaan.`);
+    toast(message || `${STAGES[stage] || stage} is gestart. De balk bovenaan laat zien hoe ver het is.`);
     watch(job);
-  } catch (err) { fail(err, STAGES[stage] || stage); }
+    return job;
+  } catch (err) { fail(err, STAGES[stage] || stage); return null; }
 }
 
-async function approve() {
+async function approve(e) {
   try {
-    await busy($("#next-action"), "Bezig...", () => api.send(chapterUrl("/approve"), "POST", {}));
-    log("goedgekeurd; de Chatterbox-render kan nu");
-    toast("Goedgekeurd. De Chatterbox-render kan nu.");
-    await openChapter(state.chapter, { keepTab: true });
-    refreshBookSoon();
+    await busy(e.currentTarget, "Bezig...", () => api.send(chapterUrl("/approve"), "POST", {}));
+    log("goedgekeurd; opnemen kan nu");
+    toast("Goedgekeurd. Je kunt het nu laten opnemen.");
+    await loadBook(state.book);
+    go(chapterHash(state.book, state.chapter, "record"));
   } catch (err) { fail(err, "Goedkeuren"); }
 }
 
 // ----------------------------------------------------------------- engines
 const ENGINE_TEXT = {
-  writer: { reachable: "bereikbaar", ready: "klaar", test: "testmodus", down: "niet bereikbaar", checking: "controleren...", waking: "wordt gestart", unknown: "onbekend" },
+  writer: { reachable: "bereikbaar", ready: "klaar", test: "testmodus", down: "staat uit", checking: "controleren...", waking: "wordt gestart", unknown: "onbekend" },
   voice: { ready: "geïnstalleerd", test: "testmodus", down: "niet geïnstalleerd", checking: "controleren...", unknown: "onbekend" },
 };
-const ENGINE_INTRO = {
-  writer: "Het schrijfmodel maakt plan, lexicon, script en audit.",
-  voice: "De stemmen: Chatterbox maakt de echte aflevering.",
-};
-
-function healthText() {
-  const h = state.health;
-  if (!h) return "";
-  const where = `OpenCode (${h.model}): het schrijfmodel draait op deze machine` + (h.offline ? ", offline: niets verlaat het netwerk" : "");
-  const p = h.writing_passes || {};
-  const passes = h.quality_mode
-    ? ` · grondig: ${p.plan_review_rounds}× planreview, ${p.script_revise_rounds}× herschrijven, ${Math.round(p.seconds_per_llm_call / 60)} min per modelaanroep`
-    : "";
-  const fake = [h.fake_llm && "nep-LLM", h.fake_audio && "nep-audio"].filter(Boolean);
-  return `${where} · plan per sectie (grondig)${passes}${fake.length ? ` · testmodus: ${fake.join(", ")}` : ""}`;
-}
 
 function setEngine(which, st, label, detail) {
   const el = $(`#engine-${which}`);
   el.dataset.state = st;
   $(".engine__state", el).textContent = label || ENGINE_TEXT[which][st] || st;
   if (detail !== undefined) state.engineDetail[which] = detail || "";
-  engineTitle(which);
+  el.title = state.engineDetail[which] || "";
+  renderSys();
   if (which === "writer") renderEngineWarning();
 }
-function engineTitle(which) {
-  const lines = [ENGINE_INTRO[which]];
-  if (which === "writer" && healthText()) lines.push(healthText());
-  if (state.engineDetail[which]) lines.push(`Details: ${state.engineDetail[which]}`);
-  lines.push("Klik op het pijltje rechts om opnieuw te controleren.");
-  $(`#engine-${which}`).title = lines.join("\n");
+
+// One line in the header: can Luisterstof work right now?
+function renderSys() {
+  const w = $("#engine-writer").dataset.state, v = $("#engine-voice").dataset.state;
+  let text, kind;
+  if (w === "down") [text, kind] = ["Schrijfmodel staat uit", "bad"];
+  else if (w === "checking" || w === "unknown") [text, kind] = ["controleren...", "wait"];
+  else if (w === "waking") [text, kind] = ["Schrijfmodel start op", "wait"];
+  else if (w === "test" && v === "test") [text, kind] = ["Testmodus", "test"];
+  else if (v === "down") [text, kind] = ["Klaar om te schrijven, stemmen ontbreken", "warn"];
+  else [text, kind] = ["Klaar", "ok"];
+  $("#sys-text").textContent = text;
+  $("#sys").dataset.state = kind;
 }
 
-// Writer state from a running job: checking, starting a sleeping model, answering.
 function trackWriter(status, d) {
   const now = $("#engine-writer").dataset.state;
   if (now === "test") return;
@@ -1123,27 +1200,32 @@ async function checkEngines() {
   // OpenCode started after the app: notice it without a click.
   clearTimeout(engineTimer);
   if ($("#engine-writer").dataset.state === "down") engineTimer = setTimeout(checkEngines, 60000);
+  afterJobsChanged();
 }
 
 function renderEngineWarning() {
   const el = $("#engine-warning");
   const down = $("#engine-writer").dataset.state === "down";
-  el.hidden = !down;
-  if (down) {
-    el.innerHTML = "<b>Het schrijfmodel is niet bereikbaar.</b> Start de OpenCode-app (of <code>opencode serve</code>) en klik bovenaan op het pijltje om opnieuw te controleren. " +
-      "Zonder model stopt de taak meteen. Wil je het boek alvast alleen inlezen, zet dan bij Opties <i>direct doorlopen</i> uit.";
+  const all = ($("#upload input[name=start]:checked") || {}).value !== "ingest";
+  el.hidden = !(down && all);
+  if (!el.hidden) {
+    el.innerHTML = "<b>Het schrijfmodel staat uit.</b> Start de OpenCode-app en klik bovenaan op het statuslampje om opnieuw te controleren. " +
+      "Zonder model kun je het boek wel alvast inlezen: kies dan Eerst alleen inlezen.";
   }
 }
 
-async function loadHealth() {
+async function loadCast() {
   try {
-    state.health = await api.get("/api/health");
-  } catch { return; }
-  const h = state.health;
-  $("#engine-offline").hidden = !h.offline;
-  if (h.tags && h.tags.length) $("#tag-list").textContent = h.tags.join(", ");
+    const c = (await api.get("/api/cast")).cast;
+    for (const sp of [...(c.hosts || []), ...(c.guests || [])]) state.names[sp.id] = sp.name;
+    state.hosts = (c.hosts || []).map(h => h.id);
+  } catch { /* ids are shown instead */ }
+}
+
+async function loadHealth() {
+  try { state.health = await api.get("/api/health"); } catch { return; }
+  $("#engine-offline").hidden = !state.health.offline;
   applyQualityMode();
-  engineTitle("writer");
 }
 
 // The server already runs thorough: show that, and don't pretend you can turn it off per run.
@@ -1175,55 +1257,66 @@ function uploadError(text) {
   const el = $("#upload-error");
   el.textContent = text;
   el.hidden = false;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
 }
-function updateUploadLabel() {
-  $("#upload-submit").textContent = $("#upload-auto").checked ? "Uploaden en starten" : "Uploaden en inlezen";
+function updateStartText() {
+  const all = $("#upload input[name=start]:checked").value === "all";
+  $("#start-explain").textContent = all
+    ? "Luisterstof leest het boek in en schrijft daarna alle scripts. Je kunt dit venster sluiten: het werk gaat door zolang de app draait."
+    : "Luisterstof leest het boek in. Dat duurt een paar minuten; daarna zie je welke hoofdstukken er gevonden zijn.";
+  $("#upload-submit").textContent = all ? "Start" : "Inlezen";
+  renderEngineWarning();
 }
 
 // ------------------------------------------------------------------ wiring
 function showTab(name) {
-  document.querySelectorAll(".tabs button").forEach(b => {
+  $$(".tabs button").forEach(b => {
     const on = b.dataset.tab === name;
     b.classList.toggle("active", on);
     b.setAttribute("aria-selected", String(on));
   });
-  document.querySelectorAll(".tab").forEach(t => t.hidden = t.id !== `tab-${name}`);
-  if (name === "script") autosizeAll();
+  $$(".tab").forEach(t => t.hidden = t.id !== `tab-${name}`);
 }
-document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
-document.querySelectorAll("[data-run]").forEach(b => b.onclick = () => runStage(b.dataset.run));
-$("#next-action").onclick = () => state.nextAction && state.nextAction();
+function openMore(tab) {
+  $("#more").open = true;
+  showTab(tab);
+  $("#more").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+$$(".tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+$$("[data-run]").forEach(b => b.onclick = () => {
+  if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
+  runStage(b.dataset.run);
+});
+$$("#tracker button").forEach(b => b.onclick = () => go(chapterHash(state.book, state.chapter, b.dataset.step)));
 
-$("#nav-overview").onclick = goOverview;
-$("#brand").onclick = (e) => { e.preventDefault(); goOverview(); };
-$("#chapter-list").onclick = (e) => { const b = e.target.closest("[data-chapter]"); if (b) goChapter(b.dataset.chapter); };
-$("#chapters tbody").onclick = (e) => { const tr = e.target.closest("tr[data-chapter]"); if (tr) goChapter(tr.dataset.chapter); };
-$("#chapters tbody").onkeydown = (e) => {
-  const tr = e.target.closest("tr[data-chapter]");
-  if (tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); goChapter(tr.dataset.chapter); }
-};
-$("#books").onchange = async (e) => {
-  if (!leaveChapter()) { e.target.value = state.book; return; }
-  state.chapter = null;
-  await openBook(e.target.value);
-};
-$("#new-book").onclick = goUpload;
-$("#upload-cancel").onclick = () => showView(state.book ? (state.chapter ? "chapter" : "book") : "upload");
+$("#journey").addEventListener("click", (e) => {
+  const summary = e.target.closest("summary");
+  if (summary) { const d = summary.parentElement; state.stageOpen[d.dataset.key] = !d.open; return; }
+  const b = e.target.closest("[data-action]");
+  if (!b) return;
+  const a = b.dataset.action;
+  if (a === "run-book") runBook(b);
+  else if (a === "stop") stopJob(b.dataset.job);
+  else if (a === "new") go("#/nieuw");
+  else if (a === "chapter") go(chapterHash(state.book, b.dataset.chapter, b.dataset.step));
+});
+$("#journey").addEventListener("change", (e) => { if (e.target.id === "run-book-quality") state.runQuality = e.target.checked; });
 $("#recheck").onclick = checkEngines;
 
 fileInput.onchange = showChosenFile;
-$("#upload-auto").onchange = updateUploadLabel;
+$$("#upload input[name=start]").forEach(r => r.onchange = updateStartText);
 for (const t of ["dragenter", "dragover"]) $("#drop").addEventListener(t, () => $("#drop").classList.add("is-over"));
 for (const t of ["dragleave", "drop"]) $("#drop").addEventListener(t, () => $("#drop").classList.remove("is-over"));
-// A PDF dropped anywhere opens the upload with that file instead of the browser opening the PDF.
+// A PDF dropped anywhere opens the new-book page with that file instead of the browser opening the PDF.
 window.addEventListener("dragover", (e) => { if (e.target !== fileInput) e.preventDefault(); });
 window.addEventListener("drop", (e) => {
   if (e.target === fileInput) return;
   e.preventDefault();
   const files = e.dataTransfer && e.dataTransfer.files;
   if (!files || !files.length) return;
-  if (state.view !== "upload") goUpload();
-  if (state.view === "upload") { fileInput.files = files; showChosenFile(); }
+  if (state.view !== "new") go("#/nieuw");
+  fileInput.files = files;
+  showChosenFile();
 });
 
 $("#upload").onsubmit = async (e) => {
@@ -1232,7 +1325,9 @@ $("#upload").onsubmit = async (e) => {
   if (!f) { uploadError("Kies eerst de PDF van het boek."); return; }
   if (!/\.pdf$/i.test(f.name) && f.type !== "application/pdf") { uploadError("Dit is geen PDF. Kies het studieboek als PDF-bestand."); return; }
   const fd = new FormData(e.target);
-  fd.set("auto", fd.get("auto") ? "true" : "false");
+  const all = fd.get("start") === "all";
+  fd.delete("start");
+  fd.set("auto", all ? "true" : "false");
   fd.set("quality", fd.get("quality") ? "true" : "false");
   try {
     const out = await busy($("#upload-submit"), "Bezig met uploaden...", async () => {
@@ -1242,12 +1337,13 @@ $("#upload").onsubmit = async (e) => {
     });
     e.target.reset();
     showChosenFile();
-    updateUploadLabel();
+    updateStartText();
     applyQualityMode();
     await loadBooks();
-    await openBook(out.book_id);
+    state.status = null;
+    go(bookHash(out.book_id));
     watch(out.job);
-    toast(fd.get("auto") === "true" ? "Het boek is binnen. Inlezen en schrijven zijn gestart; dit duurt uren." : "Het boek is binnen en wordt ingelezen.");
+    toast(all ? "Het boek is binnen. Inlezen en schrijven zijn begonnen; dit duurt uren." : "Het boek is binnen en wordt ingelezen.");
   } catch (err) {
     uploadError(`Uploaden mislukt: ${errorText(err)}`);
     log("upload mislukt: " + errorText(err));
@@ -1260,21 +1356,23 @@ $("#script-lines").addEventListener("change", (e) => {
   if (e.target.matches("select.overlap")) e.target.classList.toggle("is-none", e.target.value === "none");
 });
 $("#only-issues").onchange = (e) => $("#script-lines").classList.toggle("only-issues", e.target.checked);
+$("#show-details").onchange = (e) => { $("#script-lines").classList.toggle("show-details", e.target.checked); autosizeAll(); };
 $("#save-script").onclick = saveScript;
-$("#approve").onclick = approve;
+$("#discard").onclick = discardEdits;
 $("#audit-issues").onclick = (e) => {
   const id = e.target.dataset && e.target.dataset.line;
   if (!id) return;
   e.preventDefault();
-  jumpToLine(id);
+  if (state.step !== "review") { go(chapterHash(state.book, state.chapter, "review")); setTimeout(() => jumpToLine(id), 400); }
+  else jumpToLine(id);
 };
 $("#save-glossary").onclick = async () => {
   try {
     await busy($("#save-glossary"), "Opslaan...", () => api.send(bookUrl("/glossary"), "PUT", collectGlossary()));
-    log("lexicon opgeslagen");
-    toast("Lexicon opgeslagen. Het geldt vanaf de volgende script- of renderbeurt.");
+    log("uitspraak opgeslagen");
+    toast("Uitspraak opgeslagen. Het geldt vanaf de volgende keer dat er geschreven of opgenomen wordt.");
     await loadGlossary();
-  } catch (err) { fail(err, "Lexicon opslaan"); }
+  } catch (err) { fail(err, "Uitspraak opslaan"); }
 };
 $("#add-entry").onclick = () => {
   loadGlossaryRows([{ surface: "", kind: "loanword_en", spoken: "", lock: true }]);
@@ -1286,48 +1384,35 @@ $("#glossary").onclick = (e) => {
   if (del) del.closest("tr").remove();
 };
 $("#clear-log").onclick = (e) => { e.preventDefault(); $("#log").textContent = ""; };
-$("#run-book").onclick = async () => {
-  if (!state.book) return;
-  try {
-    const job = await api.send(bookUrl("/run"), "POST", { upto: "script", quality: $("#run-book-quality").checked });
-    log("hele boek doorlopen: wat al klaar is wordt overgeslagen");
-    toast("Hele boek doorlopen is gestart. Wat al klaar is, wordt overgeslagen.");
-    watch(job);
-  } catch (err) { fail(err, "Hele boek doorlopen"); }
-};
 $("#stop-job").onclick = () => run.job && stopJob(run.job.id);
 $("#jobs").onclick = (e) => {
   const id = e.target.dataset && e.target.dataset.cancel;
   if (id) stopJob(id);
 };
 document.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s" && state.view === "chapter" && state.data && state.data.script) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s" && state.view === "chapter" && state.dirty) {
     e.preventDefault();
     saveScript();
   }
 });
+document.addEventListener("click", (e) => { if ($("#sys").open && !e.target.closest("#sys")) $("#sys").open = false; });
 window.addEventListener("beforeunload", (e) => { if (state.dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 // ------------------------------------------------------------------- start
 (async () => {
-  updateUploadLabel();
+  updateStartText();
   loadHealth();
   checkEngines();
-  let books = [];
-  try { books = await loadBooks(); } catch (err) { fail(err, "Boeken laden"); }
-  // Where to start: the address (a reload), else the last book, else the first; no book means the upload.
-  const m = decodeURIComponent(location.hash).match(/^#\/([^/]+)(?:\/([^/]+))?$/);
-  const ids = books.map(b => b.book_id);
-  const wanted = m && ids.includes(m[1]) ? m[1] : ids.includes(recall("book")) ? recall("book") : ids[0];
-  if (location.hash === "#nieuw" || !wanted) {
-    if (wanted) { try { await loadBook(wanted); } catch { /* shown when opened */ } }
-    goUpload();
-  } else {
-    await openBook(wanted);
-    if (m && m[1] === wanted && m[2] && state.status && state.status.chapters.some(c => c.id === m[2])) await openChapter(m[2]);
+  const cast = loadCast();
+  try { await loadBooks(); } catch (err) { fail(err, "Boeken laden"); }
+  await Promise.all([loadJobs(), cast]);
+  // No address: straight to the last book you worked on, else your books (or the welcome).
+  if (!location.hash || location.hash === "#" || location.hash === "#/") {
+    const last = recall("book");
+    if (last && state.books.some(b => b.book_id === last)) history.replaceState(null, "", bookHash(last));
   }
+  lastHash = location.hash;
+  await route();
   // After a reload: pick up jobs that are still running or waiting, oldest first.
-  const jobs = await loadJobs();
-  jobs.filter(j => ACTIVE.includes(j.status)).reverse().forEach(watch);
-  afterJobsChanged();
+  state.jobs.filter(isActive).reverse().forEach(watch);
 })();
