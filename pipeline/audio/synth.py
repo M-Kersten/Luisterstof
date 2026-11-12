@@ -215,10 +215,12 @@ def apply_speech_rate(clip: AudioClip, rate: float) -> AudioClip:
 
 
 # The one checkpoint this pipeline renders with: Multilingual V3 (June 2026), the same 0.5B
-# architecture as V2 with less hallucination and better speaker similarity. The chatterbox-tts
-# package on PyPI (0.1.7) still hardcodes V2 and Resemble AI has retired the repo, so
-# load_multilingual_model below loads V3 itself. Switching this file switches every voice in
-# every episode, which is exactly why it is a constant and why it is part of the render cache key.
+# architecture as V2 with less hallucination and better speaker similarity. The newest chatterbox-tts
+# on PyPI (0.1.7, March 2026) still hardcodes V2; Resemble AI's GitHub main loads V3 natively
+# (from_local(..., t3_model=...)) and generates the way V3 was tuned for. load_multilingual_model
+# uses that when it is installed and otherwise loads V3 itself. Switching this file switches every
+# voice in every episode, which is exactly why it is a constant and why it is part of the render
+# cache key.
 T3_CHECKPOINT = "t3_mtl23ls_v3.safetensors"
 CACHE_TAG = f"t3={T3_CHECKPOINT}"
 
@@ -249,13 +251,16 @@ def chatterbox_checkpoint_dir() -> Path:
 # chatterbox-tts 0.1.4 and older carry the first multilingual model: a 2352-token text vocabulary,
 # a tokenizer that neither lowercases nor NFKD-normalizes, and T3Config.is_multilingual tied to
 # 2352. V2 and V3 share the 2454-token vocabulary that 0.1.5 introduced. Resizing T3 on an old
-# package would load the weights but feed them the wrong tokens and switch off the multilingual
-# alignment guard, so an old package is refused with the upgrade that fixes it.
+# package would load the weights but feed them the wrong tokens, so an old package is refused.
 CHATTERBOX_MIN_VERSION = "0.1.5"
-# --no-deps: 0.1.6 pins numpy<1.26, which has no wheel for Python 3.12 and fails to build there.
-# Its other pins (torch 2.6, transformers 4.46.3, librosa 0.11) match 0.1.4, so the venv already
-# has them; omegaconf is the one new import the model needs.
-CHATTERBOX_UPGRADE = 'uv pip install --no-deps "chatterbox-tts==0.1.6", then: uv pip install omegaconf'
+# The recommended package: GitHub main at a fixed commit. It loads V3 natively, drops the alignment
+# stream analyzer (V3 is trained not to need it; on V3 it cuts lines short), uses repetition
+# penalty 1.2 and trims the noisy last speech token. Its source runs on the transformers 4.46.3 the
+# venv already has, so --no-deps keeps every other package where it is; its own pins (numpy<2,
+# transformers 5.2) would otherwise reshuffle the venv. omegaconf is the one import 0.1.4 lacked.
+CHATTERBOX_COMMIT = "ab55923c27757c90cfcc407baa57dc25a7d25217"
+CHATTERBOX_SOURCE = f"https://github.com/resemble-ai/chatterbox/archive/{CHATTERBOX_COMMIT}.zip"
+CHATTERBOX_UPGRADE = f'uv pip install --no-deps "chatterbox-tts @ {CHATTERBOX_SOURCE}", then: uv pip install omegaconf'
 
 
 class ChatterboxPackageTooOld(RuntimeError):
@@ -276,6 +281,23 @@ def chatterbox_version_ok(found: str | None) -> bool:
         return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
 
     return found is None or parts(found) >= parts(CHATTERBOX_MIN_VERSION)
+
+
+def chatterbox_has_native_v3() -> bool | None:
+    """Whether the installed chatterbox loads V3 itself, read from its source so torch is not imported."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("chatterbox")
+    except (ImportError, ValueError):
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    mtl = Path(list(spec.submodule_search_locations)[0]) / "mtl_tts.py"
+    try:
+        return "t3_mtl23ls_v3" in mtl.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def check_text_vocabulary(checkpoint: int, package: int) -> None:
@@ -340,10 +362,12 @@ def load_multilingual_model(device: str):
 
     from chatterbox.mtl_tts import ChatterboxMultilingualTTS  # type: ignore
 
-    if "t3_model" in inspect.signature(ChatterboxMultilingualTTS.from_pretrained).parameters:
-        return ChatterboxMultilingualTTS.from_pretrained(device=device, t3_model=T3_CHECKPOINT)  # newer chatterbox
+    from_local = getattr(ChatterboxMultilingualTTS, "from_local", None)
+    native = from_local is not None and "t3_model" in inspect.signature(from_local).parameters
     ckpt_dir = chatterbox_checkpoint_dir()
     try:
+        if native:  # GitHub main: V3 with the generation settings it was tuned for
+            return from_local(ckpt_dir, device, t3_model=T3_CHECKPOINT)
         return _multilingual_from_local(ckpt_dir, device)
     except ChatterboxPackageTooOld:
         raise  # the weights are fine; the download hint below would send you the wrong way

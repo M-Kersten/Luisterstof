@@ -308,25 +308,25 @@ API summary: `POST /api/books` (upload, `quality=true` to run it in quality mode
 ## Audio details
 
 The voice comes from Resemble AI's Chatterbox Multilingual on the V3 T3 weights,
-`t3_mtl23ls_v3.safetensors` (the June 2026 release). That checkpoint is fixed, and it is not what
-the `chatterbox-tts` package on PyPI loads: the package hardcodes the older V2 file, so
-`pipeline/audio/synth.py` mirrors the package's own local loader and points it at V3 instead.
-Everything else is the package's — the same `VoiceSpec`, the same `exaggeration`/`cfg_weight`/
-`temperature`, the same reference clip. The checkpoint name is part of the take cache key, so takes
-written with another checkpoint re-render rather than silently mixing two voices in one episode, and
-every worker in the pool loads the same file: a failed load is an error instead of a quiet fallback to
-V2, because two hosts on two checkpoints would sound like two different people mid-episode. The loader
-needs `chatterbox-tts` 0.1.5 or newer for the classes around the weights: 0.1.4 and older build T3 for
-the first multilingual vocabulary (2352 tokens, V3 has 2454) and tokenize without lowercasing, so the
-load stops on them. Upgrading an existing venv goes with `--no-deps`, because 0.1.6 pins `numpy<1.26`
-and that numpy does not build on Python 3.12; the other pins match 0.1.4:
+`t3_mtl23ls_v3.safetensors` (the June 2026 release). That checkpoint is fixed. The newest
+`chatterbox-tts` on PyPI (0.1.7) still hardcodes V2; Resemble AI's GitHub main loads V3 natively and
+generates the way V3 was tuned: no alignment stream analyzer (on V3 it cuts lines short), repetition
+penalty 1.2, and the noisy last speech token trimmed. Install that one, at the commit the project
+pins, with `--no-deps`: its own pins (`numpy<2`, `transformers==5.2.0`) would reshuffle a working venv,
+and its source runs on the packages already there.
 
 ```
-uv pip install --no-deps "chatterbox-tts==0.1.6"
+uv pip install --no-deps "chatterbox-tts @ https://github.com/resemble-ai/chatterbox/archive/ab55923c27757c90cfcc407baa57dc25a7d25217.zip"
 uv pip install omegaconf
 ```
 
-Point
+With a PyPI release (0.1.5 to 0.1.7) `pipeline/audio/synth.py` still loads V3 through its own copy of
+the package's loader, and `studiepodcast doctor` says so. 0.1.4 and older are refused: they build T3
+for the first multilingual vocabulary (2352 tokens, V3 has 2454) and tokenize without lowercasing.
+The checkpoint name is part of the take cache key, so takes
+written with another checkpoint re-render rather than silently mixing two voices in one episode, and
+every worker in the pool loads the same file: a failed load is an error instead of a quiet fallback to
+V2, because two hosts on two checkpoints would sound like two different people mid-episode. Point
 `CHATTERBOX_CKPT_DIR` at a folder of weights (yours or a fine-tune) to skip the download entirely;
 otherwise they come from the Hugging Face cache, which is offline-safe once fetched. `studiepodcast
 doctor` prints which T3 file a render will load and whether the weights around it are all on disk, so
