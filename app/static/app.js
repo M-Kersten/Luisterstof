@@ -6,6 +6,7 @@ const state = {
   view: null, book: null, chapter: null, step: null, data: null, glossary: null, timings: null, status: null,
   books: [], jobs: [], health: null, names: {}, hosts: [], dirty: false, stageOpen: {}, runQuality: false,
   source: null, sourceFor: null, workTab: "script", selectedLine: null, selectedClaim: null,
+  voices: null, voice: null, voiceTakes: [], voiceDraft: {},
   engineDetail: { writer: "", voice: "" },
 };
 
@@ -84,7 +85,7 @@ function fmtDuration(ms) {
 
 const STAGES = { ingest: "Inlezen", pipeline: "Boek verwerken", plan: "Plan", glossary: "Uitspraak", script: "Script schrijven",
   audit: "Controle", continuity: "Continuïteit", render: "Opname", approve: "Goedkeuren", all: "Hoofdstuk schrijven",
-  book: "Boek", run: "Hoofdstuk" };
+  book: "Boek", run: "Hoofdstuk", voice: "Stem proberen" };
 const PASS_NAMES = { ingest: "inlezen", plan: "plan", glossary: "uitspraak", script: "script schrijven", audit: "controle",
   revise: "herschrijven", polish: "tafellezing", continuity: "continuïteit", render: "opname", chapter: "hele hoofdstuk" };
 const passTitle = (p) => p.title || ((PASS_NAMES[p.pass_name] || p.pass_name) + (p.label ? ` (${p.label})` : ""));
@@ -96,7 +97,8 @@ const JOB_STATUS = { queued: ["in de wachtrij", ""], running: ["bezig", "run"], 
   cancelled: ["gestopt", "warn"] };
 const TIMING_STATUS = { done: "", failed: chip("mislukt", "bad"), stopped: chip("gestopt", "warn"), skipped: chip("overgeslagen") };
 const ACTIVE = ["running", "queued"];
-const jobName = (j) => `${STAGES[j.stage] || j.stage}${j.chapter_id ? " " + j.chapter_id : ""}`;
+const jobName = (j) => j.book_id === VOICELAB ? `Take voor ${state.names[j.chapter_id] || j.chapter_id}`
+  : `${STAGES[j.stage] || j.stage}${j.chapter_id ? " " + j.chapter_id : ""}`;
 const STEP_SLUG = { review: "nalezen", record: "opnemen", listen: "luisteren" };
 const SLUG_STEP = Object.fromEntries(Object.entries(STEP_SLUG).map(([k, v]) => [v, k]));
 const STEP_ORDER = ["review", "record", "listen"];
@@ -109,6 +111,8 @@ const chapterHash = (book, ch, step) => `${bookHash(book)}/${enc(ch)}${step && S
 function parseHash() {
   const h = decodeURIComponent(location.hash.replace(/^#/, ""));
   if (h === "/nieuw") return { view: "new" };
+  const v = h.match(/^\/stemmen(?:\/([^/]+))?$/);
+  if (v) return { view: "voices", voice: v[1] || null };
   const m = h.match(/^\/boek\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?$/);
   if (m) return { view: m[2] ? "chapter" : "book", book: m[1], chapter: m[2] || null, step: SLUG_STEP[m[3]] || null };
   return { view: "home" };
@@ -136,6 +140,7 @@ async function route() {
   $("#sys").open = false;
   if (r.view === "new") { showView("new"); renderEngineWarning(); return; }
   if (r.view === "home") { showView("home"); renderHome(); return; }
+  if (r.view === "voices") { showView("voices"); await openVoices(r.voice); return; }
   if (!state.books.some(b => b.book_id === r.book)) {
     try { await loadBooks(); } catch { /* shown below */ }
     if (!state.books.some(b => b.book_id === r.book)) { toast(`Het boek ${r.book} bestaat niet (meer).`, true); go("#/"); return; }
@@ -151,8 +156,8 @@ async function route() {
 function showView(name) {
   const changed = name !== state.view;
   state.view = name;
-  for (const v of ["home", "new", "book", "chapter"]) $(`#view-${v}`).hidden = v !== name;
-  $$(".site-nav a").forEach(a => a.toggleAttribute("aria-current", (a.dataset.nav === "home" && ["home", "book", "chapter"].includes(name)) || (a.dataset.nav === "new" && name === "new")));
+  for (const v of ["home", "new", "book", "chapter", "voices"]) $(`#view-${v}`).hidden = v !== name;
+  $$(".site-nav a").forEach(a => a.toggleAttribute("aria-current", (a.dataset.nav === "home" && ["home", "book", "chapter"].includes(name)) || a.dataset.nav === name || (a.dataset.nav === "new" && name === "new")));
   $("#savebar").hidden = !(state.dirty && name === "chapter");
   if (changed) window.scrollTo(0, 0);
   document.title = name === "chapter" && state.data ? `${$("#chapter-title").textContent} · Luisterstof`
@@ -1190,7 +1195,7 @@ function trackEvent(job, ev) {
 function renderProgress() {
   if (!run.job) return;
   const now = Date.now();
-  const book = (state.books.find(b => b.book_id === run.job.book_id) || {}).title || run.job.book_id;
+  const book = run.job.book_id === VOICELAB ? "Stemmen" : (state.books.find(b => b.book_id === run.job.book_id) || {}).title || run.job.book_id;
   $("#progress-title").textContent = `${STAGES[run.stage] || STAGES[run.job.stage] || run.job.stage} · ${book}${run.job.chapter_id ? ", " + run.job.chapter_id : ""}`;
   $("#progress-panel").classList.toggle("stopping", run.stopping);
   const outer = [];
@@ -1279,6 +1284,10 @@ function watch(job) {
 
 async function refreshAfterJob(j) {
   await loadJobs();
+  if (j.book_id === VOICELAB) {
+    if (state.view === "voices") { await loadVoices(); renderVoiceList(); if (state.voice === j.chapter_id) await loadTakes(); renderVoiceState(); }
+    return;
+  }
   if (["ingest", "pipeline"].includes(j.stage) && j.book_id === state.sourceFor) state.source = null;
   try {
     await loadBooks();
@@ -1294,6 +1303,7 @@ async function refreshAfterJob(j) {
 
 // Jobs decide what is busy: the page you look at follows them.
 function afterJobsChanged() {
+  if (state.view === "voices") renderVoiceState();
   if (state.view === "home") renderHome();
   else if (state.view === "book") renderBook();
   else if (state.view === "chapter" && state.data) {
@@ -1323,6 +1333,199 @@ async function approve(e) {
     await loadBook(state.book);
     go(chapterHash(state.book, state.chapter, "record"));
   } catch (err) { fail(err, "Goedkeuren"); }
+}
+
+// --------------------------------------------------------------- voice lab
+// One sentence, one voice, the four knobs by hand. Every take is kept with the settings and the seed that made it;
+// the best one's settings are saved for that voice and every recording after uses them.
+const VOICELAB = "stemlab";
+const KNOBS = {
+  exaggeration: ["Expressie", "Hoeveel emotie en nadruk. Hoger is levendiger; te hoog klinkt overdreven of struikelt."],
+  cfg_weight: ["Houvast aan de stem", "Hoe strak de take de referentieclip volgt. Lager klinkt vaak rustiger en trager."],
+  temperature: ["Variatie", "Hoeveel takes van elkaar verschillen. Lager is voorspelbaar, hoger levendiger maar wisselvalliger."],
+  speech_rate: ["Tempo", "Na de opname sneller of trager gemaakt, zonder de toonhoogte te veranderen. 1 is ongewijzigd."],
+};
+const knobText = (k, v) => `${KNOBS[k][0].toLowerCase()} ${Number(v).toFixed(2).replace(/0$/, "")}`;
+const sameParams = (a, b) => a && b && Object.keys(KNOBS).every(k => Math.abs(a[k] - b[k]) < 1e-6);
+
+async function loadVoices() {
+  try { state.voices = await api.get("/api/voices"); } catch (err) { fail(err, "Stemmen laden"); }
+  return state.voices;
+}
+function currentVoice() { return state.voices ? state.voices.voices.find(v => v.id === state.voice) : null; }
+
+async function openVoices(voiceId) {
+  if (!state.voices) await loadVoices();
+  if (!state.voices) return;
+  const list = state.voices.voices;
+  if (!voiceId) voiceId = recall("voice");
+  if (!list.some(v => v.id === voiceId)) voiceId = (list.find(v => v.has_ref) || list[0] || {}).id || null;
+  saveVoiceDraft();  // the knobs as you left them, also when you come back to the same voice
+  if (voiceId !== state.voice) { state.voice = voiceId; state.voiceTakes = []; }
+  if (voiceId) { remember("voice", voiceId); const h = `#/stemmen/${enc(voiceId)}`; if (location.hash !== h) { history.replaceState(null, "", h); lastHash = h; } }
+  renderVoiceList();
+  renderVoiceEditor();
+  if (voiceId) await loadTakes();
+  renderVoiceState();
+}
+
+function renderVoiceList() {
+  const kinds = { host: "Host", guest: "Gast" };
+  $("#voice-list").innerHTML = state.voices.voices.map(v => `<a class="voiceitem" href="#/stemmen/${enc(v.id)}"${v.id === state.voice ? ' aria-current="page"' : ""}>
+      <span class="voiceitem__name">${escapeHtml(v.name)}</span>
+      <span class="voiceitem__meta">${kinds[v.kind] || v.kind}${v.role ? `, ${v.role === "explainer" ? "legt uit" : "vraagt door"}` : ""}</span>
+      ${v.has_ref ? "" : chip("geen clip", "warn", `Zet een referentieclip in cast/${v.voice_ref || "refs/"}`)}
+    </a>`).join("");
+  const loaded = state.voices.model_loaded;
+  $("#voice-model").hidden = !loaded;
+  if (loaded) $("#voice-model").innerHTML = 'Het stemmodel staat geladen op de videokaart, zodat de volgende take snel is. Ga je schrijven met OpenCode, geef de kaart dan eerst vrij. <button class="link" id="voice-release">Videokaart vrijgeven</button>';
+}
+
+function sliderHtml(key, spec, value, saved) {
+  const pct = (x) => (100 * (x - spec.min) / (spec.max - spec.min)).toFixed(1);
+  return `<div class="slider" data-knob="${key}">
+    <div class="slider__head"><label for="knob-${key}">${KNOBS[key][0]}</label><output id="out-${key}">${value}</output></div>
+    <div class="slider__track"><input type="range" id="knob-${key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${value}">
+      <span class="slider__saved" style="left:${pct(saved)}%" title="opgeslagen: ${saved}"></span></div>
+    <p class="slider__help">${KNOBS[key][1]} <span class="slider__savedtext">Opgeslagen: ${saved}.</span></p>
+  </div>`;
+}
+
+function saveVoiceDraft() {
+  if (!state.voice || $("#voice-editor").hidden) return;
+  state.voiceDraft[state.voice] = { text: $("#voice-text").value, params: knobValues(), seed: $("#voice-seed").value };
+  try { localStorage.setItem("luisterstof.voiceText", $("#voice-text").value); } catch { /* private window */ }
+}
+
+function renderVoiceEditor() {
+  const v = currentVoice();
+  $("#voice-empty").hidden = !!v;
+  $("#voice-editor").hidden = !v;
+  if (!v) return;
+  const draft = state.voiceDraft[v.id] || {};
+  const params = draft.params || v.params;
+  $("#voice-kind").textContent = v.kind === "host" ? "Host" : "Gast";
+  $("#voice-name").textContent = v.name;
+  $("#voice-about").textContent = v.about;
+  $("#voice-ref").innerHTML = v.has_ref
+    ? `<span class="muted small">De referentieclip, waar elke take op lijkt:</span><audio controls preload="none" src="/api/voices/${enc(v.id)}/ref"></audio>`
+    : `<div class="callout callout--bad"><b>Nog geen referentieclip.</b> Zet 30 tot 60 seconden schone opname in <code>cast/${escapeHtml(v.voice_ref || "refs/" + v.id + ".wav")}</code>. De Opnamegids legt uit hoe.${state.voices.fake_audio ? " In testmodus kun je toch takes maken." : ""}</div>`;
+  let text = draft.text;
+  if (text === undefined) { try { text = localStorage.getItem("luisterstof.voiceText") || ""; } catch { text = ""; } }
+  $("#voice-text").value = text || $("[data-example]").dataset.example;
+  $("#voice-text").maxLength = state.voices.max_text;
+  $("#voice-sliders").innerHTML = Object.entries(state.voices.params).map(([k, spec]) => sliderHtml(k, spec, params[k], v.params[k])).join("");
+  $("#voice-seed").value = draft.seed || Math.floor(Math.random() * 999998) + 1;
+  $("#voice-save").textContent = `Opslaan voor ${v.name}`;
+  updateVoiceDirty();
+}
+
+function knobValues() {
+  const out = {};
+  for (const k of Object.keys(KNOBS)) { const el = $(`#knob-${k}`); if (el) out[k] = parseFloat(el.value); }
+  return out;
+}
+
+function updateVoiceDirty() {
+  const v = currentVoice();
+  if (!v) return;
+  const changed = !sameParams(knobValues(), v.params);
+  $("#voice-save").disabled = !changed;
+  $("#voice-reset").disabled = !changed;
+  for (const k of Object.keys(KNOBS)) $(`#out-${k}`).textContent = Number(knobValues()[k]).toFixed(2);
+  $("#voice-state").textContent = changed ? "Andere instellingen dan opgeslagen." : "Dit zijn de opgeslagen instellingen.";
+}
+
+function voiceJob() {
+  return state.jobs.find(j => j.book_id === VOICELAB && j.chapter_id === state.voice && isActive(j));
+}
+
+function renderVoiceState() {
+  if (state.view !== "voices" || !currentVoice()) return;
+  const job = voiceJob();
+  const btn = $("#voice-go");
+  btn.disabled = !!job;
+  btn.textContent = job ? (job.status === "queued" ? "In de wachtrij..." : "Bezig...") : "Maak take";
+  renderTakes();
+}
+
+async function loadTakes() {
+  if (!state.voice) return;
+  try { state.voiceTakes = await api.get(`/api/voices/${enc(state.voice)}/takes`); } catch (err) { fail(err, "Takes laden"); }
+  renderTakes();
+}
+
+function renderTakes() {
+  const v = currentVoice();
+  const root = $("#voice-takes");
+  if (!v) return;
+  const job = voiceJob();
+  const pending = job ? `<div class="take take--pending"><span class="chip chip--run">${job.status === "queued" ? "in de wachtrij" : "bezig"}</span>
+    <span class="muted">${state.voices.model_loaded ? "De take wordt gemaakt." : "De eerste take laadt ook het stemmodel; dat duurt een minuut of twee."}</span></div>` : "";
+  if (!state.voiceTakes.length) { root.innerHTML = pending || '<p class="empty">Nog geen takes voor deze stem.</p>'; return; }
+  root.innerHTML = pending + state.voiceTakes.map(t => {
+    const saved = sameParams(t.params, v.params);
+    const wer = t.wer === null || t.wer === undefined ? chip("niet teruggeluisterd")
+      : t.wer <= 0.05 ? chip(`goed verstaan (${Math.round(t.wer * 100)}% fout)`, "ok", "Whisper verstond bijna alles; zo komt de take door de controle van een echte opname.")
+      : chip(`${Math.round(t.wer * 100)}% verkeerd verstaan`, "bad", "Een echte opname keurt een take boven 5% af.");
+    return `<div class="take${saved ? " is-saved" : ""}" data-take="${escapeHtml(t.id)}">
+      <div class="take__play"><audio controls preload="none" src="${escapeHtml(t.audio)}"></audio></div>
+      <div class="take__body">
+        <p class="take__text">${escapeHtml(t.text)}</p>
+        ${t.wer > 0 && t.transcript ? `<p class="take__heard">Whisper hoorde: ${escapeHtml(t.transcript)}</p>` : ""}
+        <p class="take__meta">${Object.keys(KNOBS).map(k => `<span>${escapeHtml(knobText(k, t.params[k]))}</span>`).join("")}<span>seed ${t.seed}</span><span>${String(t.duration_s).replace(".", ",")} s</span><span>${fmtWhen(t.created_at)}</span></p>
+        <p class="take__chips">${wer}${saved ? chip("opgeslagen instellingen", "ok") : ""}</p>
+      </div>
+      <div class="take__actions">
+        <button class="btn btn--secondary btn--sm" data-use="${escapeHtml(t.id)}" title="Zet de knoppen, de seed en de zin terug zoals bij deze take.">Overnemen</button>
+        <button class="btn btn--ghost btn--sm" data-save-take="${escapeHtml(t.id)}"${saved ? " disabled" : ""}>Opslaan voor ${escapeHtml(v.name)}</button>
+        <button class="iconbtn" data-del-take="${escapeHtml(t.id)}" title="Take verwijderen" aria-label="Take verwijderen">&times;</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function makeTake() {
+  const v = currentVoice();
+  if (!v) return;
+  const text = $("#voice-text").value.trim();
+  if (text.split(/\s+/).filter(Boolean).length < 3) { toast("Typ minstens drie woorden: heel korte zinnen laten Chatterbox vastlopen.", true); return; }
+  const seed = parseInt($("#voice-seed").value, 10) || null;
+  try {
+    const job = await api.send(`/api/voices/${enc(v.id)}/try`, "POST", { text, seed, ...knobValues() });
+    state.jobs.unshift(job);
+    watch(job);
+    renderVoiceState();
+    if (!$("#seed-keep").checked) $("#voice-seed").value = Math.floor(Math.random() * 999998) + 1;
+  } catch (err) { fail(err, "Take maken"); }
+}
+
+async function saveVoice(params) {
+  const v = currentVoice();
+  if (!v) return;
+  try {
+    await api.send(`/api/voices/${enc(v.id)}/params`, "PUT", params);
+    toast(`Opgeslagen voor ${v.name}. Elke volgende opname gebruikt deze instellingen.`);
+    log(`stem ${v.id}: ${Object.keys(KNOBS).map(k => `${k}=${params[k]}`).join(" ")} opgeslagen`);
+    await loadVoices();
+    loadCast();
+    renderVoiceList();
+    updateVoiceDirty();
+    $$("#voice-sliders .slider").forEach(el => {
+      const k = el.dataset.knob, spec = state.voices.params[k], saved = currentVoice().params[k];
+      $(".slider__saved", el).style.left = `${(100 * (saved - spec.min) / (spec.max - spec.min)).toFixed(1)}%`;
+      $(".slider__savedtext", el).textContent = `Opgeslagen: ${saved}.`;
+    });
+    renderTakes();
+  } catch (err) { fail(err, "Opslaan"); }
+}
+
+function useTake(take) {
+  for (const k of Object.keys(KNOBS)) $(`#knob-${k}`).value = take.params[k];
+  $("#voice-seed").value = take.seed;
+  $("#voice-text").value = take.text;
+  updateVoiceDirty();
+  $(".voicecard").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // ----------------------------------------------------------------- engines
@@ -1500,6 +1703,29 @@ $("#journey").addEventListener("click", (e) => {
 });
 $("#journey").addEventListener("change", (e) => { if (e.target.id === "run-book-quality") state.runQuality = e.target.checked; });
 $("#recheck").onclick = checkEngines;
+$("#voice-sliders").addEventListener("input", updateVoiceDirty);
+$("#voice-go").onclick = makeTake;
+$("#voice-text").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); makeTake(); } });
+$("#seed-new").onclick = () => { $("#voice-seed").value = Math.floor(Math.random() * 999998) + 1; };
+$("#voice-save").onclick = () => saveVoice(knobValues());
+$("#voice-reset").onclick = () => { const v = currentVoice(); if (!v) return; for (const k of Object.keys(KNOBS)) $(`#knob-${k}`).value = v.params[k]; updateVoiceDirty(); };
+$$("[data-example]").forEach(b => b.onclick = () => { $("#voice-text").value = b.dataset.example; $("#voice-text").focus(); });
+$("#voice-model").addEventListener("click", async (e) => {
+  if (e.target.id !== "voice-release") return;
+  try { await api.send("/api/voices/release", "POST", {}); await loadVoices(); renderVoiceList(); toast("De videokaart is vrijgegeven."); } catch (err) { fail(err, "Vrijgeven"); }
+});
+$("#voice-takes").addEventListener("click", async (e) => {
+  const find = (id) => state.voiceTakes.find(t => t.id === id);
+  const use = e.target.closest("[data-use]"), save = e.target.closest("[data-save-take]"), del = e.target.closest("[data-del-take]");
+  if (use) useTake(find(use.dataset.use));
+  else if (save) { const t = find(save.dataset.saveTake); if (t) saveVoice(t.params); }
+  else if (del) {
+    if (!confirm("Deze take verwijderen?")) return;
+    try { await api.send(`/api/voices/${enc(state.voice)}/takes/${enc(del.dataset.delTake)}`, "DELETE", {}); await loadTakes(); } catch (err) { fail(err, "Verwijderen"); }
+  }
+});
+// One take plays at a time, so two takes can be compared back to back.
+document.addEventListener("play", (e) => { if (e.target.tagName === "AUDIO") $$("audio").forEach(a => { if (a !== e.target) a.pause(); }); }, true);
 
 fileInput.onchange = showChosenFile;
 $$("#upload input[name=start]").forEach(r => r.onchange = updateStartText);

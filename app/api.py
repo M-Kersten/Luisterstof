@@ -26,6 +26,13 @@ from pipeline.models import (
 from pipeline.paths import validate_id
 from pipeline.runner import Pipeline, StageError
 from pipeline.script.cast import continuity_text, load_cast, load_continuity
+from pipeline.voicelab import MAX_TEXT as VOICE_MAX_TEXT
+from pipeline.voicelab import PARAMS as VOICE_PARAMS
+from pipeline.voicelab import VoiceLab, find_speaker, voice_info
+from pipeline.voicelab import clean_params as clean_voice_params
+from pipeline.voicelab import save_params as save_voice_params
+
+VOICELAB_JOBS = "stemlab"  # the jobs table wants a book id; voice-lab takes file under this one
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -39,6 +46,22 @@ class BookRunRequest(BaseModel):
     upto: str = "script"  # plan | glossary | script (render would approve without a human reading first)
     quality: bool = False
     fresh: bool = False  # redo what is already done
+
+
+class VoiceTryRequest(BaseModel):
+    text: str
+    exaggeration: float
+    cfg_weight: float
+    temperature: float
+    speech_rate: float
+    seed: int | None = None
+
+
+class VoiceParams(BaseModel):
+    exaggeration: float
+    cfg_weight: float
+    temperature: float
+    speech_rate: float
 
 
 class RunRequest(BaseModel):
@@ -58,14 +81,16 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
 
     store = JobStore(settings.data_dir / "jobs.sqlite")
     store.requeue_stale()
-    cast = load_cast(settings.cast_dir)
+    # The cast is read again after the voice lab saves a voice's settings, so the next job uses them.
+    casts = {"cast": load_cast(settings.cast_dir)}
 
     def factory(on_event, job_settings: Settings | None = None):
-        return Pipeline(job_settings or settings, fake_llm=fake_llm, fake_audio=fake_audio, cast=cast,
+        return Pipeline(job_settings or settings, fake_llm=fake_llm, fake_audio=fake_audio, cast=casts["cast"],
                         on_event=on_event)
 
     manager = JobManager(store, factory)
-    reader = Pipeline(settings, fake_llm=fake_llm, fake_audio=fake_audio, cast=cast)  # read-only helper, no LLM calls
+    reader = Pipeline(settings, fake_llm=fake_llm, fake_audio=fake_audio, cast=casts["cast"])  # read-only helper, no LLM calls
+    lab = VoiceLab(settings, fake_audio=fake_audio)
 
     # The interactive API docs load their JavaScript from a CDN; offline mode serves none of it.
     app = FastAPI(title="Studiepodcast", version="0.1.0",
@@ -276,8 +301,11 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
             if stage == "audit":
                 return p.audit(book_id, chapter_id, llm_checks=req.llm_checks)
             if stage == "render":
+                lab.release()
                 return p.render(book_id, chapter_id, force=req.force)[0]
             if stage == "all":
+                if req.upto == "render":
+                    lab.release()
                 return {k: str(v) if isinstance(v, Path) else True for k, v in p.run_chapter(book_id, chapter_id, upto=req.upto, llm_checks=req.llm_checks).items()}
             raise StageError(f"unknown stage {stage}")
 
@@ -325,7 +353,82 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
 
     @app.get("/api/cast")
     def cast_info() -> dict[str, Any]:
-        return {"cast": cast.model_dump(), "continuity": continuity_text(load_continuity(settings.cast_dir))}
+        return {"cast": casts["cast"].model_dump(), "continuity": continuity_text(load_continuity(settings.cast_dir))}
+
+    # ------------------------------------------------------------- voice lab
+    def speaker_or_404(speaker_id: str):
+        try:
+            return find_speaker(casts["cast"], speaker_id)[1]
+        except KeyError as exc:
+            raise HTTPException(404, f"unknown voice {speaker_id}") from exc
+
+    @app.get("/api/voices")
+    def voices() -> dict[str, Any]:
+        return {"voices": voice_info(casts["cast"], settings.cast_dir), "params": VOICE_PARAMS,
+                "max_text": VOICE_MAX_TEXT, "model_loaded": lab.loaded(), "fake_audio": fake_audio}
+
+    @app.get("/api/voices/{speaker_id}/ref")
+    def voice_ref(speaker_id: str):
+        sp = speaker_or_404(speaker_id)
+        path = settings.cast_dir / sp.voice_ref if sp.voice_ref else None
+        if not path or not path.is_file():
+            raise HTTPException(404, "no reference clip")
+        return FileResponse(path)
+
+    @app.get("/api/voices/{speaker_id}/takes")
+    def voice_takes(speaker_id: str) -> list[dict[str, Any]]:
+        speaker_or_404(speaker_id)
+        return [{**t, "audio": f"/api/voices/{speaker_id}/takes/{t['id']}.wav"} for t in lab.takes(speaker_id)]
+
+    @app.get("/api/voices/{speaker_id}/takes/{take_id}.wav")
+    def voice_take_audio(speaker_id: str, take_id: str):
+        speaker_or_404(speaker_id)
+        try:
+            return FileResponse(lab.take_path(speaker_id, take_id), media_type="audio/wav")
+        except KeyError as exc:
+            raise HTTPException(404, "unknown take") from exc
+
+    @app.delete("/api/voices/{speaker_id}/takes/{take_id}")
+    def voice_take_delete(speaker_id: str, take_id: str) -> dict[str, Any]:
+        speaker_or_404(speaker_id)
+        try:
+            lab.delete(speaker_id, take_id)
+        except KeyError as exc:
+            raise HTTPException(404, "unknown take") from exc
+        return {"deleted": take_id}
+
+    @app.post("/api/voices/{speaker_id}/try")
+    def voice_try(speaker_id: str, req: VoiceTryRequest) -> dict[str, Any]:
+        sp = speaker_or_404(speaker_id)
+        try:
+            params = clean_voice_params(req.model_dump())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        ref = settings.cast_dir / sp.voice_ref if sp.voice_ref else None
+        if not fake_audio and not (ref and ref.is_file()):
+            raise HTTPException(409, f"{sp.name} heeft nog geen referentieclip: zet hem in cast/{sp.voice_ref or 'refs/'}.")
+
+        def work(p: Pipeline):
+            return lab.generate(sp, req.text, params, req.seed, on_event=p.on_event)
+
+        return manager.submit(VOICELAB_JOBS, speaker_id, "voice", work)
+
+    @app.put("/api/voices/{speaker_id}/params")
+    def voice_save(speaker_id: str, req: VoiceParams) -> dict[str, Any]:
+        speaker_or_404(speaker_id)
+        try:
+            params = clean_voice_params(req.model_dump())
+            path = save_voice_params(settings.cast_dir, speaker_id, params)
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(400, f"niet opgeslagen: {exc}") from exc
+        casts["cast"] = load_cast(settings.cast_dir)
+        reader.cast = casts["cast"]
+        return {"saved": params, "file": path.name}
+
+    @app.post("/api/voices/release")
+    def voice_release() -> dict[str, Any]:
+        lab.release()
+        return {"model_loaded": lab.loaded()}
 
     if STATIC_DIR.is_dir():
         app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

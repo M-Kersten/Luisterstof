@@ -17,6 +17,7 @@
     <nav class="site-nav" aria-label="Hoofdmenu">
       <a href="#/" data-nav="home">Je boeken</a>
       <a href="#/nieuw" data-nav="new">Nieuw boek</a>
+      <a href="#/stemmen" data-nav="voices">Stemmen</a>
     </nav>
     <details class="sys" id="sys">
       <summary class="sys__summary" title="Draaien het schrijfmodel en de stemmen?">
@@ -141,6 +142,57 @@
         </div>
       </section>
     </form>
+  </section>
+
+  <!-- ============================================================ voices -->
+  <section id="view-voices" class="page page--wide" hidden>
+    <div class="pagehead">
+      <div><h1>Stemmen</h1>
+        <p class="lead">Kies een stem, typ een zin en schuif aan de knoppen tot hij klinkt zoals je wilt. Elke take blijft bewaard met de instellingen die hem maakten. Klinkt er een goed, sla die instellingen dan op voor die stem: elke volgende opname gebruikt ze.</p></div>
+    </div>
+    <div id="voice-model" class="callout" hidden></div>
+    <div class="voicelab">
+      <nav class="voicelist" id="voice-list" aria-label="Stemmen"></nav>
+      <div class="voicemain">
+        <p id="voice-empty" class="empty">Kies links een stem.</p>
+        <div id="voice-editor" hidden>
+          <div class="voicehead">
+            <div><p class="overline" id="voice-kind"></p><h2 id="voice-name"></h2><p class="muted" id="voice-about"></p></div>
+            <div class="voiceref" id="voice-ref"></div>
+          </div>
+
+          <section class="card voicecard">
+            <label class="field" for="voice-text"><span class="field__label">Zin</span></label>
+            <textarea id="voice-text" class="textarea" rows="3" placeholder="Typ hier wat de stem moet zeggen."></textarea>
+            <div class="examples"><span class="muted small">Voorbeelden:</span>
+              <button class="link" data-example="Stel je voor: je staat op een glazen vloer, honderd meter boven de stad, en je weet dat het glas je kan dragen, en toch trekken je knieën terug voordat je er zelf iets van vindt.">een lang verhaal</button>
+              <button class="link" data-example="Wacht even, hoe weet je lichaam dat eigenlijk, als je ogen zeggen dat het veilig is?">een vraag</button>
+              <button class="link" data-example="Haha, nee, dat bedoel ik niet! Ik bedoel dat je het zelf niet eens merkt.">een lach</button>
+              <button class="link" data-example="Het hart gaat sneller kloppen, de ademhaling versnelt, en dat gebeurt allemaal binnen één seconde.">rustig uitleggen</button>
+              <button class="link" data-example="In 1960 lieten Gibson en Walk baby's over een visual cliff kruipen, en maar 3 van de 27 gingen over de rand.">getallen en een Engelse term</button>
+            </div>
+            <div class="sliders" id="voice-sliders"></div>
+            <div class="seedrow">
+              <label class="field field--inline" for="voice-seed"><span class="field__label">Seed</span>
+                <input type="number" id="voice-seed" class="input" min="1" max="999999" step="1"></label>
+              <button id="seed-new" class="btn btn--ghost btn--sm" title="Een andere willekeurige seed: dezelfde instellingen, een andere voordracht.">Nieuwe seed</button>
+              <label class="check" title="Houd de seed vast om alleen het effect van een knop te horen."><input type="checkbox" id="seed-keep"> seed vasthouden</label>
+            </div>
+            <div class="actions">
+              <button id="voice-go" class="btn btn--primary" title="Ctrl+Enter">Maak take</button>
+              <button id="voice-save" class="btn btn--secondary">Opslaan voor deze stem</button>
+              <button id="voice-reset" class="btn btn--ghost">Terug naar opgeslagen</button>
+              <span id="voice-state" class="muted small"></span>
+            </div>
+          </section>
+
+          <section class="takes">
+            <div class="cardhead"><h3>Takes</h3><span class="muted small">Nieuwste bovenaan. Whisper luistert elke take terug: hoe minder het verkeerd verstaat, hoe duidelijker de stem.</span></div>
+            <div id="voice-takes"></div>
+          </section>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- ============================================================== book -->
