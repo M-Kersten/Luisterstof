@@ -548,9 +548,10 @@ class Pipeline:
                 audit = AuditResult.load_or_none(paths.audit(ch.id))
                 script = Script.load_or_none(paths.script(ch.id))
                 manifest = RenderManifest.load_or_none(paths.manifest(ch.id))
+                plan = ContentPlan.load_or_none(paths.plan(ch.id))
                 chapters.append({
                     "id": ch.id, "title": ch.title, "pages": list(ch.pages), "chars": ch.char_count,
-                    "plan": paths.plan(ch.id).is_file(),
+                    "plan": plan is not None, "summary": plan.summary if plan else None,
                     "script": script is not None, "script_revision": script.revision if script else None,
                     "audit": audit is not None, "audit_passed": audit.passed if audit else None,
                     "audit_blocking": len(audit.blocking()) if audit else None,

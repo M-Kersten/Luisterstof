@@ -26,6 +26,7 @@ def test_run_book_to_render_with_fakes(ingested):
     assert any(c.startswith("ch01:") for l in recap.lines for c in l.covers)
     status = p.status("demo")
     assert status["chapters"][0]["final"] and status["chapters"][0]["approved"] and not status["chapters"][2]["plan"]
+    assert status["chapters"][0]["summary"] and status["chapters"][2]["summary"] is None  # what the episode is about
     stages = [s for s, st, _ in p.events if st == "start"]
     assert stages[:4] == ["ingest", "plan", "glossary", "script"]
 

@@ -149,14 +149,27 @@
     <h1 id="book-title"></h1>
     <p id="book-meta" class="lead"></p>
     <ol class="journey" id="journey"></ol>
+    <section class="chapters" id="book-chapters" hidden>
+      <h2>Alle hoofdstukken</h2>
+      <p class="muted">Wat elk hoofdstuk behandelt en hoe ver het is. Klik een hoofdstuk om het script, de boektekst, de samenvatting en de controle te zien.</p>
+      <ol class="chcards" id="chapter-cards"></ol>
+    </section>
   </section>
 
   <!-- =========================================================== chapter -->
   <section id="view-chapter" class="page page--wide" hidden>
     <nav class="crumbs" aria-label="Kruimelpad"><a href="#/">Je boeken</a><span aria-hidden="true">›</span><a id="crumb-chapter-book" href="#/"></a><span aria-hidden="true">›</span><span id="crumb-chapter"></span></nav>
-    <p class="overline" id="chapter-overline"></p>
-    <h1 id="chapter-title"></h1>
-    <p id="chapter-meta" class="muted"></p>
+    <div class="chapterhead">
+      <div>
+        <p class="overline" id="chapter-overline"></p>
+        <h1 id="chapter-title"></h1>
+        <p id="chapter-meta" class="muted"></p>
+      </div>
+      <nav class="chapternav" aria-label="Ander hoofdstuk">
+        <a class="btn btn--ghost btn--sm" id="prev-chapter" href="#/">← vorige</a>
+        <a class="btn btn--ghost btn--sm" id="next-chapter" href="#/">volgende →</a>
+      </nav>
+    </div>
 
     <ol class="tracker" id="tracker" aria-label="Stappen voor dit hoofdstuk">
       <li><button data-step="review"><span class="tracker__n">1</span><span>Nalezen en goedkeuren</span></button></li>
@@ -164,43 +177,19 @@
       <li><button data-step="listen"><span class="tracker__n">3</span><span>Luisteren</span></button></li>
     </ol>
 
-    <!-- no script yet -->
-    <div id="step-missing" class="stage" hidden>
-      <div class="guide">
-        <div class="guide__body"><h2 id="missing-title">Nog geen script</h2><p id="missing-text"></p><p id="missing-why" class="why" hidden></p></div>
-        <div class="guide__actions" id="missing-actions"></div>
-      </div>
+    <!-- the step: what to do now -->
+    <div id="step-missing" class="guide" hidden>
+      <div class="guide__body"><h2 id="missing-title">Nog geen script</h2><p id="missing-text"></p><p id="missing-why" class="why" hidden></p></div>
+      <div class="guide__actions" id="missing-actions"></div>
     </div>
-
-    <!-- 1 review and approve -->
-    <div id="step-review" class="stage" hidden>
-      <div class="guide" id="review-guide">
-        <div class="guide__body"><h2 id="review-title"></h2><p id="review-text"></p></div>
-        <div class="guide__actions" id="review-actions"></div>
-      </div>
-      <div class="readbar">
-        <span id="script-meta" class="muted"></span>
-        <label class="check" title="Toon alleen de regels waar de controle iets over zegt.">
-          <input type="checkbox" id="only-issues"> alleen regels met opmerkingen</label>
-        <label class="check" title="Toon per regel de emotie, de beweringen die hij dekt, overlap en pauze.">
-          <input type="checkbox" id="show-details"> details per regel</label>
-      </div>
-      <div id="script-lines" class="transcript"></div>
-      <div class="guide guide--end" id="review-end">
-        <div class="guide__body"><h2 id="end-title"></h2><p id="end-text"></p></div>
-        <div class="guide__actions" id="end-actions"></div>
-      </div>
+    <div id="step-review" class="guide" hidden>
+      <div class="guide__body"><h2 id="review-title"></h2><p id="review-text"></p></div>
+      <div class="guide__actions" id="review-actions"></div>
     </div>
-
-    <!-- 2 record -->
-    <div id="step-record" class="stage" hidden>
-      <div class="guide">
-        <div class="guide__body"><h2 id="record-title"></h2><p id="record-text"></p><p id="record-why" class="why" hidden></p></div>
-        <div class="guide__actions" id="record-actions"></div>
-      </div>
+    <div id="step-record" class="guide" hidden>
+      <div class="guide__body"><h2 id="record-title"></h2><p id="record-text"></p><p id="record-why" class="why" hidden></p></div>
+      <div class="guide__actions" id="record-actions"></div>
     </div>
-
-    <!-- 3 listen -->
     <div id="step-listen" class="stage" hidden>
       <section class="card">
         <div class="cardhead"><h2>De aflevering</h2><div id="audio-quality"></div></div>
@@ -213,19 +202,56 @@
       </details>
     </div>
 
-    <!-- more about this chapter -->
-    <details class="more" id="more">
-      <summary><span>Meer over dit hoofdstuk</span><span class="muted small">het controlerapport, het plan, de uitspraak, de tijden, de bestanden en opnieuw maken</span></summary>
-      <nav class="tabs" role="tablist" aria-label="Meer over dit hoofdstuk">
-        <button data-tab="audit" class="active" role="tab">Controlerapport <span class="count" id="audit-count" hidden></span></button>
-        <button data-tab="plan" role="tab">Plan</button>
-        <button data-tab="lexicon" role="tab">Uitspraak</button>
-        <button data-tab="timings" role="tab">Tijden</button>
-        <button data-tab="artifacts" role="tab">Bestanden</button>
-        <button data-tab="redo" role="tab">Opnieuw maken</button>
+    <!-- the chapter itself: script, the book's text, the summary, the audit -->
+    <section class="workspace" id="workspace">
+      <nav class="tabs tabs--work" role="tablist" aria-label="Het hoofdstuk" data-group="work">
+        <button data-tab="script" role="tab" class="active">Script</button>
+        <button data-tab="source" role="tab">Boektekst</button>
+        <button data-tab="summary" role="tab">Samenvatting</button>
+        <button data-tab="audit" role="tab">Controle <span class="count" id="audit-count" hidden></span></button>
       </nav>
 
-      <div class="tab" id="tab-audit">
+      <div class="tab" id="tab-script" data-group="work">
+        <div class="readbar">
+          <span id="script-meta" class="muted"></span>
+          <label class="check" title="Toon alleen de regels waar de controle iets over zegt.">
+            <input type="checkbox" id="only-issues"> alleen regels met opmerkingen</label>
+          <label class="check" title="Toon per regel de emotie, de beweringen die hij dekt, overlap en pauze.">
+            <input type="checkbox" id="show-details"> details per regel</label>
+        </div>
+        <div class="split">
+          <div class="split__main">
+            <div id="script-lines" class="transcript"></div>
+            <div class="guide guide--end" id="review-end">
+              <div class="guide__body"><h2 id="end-title"></h2><p id="end-text"></p></div>
+              <div class="guide__actions" id="end-actions"></div>
+            </div>
+          </div>
+          <aside class="split__side" id="line-panel" aria-live="polite"></aside>
+        </div>
+      </div>
+
+      <div class="tab" id="tab-source" data-group="work" hidden>
+        <p class="help">De tekst van dit hoofdstuk zoals Luisterstof hem uit de PDF las. <mark class="srcmark">Gemarkeerd</mark> is wat de aflevering eruit haalt; <mark class="srcmark srcmark--missing">rood onderstreept</mark> staat in het plan maar komt in geen enkele regel van het script terug.</p>
+        <div class="split">
+          <div class="split__main" id="source-view"></div>
+          <aside class="split__side" id="claim-panel" aria-live="polite"></aside>
+        </div>
+      </div>
+
+      <div class="tab" id="tab-summary" data-group="work" hidden>
+        <div id="plan-view"></div>
+        <details class="help">
+          <summary>Hoe lees je dit?</summary>
+          <p>Dit is wat de aflevering feitelijk moet overbrengen, met per bewering een citaat uit het boek. Het script verwijst ernaar met c1, c2, enzovoort.</p>
+          <ul>
+            <li><b>moeilijkheid</b> 1 tot 5: hoe lastig voor een eerstejaars. <b>tentamen</b> 1 tot 5: hoe zeker het tentamenstof is.</li>
+            <li><b>citaatscore</b> 100: het citaat staat letterlijk in het boek. Bij 0 is het niet gevonden en is de controle zwakker.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="tab" id="tab-audit" data-group="work" hidden>
         <div id="audit-summary"></div>
         <div id="audit-issues"></div>
         <details class="help">
@@ -236,23 +262,22 @@
             <li><b>Stijl</b>: verboden AI-podcastzinnen, tics van de verkeerde host, onderbrekingen over een getal of definitie, steeds hetzelfde grapje, definities voorlezen als woordenboek, rijtjes losse feitjes in plaats van een verhaal.</li>
             <li><b>Opbouw</b>: koude opening, quiz en afsluiting.</li>
           </ul>
-          <p><span class="chip chip--bad">blokkerend</span> moet eerst opgelost worden. <span class="chip chip--warn">tip</span> mag blijven staan.</p>
+          <p><span class="chip chip--bad">probleem</span> moet eerst opgelost worden. <span class="chip chip--warn">tip</span> mag blijven staan.</p>
         </details>
       </div>
+    </section>
 
-      <div class="tab" id="tab-plan" hidden>
-        <div id="plan-view"></div>
-        <details class="help">
-          <summary>Hoe lees je het plan?</summary>
-          <p>Het plan is wat de aflevering feitelijk moet overbrengen, met per bewering een citaat uit het boek. Het script verwijst ernaar met c1, c2, enzovoort.</p>
-          <ul>
-            <li><b>moeilijkheid</b> 1 tot 5: hoe lastig voor een eerstejaars. <b>tentamen</b> 1 tot 5: hoe zeker het tentamenstof is.</li>
-            <li><b>citaatscore</b> 100: het citaat staat letterlijk in het boek. Bij 0 is het niet gevonden en is de controle zwakker.</li>
-          </ul>
-        </details>
-      </div>
+    <!-- the rest -->
+    <details class="more" id="more">
+      <summary><span>Meer</span><span class="muted small">uitspraak, tijden, bestanden en opnieuw maken</span></summary>
+      <nav class="tabs" role="tablist" aria-label="Meer over dit hoofdstuk" data-group="more">
+        <button data-tab="lexicon" class="active" role="tab">Uitspraak</button>
+        <button data-tab="timings" role="tab">Tijden</button>
+        <button data-tab="artifacts" role="tab">Bestanden</button>
+        <button data-tab="redo" role="tab">Opnieuw maken</button>
+      </nav>
 
-      <div class="tab" id="tab-lexicon" hidden>
+      <div class="tab" id="tab-lexicon" data-group="more">
         <p class="help">Hoe vaktermen, formules en afkortingen worden uitgesproken. Dit geldt voor het hele boek, zodat een term in hoofdstuk 9 net zo klinkt als in hoofdstuk 2. <b>Vast</b> betekent dat latere hoofdstukken de uitspraak niet meer veranderen.</p>
         <div class="toolbar">
           <button id="add-entry" class="btn btn--ghost btn--sm">+ term</button>
@@ -264,17 +289,17 @@
         </div>
       </div>
 
-      <div class="tab" id="tab-timings" hidden>
+      <div class="tab" id="tab-timings" data-group="more" hidden>
         <p class="help">Wanneer elke stap begon en klaar was en hoe lang hij duurde. Na elke herschrijfronde en na de tafellezing volgt een eigen controle. De nieuwste run staat bovenaan.</p>
         <div id="timings-view"></div>
       </div>
 
-      <div class="tab" id="tab-artifacts" hidden>
+      <div class="tab" id="tab-artifacts" data-group="more" hidden>
         <p class="help">Elk bestand dat een stap heeft gemaakt, om iets na te lezen of te bewaren.</p>
         <ul id="artifact-list" class="filelist"></ul>
       </div>
 
-      <div class="tab" id="tab-redo" hidden>
+      <div class="tab" id="tab-redo" data-group="more" hidden>
         <p class="help">Gewoonlijk heb je dit niet nodig: de stappen bovenaan wijzen de weg. Wat je hier opnieuw maakt, overschrijft het oude resultaat.</p>
         <div class="redo">
           <div class="redo__row"><div><b>Plan opnieuw maken</b><p class="muted">De beweringen, definities en misvattingen met hun citaten uit het boek.</p></div>

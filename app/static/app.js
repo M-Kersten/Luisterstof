@@ -5,6 +5,7 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const state = {
   view: null, book: null, chapter: null, step: null, data: null, glossary: null, timings: null, status: null,
   books: [], jobs: [], health: null, names: {}, hosts: [], dirty: false, stageOpen: {}, runQuality: false,
+  source: null, sourceFor: null, workTab: "script", selectedLine: null, selectedClaim: null,
   engineDetail: { writer: "", voice: "" },
 };
 
@@ -165,7 +166,7 @@ async function loadBooks() {
 }
 
 async function loadBook(bookId) {
-  if (bookId !== state.book) { state.chapter = null; state.data = null; state.stageOpen = {}; }
+  if (bookId !== state.book) { state.chapter = null; state.data = null; state.stageOpen = {}; state.source = null; state.sourceFor = null; }
   state.book = bookId;
   remember("book", bookId);
   const [s, timings] = await Promise.all([
@@ -320,6 +321,26 @@ function renderBook() {
   }).join("");
   $("#run-book-quality") && ($("#run-book-quality").checked = state.runQuality);
   applyQualityMode();
+  renderChapterCards(s);
+}
+
+const PHASE_CHIP = {
+  write: ["nog te schrijven", ""], review: ["nalezen", "warn"], record: ["klaar om op te nemen", "warn"], listen: ["opgenomen", "ok"],
+};
+function renderChapterCards(s) {
+  $("#book-chapters").hidden = !s.ingested || !s.chapters.length;
+  $("#chapter-cards").innerHTML = s.chapters.map(ch => {
+    let [label, kind] = PHASE_CHIP[phase(ch)];
+    if (phase(ch) === "review" && ch.audit_passed === false) [label, kind] = [plural(ch.audit_blocking, "probleem", "problemen"), "bad"];
+    if (phase(ch) === "write" && lastFailure(ch.id)) [label, kind] = ["liep vast", "bad"];
+    if (chapterBusy(ch.id)) [label, kind] = ["bezig", "run"];
+    const t = chapterTiming(ch.id);
+    return `<li><a class="chcard" href="${chapterHash(s.book_id, ch.id)}">
+      <span class="chcard__top"><span class="chcard__id">${escapeHtml(ch.id)}</span><span class="chcard__title">${escapeHtml(ch.title)}</span>${chip(label, kind)}</span>
+      <span class="chcard__summary">${ch.summary ? escapeHtml(ch.summary) : '<span class="subtle">Nog geen samenvatting: die komt met het plan.</span>'}</span>
+      <span class="chcard__meta">${pagesText(ch.pages)} · ${ch.chars.toLocaleString("nl-NL")} tekens${t && t.seconds ? ` · gemaakt in ${fmtSeconds(t.seconds)}` : ""}</span>
+    </a></li>`;
+  }).join("");
 }
 
 function chapterRows(items, action) {
@@ -338,7 +359,7 @@ function journeyStages(s, c, button) {
   // 1 read the book in
   if (s.ingested) {
     stages.push({ key: "ingest", title: "Boek inlezen", status: "done", summary: `${plural(c.n, "hoofdstuk", "hoofdstukken")} gevonden`,
-      body: `<ol class="toc">${s.chapters.map(ch => `<li><span>${escapeHtml(ch.title)}</span><span class="muted small">p. ${ch.pages[0]}-${ch.pages[1]}</span></li>`).join("")}</ol>
+      body: `<ol class="toc">${s.chapters.map(ch => `<li><a href="${chapterHash(s.book_id, ch.id)}">${escapeHtml(ch.title)}</a><span class="muted small">${pagesText(ch.pages)}</span></li>`).join("")}</ol>
         <p class="muted small">Klopt de indeling niet? Voeg het boek opnieuw toe en kies onder Meer opties een andere manier om hoofdstukken te vinden.</p>` });
   } else if (bookBusy(s.book_id)) {
     stages.push({ key: "ingest", title: "Boek inlezen", status: "running", summary: "Bezig",
@@ -458,10 +479,17 @@ async function openChapter(chapterId, step = null, { keep = false } = {}) {
   try { data = await api.get(`/api/books/${enc(state.book)}/chapters/${enc(chapterId)}`); } catch (err) { fail(err, "Hoofdstuk openen"); return; }
   const scroll = window.scrollY;
   const same = chapterId === state.chapter && state.view === "chapter";
+  if (!same) { state.selectedLine = null; state.selectedClaim = null; state.workTab = data.script ? "script" : "source"; }
   state.chapter = chapterId;
   state.data = data;
   setDirty(false);
+  await loadSource();
   const info = chapterInfo(chapterId);
+  const ids = state.status.chapters.map(c => c.id), at = ids.indexOf(chapterId);
+  for (const [el, other] of [[$("#prev-chapter"), ids[at - 1]], [$("#next-chapter"), ids[at + 1]]]) {
+    el.hidden = !other;
+    if (other) { el.href = chapterHash(state.book, other); el.title = (chapterInfo(other) || {}).title || other; }
+  }
   const title = (data.plan && data.plan.chapter_title) || (info && info.title) || chapterId;
   $("#crumb-chapter-book").textContent = state.status.title || state.book;
   $("#crumb-chapter-book").href = bookHash(state.book);
@@ -478,8 +506,7 @@ async function openChapter(chapterId, step = null, { keep = false } = {}) {
   showView("chapter");
   renderTracker(current);
   renderChapter();
-  renderAudit(data);
-  renderPlan(data);
+  renderWorkspace();
   renderArtifacts();
   renderTimings(chapterId);
   loadGlossary();
@@ -505,10 +532,153 @@ function renderChapter() {
   if (!data) return;
   for (const s of ["missing", "review", "record", "listen"]) $(`#step-${s}`).hidden = s !== state.step;
   $("#tracker").hidden = state.step === "missing";
+  $("#review-end").hidden = state.step !== "review";
   if (state.step === "missing") renderMissing(data);
-  if (state.step === "review") { renderScript(data); renderReviewGuide(data); }
+  if (state.step === "review") renderReviewGuide(data);
   if (state.step === "record") renderRecord(data);
   if (state.step === "listen") renderAudio(data);
+}
+
+// ------------------------------------------------------------ workspace
+// The chapter itself, next to whatever step you are on: the script, the book's text, the summary, the audit.
+function renderWorkspace() {
+  const data = state.data;
+  if (data.script) renderScript(data);
+  else $("#script-lines").innerHTML = `<p class="empty">Nog geen script. ${chapterBusy(state.chapter) ? "Het wordt nu geschreven." : "Zodra het geschreven is, lees je het hier."}</p>`;
+  $(".readbar").hidden = !data.script;
+  renderSource();
+  renderPlan(data);
+  renderAudit(data);
+  renderLinePanel(state.selectedLine);
+  renderClaimPanel(state.selectedClaim);
+  showTab("work", state.workTab);
+}
+
+async function loadSource() {
+  if (state.sourceFor === state.book && state.source) return;
+  try { state.source = await api.get(bookUrl("/book")); state.sourceFor = state.book; } catch { state.source = null; }
+}
+function sourceChapter() {
+  return state.source && state.source.chapters ? state.source.chapters.find(c => c.id === state.chapter) : null;
+}
+function sourceSection(id) {
+  const ch = sourceChapter();
+  return ch ? ch.sections.find(s => s.id === id) : null;
+}
+// The passage a claim rests on: the span in the book when it was found there, else the quote the plan gave.
+function claimPassage(c) {
+  const sp = c.source_span, sec = sourceSection(sp.section);
+  const found = sec && sp.match_score > 0 && sp.end > sp.start && !(sp.start === 0 && sp.end >= sec.text.length);
+  return { text: found ? sec.text.slice(sp.start, sp.end) : (sp.quote || ""), section: sec ? sec.title : sp.section,
+    pages: sec && sec.pages ? sec.pages : null, found };
+}
+function claimById(id) { return state.data && state.data.plan ? state.data.plan.key_claims.find(c => c.id === id) : null; }
+// Which lines carry a claim, read from the page so an edit shows up before you save.
+function linesCovering(claimId) {
+  return $$("#script-lines .line").filter(div => $(".covers", div).value.split(",").map(x => x.trim()).includes(claimId))
+    .map(div => ({ id: div.dataset.id, speaker: $(".speaker", div).selectedOptions[0].text, text: $(".text", div).value }));
+}
+function issuesFor(lineId) {
+  const d = state.data;
+  return d.audit && auditState(d) !== "stale" ? d.audit.issues.filter(i => i.line_id === lineId) : [];
+}
+const pagesText = (pages) => pages ? (pages[0] === pages[1] ? `p. ${pages[0]}` : `p. ${pages[0]}-${pages[1]}`) : "";
+
+function chapterAtAGlance() {
+  const d = state.data, p = d.plan;
+  if (!p) return '<p class="muted">Nog geen plan, dus nog geen samenvatting.</p>';
+  const a = d.audit && auditState(d) !== "stale" ? d.audit : null;
+  const blocking = a ? a.issues.filter(i => i.severity === "blocking").length : 0, tips = a ? a.issues.length - blocking : 0;
+  const covered = new Set(d.script ? d.script.segments.flatMap(s => s.lines.flatMap(l => l.covers)) : []);
+  const inScript = p.key_claims.filter(c => covered.has(c.id)).length;
+  return `<h3>Dit hoofdstuk in het kort</h3><p class="panel__summary">${escapeHtml(p.summary)}</p>
+    <dl class="facts">
+      <div><dt>Beweringen</dt><dd>${p.key_claims.length}${d.script ? `, ${inScript} in het script` : ""}</dd></div>
+      <div><dt>Begrippen</dt><dd>${p.definitions.length}</dd></div>
+      <div><dt>Controle</dt><dd>${!d.script ? "nog geen script" : !a ? "nog niet gecontroleerd" : blocking ? `<span class="bad">${plural(blocking, "probleem", "problemen")}</span>, ${plural(tips, "tip", "tips")}` : `geslaagd, ${plural(tips, "tip", "tips")}`}</dd></div>
+    </dl>`;
+}
+
+function renderLinePanel(lineId) {
+  const panel = $("#line-panel"), d = state.data;
+  $$("#script-lines .line.is-selected").forEach(el => el.classList.remove("is-selected"));
+  const div = lineId ? $(`#script-lines .line[data-id="${CSS.escape(lineId)}"]`) : null;
+  state.selectedLine = div ? lineId : null;
+  if (!div) {
+    panel.innerHTML = `<div class="panel">${chapterAtAGlance()}<p class="muted small">Klik op een regel om te zien op welk stuk uit het boek hij steunt en wat de controle ervan vindt.</p></div>`;
+    return;
+  }
+  div.classList.add("is-selected");
+  const speaker = $(".speaker", div).selectedOptions[0].text;
+  const covers = $(".covers", div).value.split(",").map(x => x.trim()).filter(Boolean);
+  const issues = issuesFor(lineId);
+  const claims = covers.map(id => {
+    if (id.includes(":")) return `<div class="srcquote"><b>${escapeHtml(id)}</b> <span class="muted">uit een eerder hoofdstuk</span></div>`;
+    const c = claimById(id);
+    if (!c) return `<div class="srcquote"><b>${escapeHtml(id)}</b> <span class="bad">staat niet in het plan</span></div>`;
+    const ps = claimPassage(c);
+    return `<div class="srcquote"><p><b>${escapeHtml(c.id)}</b> ${escapeHtml(c.claim)}</p>
+      ${ps.text ? `<blockquote>${escapeHtml(ps.text)}</blockquote>` : ""}
+      <p class="srcquote__where">${escapeHtml(ps.section)}${ps.pages ? ", " + pagesText(ps.pages) : ""}${ps.found ? ` · <button class="link" data-show-claim="${escapeHtml(c.id)}">in de boektekst</button>` : ""}</p></div>`;
+  });
+  panel.innerHTML = `<div class="panel">
+    <div class="panel__head"><h3>${escapeHtml(speaker)}, regel ${escapeHtml(lineId)}</h3><button class="iconbtn" data-close-panel title="Terug naar de samenvatting" aria-label="Sluiten">&times;</button></div>
+    ${issues.length ? `<div class="panel__issues">${issues.map(issueLine).join("")}</div>` : ""}
+    <h4>Uit het boek</h4>
+    ${claims.length ? claims.join("") : '<p class="muted">Deze regel brengt geen feit uit het boek over: een vraag, een reactie of een grap. Dat mag.</p>'}
+  </div>`;
+}
+
+function renderSource() {
+  const root = $("#source-view"), ch = sourceChapter(), d = state.data;
+  if (!ch) { root.innerHTML = '<p class="empty">De tekst van dit hoofdstuk is niet gevonden.</p>'; return; }
+  const claims = d.plan ? d.plan.key_claims : [];
+  const covered = new Set(d.script ? d.script.segments.flatMap(s => s.lines.flatMap(l => l.covers)) : []);
+  root.innerHTML = ch.sections.map(sec => {
+    const spans = claims.filter(c => c.source_span.section === sec.id && claimPassage(c).found)
+      .map(c => ({ c, start: c.source_span.start, end: c.source_span.end })).sort((a, b) => a.start - b.start);
+    let html = "", at = 0;
+    for (const sp of spans) {
+      if (sp.start < at) continue;  // overlapping spans: the first one wins
+      const missing = d.script && !covered.has(sp.c.id);
+      html += escapeHtml(sec.text.slice(at, sp.start)) +
+        `<mark class="srcmark${missing ? " srcmark--missing" : ""}${state.selectedClaim === sp.c.id ? " is-active" : ""}" data-claim="${escapeHtml(sp.c.id)}" id="src-${escapeHtml(sp.c.id)}" tabindex="0" title="${escapeHtml(sp.c.id + ": " + sp.c.claim)}">${escapeHtml(sec.text.slice(sp.start, sp.end))}</mark>`;
+      at = sp.end;
+    }
+    html += escapeHtml(sec.text.slice(at));
+    const title = sec.title && sec.title !== ch.title ? `<h3>${escapeHtml(sec.title)} <span class="muted small">${pagesText(sec.pages)}</span></h3>` : "";
+    return `<section class="srcsec">${title}<div class="srcsec__text">${html}</div></section>`;
+  }).join("");
+}
+
+function renderClaimPanel(claimId) {
+  const panel = $("#claim-panel"), d = state.data, c = claimId ? claimById(claimId) : null;
+  $$("#source-view mark.is-active").forEach(m => m.classList.remove("is-active"));
+  state.selectedClaim = c ? claimId : null;
+  if (!c) {
+    const claims = d.plan ? d.plan.key_claims : [];
+    const marked = claims.filter(x => claimPassage(x).found).length;
+    panel.innerHTML = `<div class="panel">${chapterAtAGlance()}<p class="muted small">${d.plan ? `${marked} van de ${claims.length} beweringen zijn in de tekst gemarkeerd. ` : ""}Klik een markering om te zien welke bewering het is en waar die in het script terugkomt.</p></div>`;
+    return;
+  }
+  const mark = $(`#src-${CSS.escape(claimId)}`);
+  if (mark) mark.classList.add("is-active");
+  const lines = linesCovering(claimId);
+  panel.innerHTML = `<div class="panel">
+    <div class="panel__head"><h3>Bewering ${escapeHtml(c.id)}</h3><button class="iconbtn" data-close-panel title="Terug naar de samenvatting" aria-label="Sluiten">&times;</button></div>
+    <p>${escapeHtml(c.claim)}</p>
+    <p>${chip(`moeilijkheid ${c.difficulty}`)} ${chip(`tentamen ${c.exam_relevance}`)}</p>
+    <h4>In het script</h4>
+    ${lines.length ? `<ul class="linelinks">${lines.map(l => `<li><button class="linelink" data-line="${escapeHtml(l.id)}"><b>${escapeHtml(l.speaker)}</b> ${escapeHtml(l.text.length > 140 ? l.text.slice(0, 138) + "..." : l.text)}</button></li>`).join("")}</ul>`
+      : `<p class="bad">${d.script ? "Komt in geen enkele regel terug." : "Er is nog geen script."}</p>`}
+  </div>`;
+}
+
+function showClaimInSource(claimId) {
+  showTab("work", "source");
+  renderClaimPanel(claimId);
+  const mark = $(`#src-${CSS.escape(claimId)}`);
+  if (mark) mark.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function actionButtons(el, items) {
@@ -567,7 +737,7 @@ function renderReviewGuide(data) {
   const busyNow = chapterBusy(state.chapter);
   const a = auditState(data);
   const blocking = data.audit ? data.audit.issues.filter(i => i.severity === "blocking").length : 0;
-  const toEnd = () => $("#review-end").scrollIntoView({ behavior: "smooth", block: "center" });
+  const toEnd = () => { showTab("work", "script"); $("#review-end").scrollIntoView({ behavior: "smooth", block: "center" }); };
   const recheck = (primary) => ({ label: "Opnieuw controleren", primary, action: () => runStage("audit") });
   let top = [], end = [];
   if (busyNow) {
@@ -589,10 +759,10 @@ function renderReviewGuide(data) {
     end = [recheck(false)];
   } else if (a === "blocked") {
     setGuide("review", `${plural(blocking, "probleem", "problemen")} om op te lossen`,
-      "Luisterstof vond regels die niet kloppen met het boek of tegen de regels ingaan. Ze staan hieronder rood gemarkeerd, met uitleg. Pas de tekst aan en sla op; daarna wordt het opnieuw gecontroleerd. Liever een heel nieuw script? Dat kan onder Meer over dit hoofdstuk.");
+      "Luisterstof vond regels die niet kloppen met het boek of tegen de regels ingaan. Ze staan hieronder rood gemarkeerd, met uitleg. Pas de tekst aan en sla op; daarna wordt het opnieuw gecontroleerd. Liever een heel nieuw script? Dat kan onderaan bij Meer, onder Opnieuw maken.");
     const first = firstBlocking(data);
     top = [{ label: first ? "Naar het eerste probleem" : "Bekijk de problemen", primary: true,
-      action: () => first ? jumpToLine(first.line_id) : openMore("audit") }];
+      action: () => first ? jumpToLine(first.line_id) : showWork("audit") }];
     setGuide("end", "Nog niet goed te keuren", `Los eerst ${blocking === 1 ? "het rode probleem" : "de rode problemen"} op.`);
     end = [{ label: "Goedkeuren", disabled: true }];
   } else {
@@ -740,7 +910,7 @@ function setDirty(on) {
 function markDirty() {
   if (state.dirty || !state.data || !state.data.script) return;
   setDirty(true);
-  renderReviewGuide(state.data);
+  if (state.step === "review") renderReviewGuide(state.data);
 }
 
 async function saveScript() {
@@ -766,8 +936,10 @@ async function discardEdits() {
 }
 
 function jumpToLine(id) {
+  showTab("work", "script");
   const el = $(`#script-lines .line[data-id="${CSS.escape(id)}"]`);
   if (!el) return;
+  renderLinePanel(id);
   if ($("#only-issues").checked && !el.matches(".has-issue, .has-warning")) { $("#only-issues").checked = false; $("#script-lines").classList.remove("only-issues"); }
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   el.classList.remove("is-flash");
@@ -822,9 +994,15 @@ function renderPlan(data) {
   root.innerHTML = `<div class="plan">
     <p class="plan__summary">${escapeHtml(p.summary)}</p>
     <section><h3>Leerdoelen</h3><ul class="bullets">${p.learning_objectives.map(o => `<li>${escapeHtml(o)}</li>`).join("")}</ul></section>
-    <section><h3>Beweringen (${p.key_claims.length})</h3>${p.key_claims.map(c => `<div class="claim"><span class="id">${escapeHtml(c.id)}</span><span>${escapeHtml(c.claim)}</span>
+    <section><h3>Beweringen (${p.key_claims.length})</h3>${p.key_claims.map(c => {
+      const lines = data.script ? linesCovering(c.id) : [];
+      const ps = claimPassage(c);
+      return `<div class="claim"><span class="id">${escapeHtml(c.id)}</span><span>${escapeHtml(c.claim)}</span>
       <div class="claim__meta">${chip(`moeilijkheid ${c.difficulty}`)} ${chip(`tentamen ${c.exam_relevance}`)}
-        <span title="${escapeHtml(scoreTitle(c.source_span.match_score))}">${escapeHtml(c.source_span.section)} (citaatscore ${c.source_span.match_score ?? "-"})</span></div></div>`).join("")}</section>
+        <span title="${escapeHtml(scoreTitle(c.source_span.match_score))}">${escapeHtml(ps.section)}${ps.pages ? ", " + pagesText(ps.pages) : ""}</span>
+        ${ps.found ? `<button class="link" data-show-claim="${escapeHtml(c.id)}">in de boektekst</button>` : chip("citaat niet gevonden", "warn", scoreTitle(c.source_span.match_score))}
+        ${data.script ? (lines.length ? `<span>in het script: ${lines.map(l => `<button class="link" data-line="${escapeHtml(l.id)}">${escapeHtml(l.id)}</button>`).join(" ")}</span>` : chip("niet in het script", "bad")) : ""}</div></div>`;
+    }).join("")}</section>
     <section><h3>Definities</h3><ul class="bullets">${p.definitions.map(d => `<li><b>${escapeHtml(d.term)}</b>: ${escapeHtml(d.definition)}</li>`).join("") || '<li class="muted">geen</li>'}</ul></section>
     <section><h3>Misvattingen</h3><ul class="bullets">${p.misconceptions.map(m => `<li><b>fout:</b> ${escapeHtml(m.wrong)} <b>klopt wel:</b> ${escapeHtml(m.right)} <span class="muted">${escapeHtml(m.why_tempting)}</span></li>`).join("") || '<li class="muted">geen</li>'}</ul></section>
     <div class="planfacts">${chip(`gastexpert: ${p.needs_expert ? `ja${p.expert_domain ? ` (${p.expert_domain})` : ""}` : "nee"}`)} ${chip(`veel formules: ${p.formula_dense_sections.join(", ") || "nee"}`)}</div>
@@ -1101,6 +1279,7 @@ function watch(job) {
 
 async function refreshAfterJob(j) {
   await loadJobs();
+  if (["ingest", "pipeline"].includes(j.stage) && j.book_id === state.sourceFor) state.source = null;
   try {
     await loadBooks();
     if (state.book && j.book_id === state.book) await loadBook(state.book);
@@ -1269,20 +1448,39 @@ function updateStartText() {
 }
 
 // ------------------------------------------------------------------ wiring
-function showTab(name) {
-  $$(".tabs button").forEach(b => {
+function showTab(group, name) {
+  $$(`.tabs[data-group="${group}"] button`).forEach(b => {
     const on = b.dataset.tab === name;
     b.classList.toggle("active", on);
     b.setAttribute("aria-selected", String(on));
   });
-  $$(".tab").forEach(t => t.hidden = t.id !== `tab-${name}`);
+  $$(`.tab[data-group="${group}"]`).forEach(t => t.hidden = t.id !== `tab-${name}`);
+  if (group === "work") { state.workTab = name; if (name === "script") autosizeAll(); }
 }
-function openMore(tab) {
-  $("#more").open = true;
-  showTab(tab);
-  $("#more").scrollIntoView({ behavior: "smooth", block: "start" });
+function showWork(tab) {
+  showTab("work", tab);
+  $("#workspace").scrollIntoView({ behavior: "smooth", block: "start" });
 }
-$$(".tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+$$(".tabs").forEach(nav => $$("button", nav).forEach(b => b.onclick = () => showTab(nav.dataset.group, b.dataset.tab)));
+$("#script-lines").addEventListener("focusin", (e) => { const l = e.target.closest(".line"); if (l && l.dataset.id !== state.selectedLine) renderLinePanel(l.dataset.id); });
+$("#script-lines").addEventListener("click", (e) => { const l = e.target.closest(".line"); if (l && l.dataset.id !== state.selectedLine) renderLinePanel(l.dataset.id); });
+for (const panel of ["#line-panel", "#claim-panel"]) {
+  $(panel).addEventListener("click", (e) => {
+    if (e.target.closest("[data-close-panel]")) { panel === "#line-panel" ? renderLinePanel(null) : renderClaimPanel(null); return; }
+    const show = e.target.closest("[data-show-claim]");
+    if (show) { showClaimInSource(show.dataset.showClaim); return; }
+    const line = e.target.closest("[data-line]");
+    if (line) jumpToLine(line.dataset.line);
+  });
+}
+$("#source-view").addEventListener("click", (e) => { const m = e.target.closest("mark[data-claim]"); if (m) renderClaimPanel(m.dataset.claim); });
+$("#source-view").addEventListener("keydown", (e) => { const m = e.target.closest("mark[data-claim]"); if (m && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); renderClaimPanel(m.dataset.claim); } });
+$("#plan-view").addEventListener("click", (e) => {
+  const show = e.target.closest("[data-show-claim]");
+  if (show) { showClaimInSource(show.dataset.showClaim); return; }
+  const line = e.target.closest("[data-line]");
+  if (line) jumpToLine(line.dataset.line);
+});
 $$("[data-run]").forEach(b => b.onclick = () => {
   if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
   runStage(b.dataset.run);
@@ -1363,8 +1561,7 @@ $("#audit-issues").onclick = (e) => {
   const id = e.target.dataset && e.target.dataset.line;
   if (!id) return;
   e.preventDefault();
-  if (state.step !== "review") { go(chapterHash(state.book, state.chapter, "review")); setTimeout(() => jumpToLine(id), 400); }
-  else jumpToLine(id);
+  jumpToLine(id);
 };
 $("#save-glossary").onclick = async () => {
   try {
