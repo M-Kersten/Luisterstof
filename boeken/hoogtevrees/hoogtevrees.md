@@ -291,7 +291,7 @@ In 2006 schreven Martin Paulus en Murray Stein van de Universiteit van Californi
 
 Voor hoogtevrees is dit een interessante koppeling. Hoofdstuk 2 liet zien dat hoogte zelf een zintuiglijk conflict veroorzaakt: de ogen zeggen niets, het binnenoor zegt iets. Hoofdstuk 3 liet zien dat angst de adem versnelt en duizeligheid oplevert. Een insula die zulke signalen als dreigend weegt, voegt daar een derde laag aan toe.
 
-## 4.5 De rem van de prefrontale schors en het geheugen van de hippocampus
+## 4.5 De prefrontale schors en de hippocampus
 
 Achter het voorhoofd ligt de prefrontale schors. Het onderste, middelste deel ervan, de ventromediale prefrontale schors, heeft sterke verbindingen met de amygdala en kan die afremmen. Mohammed Milad en Gregory Quirk lieten in 2002 in Nature zien hoe dat bij ratten werkt. Ratten leerden eerst dat een toon een schok voorspelde. Daarna hoorden ze de toon vaak zonder schok, waardoor de angst uitdoofde. Een dag later registreerden de onderzoekers zenuwcellen in het infralimbische deel van de prefrontale schors, het rattenequivalent van het ventromediale gebied. Die cellen reageerden op de toon wanneer de rat de uitdoving moest herinneren. Hoe sterker ze vuurden, hoe minder de rat bevroor.
 
@@ -332,7 +332,7 @@ Die fout ligt op de loer bij een van de meest besproken hersenscans uit de klimw
 - Phelps, E. A., Delgado, M. R., Nearing, K. I., & LeDoux, J. E. (2004). Extinction learning in humans: Role of the amygdala and vmPFC. Neuron, 43(6), 897-905.
 - Verger, A., Malbos, E., Reynaud, E., Mallet, P., Mestre, D., Pergandi, J. M., Khalfa, S., & Guedj, E. (2018). Brain metabolism and related connectivity in patients with acrophobia treated by virtual reality therapy: An 18F-FDG PET pilot study sensitized by virtual exposure. EJNMMI Research, 8, 93.
 
-# Hoofdstuk 5 Hoe angst geleerd en onthouden wordt
+# Hoofdstuk 5 Angst leren en onthouden
 
 ## 5.1 De taal van Pavlov
 
@@ -419,7 +419,7 @@ Het zijn spectaculaire resultaten, en daarom is het belangrijk om de kanttekenin
 - Soeter, M., & Kindt, M. (2015). An abrupt transformation of phobic behavior after a post-retrieval amnesic agent. Biological Psychiatry, 78(12), 880-886.
 - Watson, J. B., & Rayner, R. (1920). Conditioned emotional reactions. Journal of Experimental Psychology, 3(1), 1-14.
 
-# Hoofdstuk 6 Denken en voelen boven de afgrond
+# Hoofdstuk 6 Denken boven de afgrond
 
 ## 6.1 Wat je denkt dat er gebeurt
 
@@ -596,7 +596,7 @@ Wel valt op hoe groot de kloof is tussen wat kan en wat er gebeurt. In de Duitse
 - Wolitzky-Taylor, K. B., Horowitz, J. D., Powers, M. B., & Telch, M. J. (2008). Psychological approaches in the treatment of specific phobias: A meta-analysis. Clinical Psychology Review, 28(6), 1021-1037.
 - Wolpe, J. (1958). Psychotherapy by reciprocal inhibition. Stanford: Stanford University Press.
 
-# Hoofdstuk 8 Stress in het dagelijks leven en op hoogte werken
+# Hoofdstuk 8 Stress, werk en hoogte
 
 ## 8.1 Waarom zebra’s geen maagzweren krijgen
 

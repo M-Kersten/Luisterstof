@@ -36,7 +36,7 @@ pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", str(FONT_DIR / "DejaVuSans-Bol
 
 BODY = ParagraphStyle("body", fontName="DejaVuSerif", fontSize=10.5, leading=15, alignment=TA_JUSTIFY,
                       spaceAfter=7, allowWidows=0, allowOrphans=0)
-H1 = ParagraphStyle("h1", fontName="DejaVuSans-Bold", fontSize=20, leading=26, alignment=TA_LEFT,
+H1 = ParagraphStyle("h1", fontName="DejaVuSans-Bold", fontSize=18, leading=24, alignment=TA_LEFT,
                     spaceBefore=36, spaceAfter=22, keepWithNext=1)
 H2 = ParagraphStyle("h2", fontName="DejaVuSans-Bold", fontSize=13, leading=17, alignment=TA_LEFT,
                     spaceBefore=16, spaceAfter=8, keepWithNext=1)
