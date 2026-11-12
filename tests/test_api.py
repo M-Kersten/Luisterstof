@@ -20,6 +20,8 @@ def test_upload_run_edit_approve(settings, sample_pdf):
     with TestClient(app) as client:
         assert client.get("/api/health").json()["fake_llm"] is True
         assert client.get("/").status_code == 200
+        engines = client.get("/api/engines").json()
+        assert engines["writer"]["state"] == "test" and engines["voice"]["state"] == "test"
 
         bad = client.post("/api/books", files={"file": ("x.pdf", b"not a pdf", "application/pdf")}, data={"book_id": "bad"})
         assert bad.status_code == 400
@@ -88,3 +90,14 @@ def test_health_shows_the_passes_and_one_run_can_ask_for_quality(settings, sampl
         r = client.post("/api/books/demo/chapters/ch01/run", json={"stage": "plan", "quality": True})
         assert _wait(client, r.json()["id"])["status"] == "done"
         assert client.get("/api/health").json()["quality_mode"] is False
+
+
+def test_engines_says_why_the_writer_cannot_be_reached(settings, monkeypatch):
+    from pipeline import opencode_llm
+
+    monkeypatch.setattr(opencode_llm.OpenCodeLLM, "check", lambda self: (False, "not reachable at http://127.0.0.1:4096"))
+    app = create_app(settings, fake_llm=False, fake_audio=False)
+    with TestClient(app) as client:
+        engines = client.get("/api/engines").json()
+    assert engines["writer"] == {"state": "down", "message": "not reachable at http://127.0.0.1:4096"}
+    assert engines["voice"]["state"] in ("ready", "down") and engines["voice"]["message"]

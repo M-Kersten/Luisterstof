@@ -39,6 +39,7 @@ class PassTiming(BaseModel):
     finished_at: str
     seconds: float = 0.0
     llm_calls: int = 0
+    error: str = ""  # why a failed pass failed, for the morning overview
 
     @property
     def title(self) -> str:

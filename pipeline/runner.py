@@ -68,24 +68,24 @@ class Pipeline:
     def _timed(self, book_id: str, chapter_id: str | None, pass_name: str, label: str = "") -> Iterator[None]:
         """Records how long a pass took in the book's timings.jsonl, also when it fails or is stopped."""
         started_at, t0, calls = now_iso(), time.monotonic(), self._llm_usage()[0]
-        status = "done"
+        status, error = "done", ""
         try:
             yield
         except Cancelled:
             status = "stopped"
             raise
-        except BaseException:
-            status = "failed"
+        except BaseException as exc:
+            status, error = "failed", str(exc)[:500]
             raise
         finally:
             self._record(book_id, chapter_id, pass_name, label, status, started_at, time.monotonic() - t0,
-                         self._llm_usage()[0] - calls)
+                         self._llm_usage()[0] - calls, error=error)
 
     def _record(self, book_id: str, chapter_id: str | None, pass_name: str, label: str, status: str,
-                started_at: str, seconds: float, llm_calls: int = 0) -> None:
+                started_at: str, seconds: float, llm_calls: int = 0, error: str = "") -> None:
         entry = PassTiming(run=self.run_id, book_id=book_id, chapter=chapter_id, pass_name=pass_name, label=label,
                            status=status, started_at=started_at, finished_at=now_iso(), seconds=round(seconds, 1),
-                           llm_calls=max(0, llm_calls))
+                           llm_calls=max(0, llm_calls), error=error)
         try:
             append_timing(self.paths(book_id).timings, entry)
         except OSError as exc:  # a full disk must not end the run
