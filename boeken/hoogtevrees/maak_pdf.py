@@ -98,7 +98,8 @@ class BookTemplate(BaseDocTemplate):
     def __init__(self, filename, **kw):
         super().__init__(filename, pagesize=A4, leftMargin=25 * mm, rightMargin=25 * mm, topMargin=25 * mm,
                          bottomMargin=25 * mm, **kw)
-        frame = Frame(self.leftMargin, self.bottomMargin, self.width, self.height, id="main")
+        frame = Frame(self.leftMargin, self.bottomMargin, self.width, self.height, id="main",
+                      leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
         self.addPageTemplates([PageTemplate(id="page", frames=[frame], onPage=self._footer)])
 
     @staticmethod
