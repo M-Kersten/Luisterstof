@@ -93,6 +93,30 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
                 "quality_mode": settings.quality_mode, "writing_passes": settings.writing_passes(),
                 "tags": known_tags()}
 
+    @app.get("/api/engines")
+    def engines() -> dict[str, Any]:
+        """For the status chips in the web app: can OpenCode be reached and is Chatterbox installed. Cheap on
+        purpose: it asks OpenCode for its model list and does not wake the model; every job still checks that."""
+        import importlib.util
+
+        if fake_llm or settings.llm_backend == "fake":
+            writer = {"state": "test", "message": "nep-model (testmodus)"}
+        else:
+            try:
+                from pipeline.opencode_llm import OpenCodeLLM
+
+                ok, message = OpenCodeLLM(settings).check()
+            except Exception as exc:  # noqa: BLE001 - offline check, discovery: shown as the reason
+                ok, message = False, str(exc)
+            writer = {"state": "reachable" if ok else "down", "message": message}
+        if fake_audio:
+            voice = {"state": "test", "message": "nep-audio (testmodus)"}
+        elif importlib.util.find_spec("chatterbox") is None:
+            voice = {"state": "down", "message": "chatterbox is not installed in this environment; see `studiepodcast doctor`"}
+        else:
+            voice = {"state": "ready", "message": "chatterbox is installed; `studiepodcast doctor` checks the weights"}
+        return {"writer": writer, "voice": voice}
+
     @app.get("/api/books")
     def list_books() -> list[dict[str, Any]]:
         return [reader.status(b) for b in reader.books()]

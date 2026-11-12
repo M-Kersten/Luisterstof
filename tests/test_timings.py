@@ -39,6 +39,7 @@ def test_a_later_run_is_the_one_the_summary_shows_and_failures_are_recorded(inge
     assert latest["run"] == again.run_id
     statuses = {(x["pass_name"], x["status"]) for x in latest["passes"]}
     assert ("plan", "skipped") in statuses and ("glossary", "failed") in statuses
+    assert any("model weg" in x["error"] for x in latest["passes"] if x["status"] == "failed")  # the why, for the UI
 
 
 def test_durations_read_like_a_clock():
