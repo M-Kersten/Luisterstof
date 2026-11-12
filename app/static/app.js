@@ -648,6 +648,10 @@ function markDirty() {
 
 async function saveScript() {
   if (!state.data || !state.data.script) return;
+  if (chapterBusy(state.chapter)) {
+    toast("Er loopt een taak voor dit hoofdstuk. Opslaan kan als die klaar is; je wijzigingen blijven staan.", true);
+    return;
+  }
   try {
     const out = await busy($("#save-script"), "Opslaan...", () => api.send(chapterUrl("/script"), "PUT", collectScript()));
     log(`script opgeslagen als revisie ${out.revision}; audit en goedkeuring vervallen`);

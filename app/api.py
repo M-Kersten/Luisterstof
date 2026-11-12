@@ -105,7 +105,11 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
             try:
                 from pipeline.opencode_llm import OpenCodeLLM
 
-                ok, message = OpenCodeLLM(settings).check()
+                llm = OpenCodeLLM(settings)
+                try:
+                    ok, message = llm.check()
+                finally:
+                    llm.client.close()
             except Exception as exc:  # noqa: BLE001 - offline check, discovery: shown as the reason
                 ok, message = False, str(exc)
             writer = {"state": "reachable" if ok else "down", "message": message}
