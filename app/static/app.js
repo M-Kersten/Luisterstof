@@ -38,6 +38,8 @@ function toast(text, bad = false) {
   const el = $("#toast");
   el.textContent = text;
   el.classList.toggle("is-bad", bad);
+  el.hidden = true;
+  void el.offsetWidth;  // a new message arrives with its own entrance
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, bad ? 9000 : 4500);
@@ -61,11 +63,28 @@ function explainError(err) {
   if (/chapters failed/i.test(err)) return "De andere hoofdstukken zijn wel gemaakt. Verder schrijven maakt alleen wat ontbreekt.";
   return "";
 }
+// A button that starts work shows it: a spinner while it runs, a tick when it is done, a shake when it failed.
 async function busy(btn, label, fn) {
   const old = btn.innerHTML;
+  btn.classList.remove("is-done", "is-failed");
   btn.disabled = true;
+  btn.classList.add("is-busy");
+  btn.setAttribute("aria-busy", "true");
   btn.textContent = label;
-  try { return await fn(); } finally { btn.disabled = false; btn.innerHTML = old; }
+  let ok = false;
+  try { const out = await fn(); ok = true; return out; } finally {
+    btn.disabled = false;
+    btn.classList.remove("is-busy");
+    btn.removeAttribute("aria-busy");
+    btn.innerHTML = old;
+    if (btn.isConnected) flash(btn, ok ? "is-done" : "is-failed");
+  }
+}
+function flash(el, cls, ms = 1400) {
+  el.classList.remove(cls);
+  void el.offsetWidth;  // restart the animation when the same state comes twice
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), ms);
 }
 
 // ----------------------------------------------------------------- formats

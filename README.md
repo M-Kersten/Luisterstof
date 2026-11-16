@@ -1,5 +1,7 @@
 # Studiepodcast
 
+<img src="app/static/logo.svg" alt="Luisterstof" height="62">
+
 Turn a dense Dutch study book (PDF) into a podcast series: one episode per chapter, as long as its material carries (6 to 25 minutes), hosted by a stable recurring cast with real banter and occasional expert guests. Output language is Dutch. Accuracy is non-negotiable: every factual line traces back to a source span and is audited before anything is rendered.
 
 The build brief this implements is in `PLAN.md`.
@@ -272,7 +274,7 @@ studiepodcast serve            # http://127.0.0.1:8000
 
 Or double-click `start-app.bat`: it checks that the OpenCode server is reachable, starts the app and opens your browser.
 
-The app is a small website that walks you through the steps, one page at a time, with one orange button for what to do now:
+The app is a small website that walks you through the steps, one page at a time, with one green button for what to do now:
 
 - **Je boeken** lists your books with how far each one is. With no book yet it explains the evening, night and morning and starts you on the first one.
 - **Nieuw boek** asks for the PDF, how to begin (everything in one go, or only reading it in first) and then starts.
@@ -287,6 +289,8 @@ The app is a small website that walks you through the steps, one page at a time,
 - **Stemmen** is the voice lab: pick a host or guest, type a sentence, set four sliders (expression = `exaggeration`, hold on the voice = `cfg_weight`, variation = `temperature`, tempo = `speech_rate`) and a seed, and make a take. Every take is kept in `data/voicelab/<voice>/` with the settings and seed that made it and Whisper's check of it (the share of words it misheard; a real recording rejects a take above 5%). Keep the seed to hear what one slider does; "Overnemen" puts a take's settings back on the sliders; "Opslaan" writes them into that voice's block in `cast/hosts.yaml` or `cast/guests.yaml`, comments and all, and every recording after uses them. The model stays loaded between takes; a recording releases it first, and the page has a button to free the GPU before you write with OpenCode.
 - **A character's page** ("Personage instellen" on Stemmen, or "+ Nieuw personage" under the list) sets up one voice in four steps. **Wie is het?**: name and background for a host; name, domains and persona for a guest. **Karakter**: everything else the writer reads (voice, life, stories, behaviour, never, tics and the rest), one point per line. **Referentieclip**: upload a recording (WAV, FLAC, MP3 or OGG); the app turns it into the best reference it can and shows the upload and the result side by side, with what it found and what it changed. "Gebruik deze clip" makes it the character's reference; the old clip is kept in `cast/refs/backup/`. **Stem afstellen**: the same four sliders as the lab, saved to the cast file. A new character is always a guest: the writer works with exactly two hosts. Saving writes only the fields that changed into `cast/hosts.yaml` or `cast/guests.yaml`; comments and every other character stay as they were, and a file that would no longer load is put back.
 - The lamp at the top right says whether the writing model and the voices are ready; click it for details. A running job shows a banner with its progress under the header. Jobs and the raw log are at the bottom of every page.
+
+**Look.** Calm like a reading room, clear like a podcast app: linen backgrounds, bottle green for text and the main button, vermilion only for what is moving or waiting on you (progress, the current step, chapters to approve). Titles and text you read (the book, the script) are set in Boek Serif, everything you click in Instrument Sans. Both are in `app/static/fonts/` with their licences, so the app loads nothing from the internet. Buttons answer every click: they lift under the pointer, press in, show a spinner while their work runs, a tick when it is done and a shake when it failed; a short message at the bottom right says what happened. The logo, a ribbon microphone with a paragraph for a grille and a bookmark ribbon, is `app/static/logo.svg` (with the wordmark) and `app/static/logo-mark.svg` (the microphone alone); the browser tab shows `app/static/favicon.svg`.
 
 **Overnight.** Add a book with "Alles in één keer" chosen (the default) and the job reads the book in and runs every chapter through plan, lexicon, script, the audit and rewrite loop and the table read, then stops at the approval gate. In the morning every chapter has a script and an audit. While a job runs the laptop does not go to sleep (Windows; the screen may still switch off). Closing the lid follows the power settings: set "when I close the lid" to "do nothing", and keep the charger in. If the night was cut short anyway (a restart, a Stop, a chapter that failed), **Verder schrijven** on the book's page carries on where it stopped without reading the PDF again; uploading the same PDF again would redo everything.
 
