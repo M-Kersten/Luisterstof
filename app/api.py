@@ -117,6 +117,11 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         return reader.paths(book_id)
 
     # ------------------------------------------------------------------ books
+    @app.get("/health", include_in_schema=False)
+    def plain_health() -> dict[str, bool]:
+        """For tools on this computer that knock on /health; the app's own check is /api/health."""
+        return {"ok": True}
+
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         from pipeline.tags import known_tags

@@ -167,3 +167,60 @@ def test_a_take_is_saved_before_it_is_checked(settings, cast, monkeypatch):
     assert take["check"] == "timeout" and take["wer"] is None
     kept = lab.takes("joris")[0]
     assert kept["check_note"] == "Whisper liep vast."
+
+
+# ------------------------------------------------------------------ Whisper on a Windows GPU without its cuDNN
+def _fake_windows(monkeypatch, ct2_version, present):
+    """A Windows machine with a given CTranslate2 and a given set of loadable DLLs."""
+    import ctypes
+    import sys
+    import types
+
+    import pipeline.audio.asr as asr
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "ctranslate2", types.SimpleNamespace(__version__=ct2_version))
+    monkeypatch.setattr(asr, "prepare_cuda_dlls", lambda: None)
+
+    def windll(name):
+        if name not in present:
+            raise OSError(f"{name} not found")
+        return object()
+
+    monkeypatch.setattr(ctypes, "WinDLL", windll, raising=False)
+
+
+def test_ctranslate2_44_without_cudnn_8_is_caught_before_it_hangs(monkeypatch):
+    from pipeline.audio.asr import whisper_gpu_check
+
+    _fake_windows(monkeypatch, "4.4.0", present={"cudnn_ops64_9.dll", "cudnn_cnn64_9.dll"})  # torch 2.6's cuDNN 9
+    check = whisper_gpu_check()
+    assert not check.ok and check.cudnn == 8 and check.missing == "cudnn_ops_infer64_8.dll"
+    assert "cuDNN 8" in check.reason_nl()
+
+    _fake_windows(monkeypatch, "4.9.0", present={"cudnn_ops64_9.dll", "cudnn_cnn64_9.dll"})
+    assert whisper_gpu_check().ok and whisper_gpu_check().cudnn == 9
+
+
+def test_whisper_moves_to_the_processor_when_its_cudnn_is_missing(settings, monkeypatch):
+    import sys
+    import types
+
+    import pipeline.audio.asr as asr
+    import pipeline.voicelab as vl
+
+    _fake_windows(monkeypatch, "4.4.0", present=set())
+    monkeypatch.setattr(vl, "whisper_status", lambda name: "ok")
+    monkeypatch.setattr(vl, "free_gpu_gb", lambda: 20.0)
+    lab = VoiceLab(settings.with_(device="cuda"), fake_audio=False)
+    said = []
+    transcriber, where = lab._checker(lambda stage, status, data: said.append((status, data)))
+    assert where == "cpu" and said[0][0] == "check_device" and "cuDNN 8" in said[0][1]["reason"]
+
+    # the render's own transcriber makes the same choice
+    made = {}
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(
+        WhisperModel=lambda name, device, compute_type: made.update(device=device) or object()))
+    t = asr.FasterWhisperTranscriber(settings.with_(device="cuda"))
+    t._load()
+    assert made["device"] == "cpu" and t.device == "cpu"

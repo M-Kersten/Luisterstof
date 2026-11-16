@@ -208,12 +208,18 @@ class VoiceLab:
         if status == "missing":
             return None, (f"Whisper ({name}) staat nog niet op deze computer. Haal het één keer op met "
                           "'studiepodcast fetch-whisper'; daarna worden takes teruggeluisterd.")
+        from pipeline.audio.asr import FasterWhisperTranscriber, whisper_gpu_check
+
         device = "cuda" if self.settings.device.startswith("cuda") else "cpu"
+        if device == "cuda":
+            gpu = whisper_gpu_check()  # a missing cuDNN makes Whisper hang on the GPU, never fail
+            if not gpu.ok:
+                device = "cpu"
+                say("voice", "check_device", {"device": "cpu", "reason": gpu.reason_nl()})
         free = free_gpu_gb() if device == "cuda" else None
         if device == "cuda" and free is not None and free < CHECK_GPU_GB:
             device = "cpu"
             say("voice", "check_device", {"device": "cpu", "free_gb": round(free, 1)})
-        from pipeline.audio.asr import FasterWhisperTranscriber
 
         self._transcriber = FasterWhisperTranscriber(self.settings.with_(device=device))
         self._check_device = device

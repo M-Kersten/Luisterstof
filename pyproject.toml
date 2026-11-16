@@ -33,7 +33,11 @@ dependencies = [
 cuda = [
     "chatterbox-tts>=0.1.5",  # 0.1.4 and older only know the first multilingual vocabulary
     "faster-whisper>=1.0",
-    "whisperx",
+    # chatterbox-tts holds torch at 2.6, which brings cuDNN 9. CTranslate2 (faster-whisper's engine) needs 4.5 or
+    # newer to use cuDNN 9; 4.4 wants cuDNN 8 and hangs on a Windows GPU without it. whisperx 3.3.2 is the release
+    # that both takes torch 2.6 and allows CTranslate2 4.5+ (3.3.3 to 3.4.x pin it below 4.5, 3.5+ want torch 2.7).
+    "whisperx==3.3.2",
+    "ctranslate2>=4.5",
 ]
 local = ["studiepodcast[cuda]"]
 dev = [

@@ -444,11 +444,19 @@ def _doctor_chatterbox(settings: Settings) -> None:
 
 
 def _doctor_whisper(settings: Settings) -> None:
+    from pipeline.audio.asr import CUDNN_FIX, whisper_gpu_check
     from pipeline.voicelab import whisper_status
 
     status = whisper_status(settings.whisper_model)
     if status == "ok":
         typer.echo(f"whisper: {settings.whisper_model} ok, on disk")
+        gpu = whisper_gpu_check()
+        if not gpu.ok:
+            typer.echo(f"whisper gpu: ctranslate2 {gpu.ctranslate2} needs cuDNN {gpu.cudnn} ({gpu.missing}), which is not "
+                       "on this machine, so Whisper runs on the processor. torch 2.6 brings cuDNN 9; fix with:\n"
+                       f"    {CUDNN_FIX}")
+        elif gpu.cudnn:
+            typer.echo(f"whisper gpu: ok, ctranslate2 {gpu.ctranslate2} finds cuDNN {gpu.cudnn}")
     elif status == "missing":
         typer.echo(f"whisper: {settings.whisper_model} is not on disk; takes and renders are not checked until "
                    "you run `studiepodcast fetch-whisper` once")

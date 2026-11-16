@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import difflib
 import logging
+import os
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -49,6 +51,84 @@ def to_16k(clip: AudioClip) -> np.ndarray:
 # Real models (lazy imports)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# faster-whisper on a Windows GPU: CTranslate2 loads cuDNN itself, by file name. CTranslate2 4.4 and older want
+# cuDNN 8, 4.5 and newer cuDNN 9; torch 2.6 (Chatterbox) brings cuDNN 9. When the cuDNN that CTranslate2 wants is
+# not there, cuDNN prints "Could not locate cudnn_ops_infer64_8.dll" and the transcription hangs or takes the
+# process down, an exception never comes. So the DLLs are looked for before Whisper goes near the GPU, and Whisper
+# runs on the processor when they are missing.
+# ---------------------------------------------------------------------------
+CUDNN_FIX = 'uv pip install --python .venv "whisperx==3.3.2" "ctranslate2>=4.5"'
+
+
+def _cuda_dll_dirs() -> list[str]:
+    """Folders with CUDA/cuDNN DLLs from pip packages: torch's own lib folder and the nvidia-* wheels."""
+    import importlib.util
+
+    dirs = []
+    spec = importlib.util.find_spec("torch")
+    if spec and spec.origin:
+        dirs.append(os.path.join(os.path.dirname(spec.origin), "lib"))
+    for path in sys.path:
+        nvidia = os.path.join(path, "nvidia")
+        if os.path.isdir(nvidia):
+            dirs += [os.path.join(nvidia, d, "bin") for d in os.listdir(nvidia)]
+    return [d for d in dirs if os.path.isdir(d)]
+
+
+_dll_dirs_added = False
+
+
+def prepare_cuda_dlls() -> None:
+    """Make those DLLs findable for CTranslate2 (which loads cuDNN by name, from PATH)."""
+    global _dll_dirs_added
+    if sys.platform != "win32" or _dll_dirs_added:
+        return
+    _dll_dirs_added = True
+    dirs = _cuda_dll_dirs()
+    for d in dirs:
+        try:
+            os.add_dll_directory(d)
+        except OSError:
+            pass
+    os.environ["PATH"] = os.pathsep.join(dirs + [os.environ.get("PATH", "")])
+
+
+@dataclass
+class CudnnCheck:
+    ok: bool
+    ctranslate2: str = ""
+    cudnn: int = 0
+    missing: str = ""
+
+    def reason_nl(self) -> str:
+        return (f"de GPU-versie van Whisper (CTranslate2 {self.ctranslate2}) zoekt cuDNN {self.cudnn} "
+                f"({self.missing}) en dat staat niet op deze computer")
+
+
+def whisper_gpu_check() -> CudnnCheck:
+    """On Windows: can the cuDNN this CTranslate2 needs be loaded? Elsewhere the packages bring it along."""
+    if sys.platform != "win32":
+        return CudnnCheck(True)
+    try:
+        import ctranslate2  # type: ignore
+    except Exception:  # noqa: BLE001 - faster-whisper itself will say what is missing
+        return CudnnCheck(True)
+    version = getattr(ctranslate2, "__version__", "0")
+    parts = [int(x) for x in re.findall(r"\d+", version)[:2]] + [0, 0]
+    cudnn = 9 if tuple(parts[:2]) >= (4, 5) else 8
+    names = ["cudnn_ops64_9.dll", "cudnn_cnn64_9.dll"] if cudnn == 9 else ["cudnn_ops_infer64_8.dll", "cudnn_cnn_infer64_8.dll"]
+    prepare_cuda_dlls()
+    import ctypes
+
+    for name in names:
+        try:
+            ctypes.WinDLL(name)
+        except OSError:
+            return CudnnCheck(False, version, cudnn, name)
+    return CudnnCheck(True, version, cudnn)
+
+
 class FasterWhisperTranscriber:
     """faster-whisper is a separate C++ engine (CTranslate2) with its own runtime
     requirements (a matching CUDA/cuDNN pair, findable DLLs on Windows). A broken
@@ -68,6 +148,13 @@ class FasterWhisperTranscriber:
             from faster_whisper import WhisperModel  # type: ignore
 
             device = "cuda" if self.settings.device.startswith("cuda") else "cpu"
+            if device == "cuda":
+                check = whisper_gpu_check()
+                if not check.ok:
+                    log.warning("faster-whisper runs on the CPU: ctranslate2 %s needs cuDNN %d (%s), which is not on "
+                                "this machine. Fix: %s", check.ctranslate2, check.cudnn, check.missing, CUDNN_FIX)
+                    device = "cpu"
+            self.device = device
             self._model = WhisperModel(self.settings.whisper_model, device=device, compute_type=self.settings.whisper_compute_type)
         return self._model
 
@@ -84,8 +171,8 @@ class FasterWhisperTranscriber:
             log.error(
                 "faster-whisper is unavailable (%s). Verification is disabled for the rest of this render; "
                 "takes will be accepted without a WER check. A missing cudnn_ops*_8.dll or cudnn*_9.dll "
-                "usually means ctranslate2's cuDNN version doesn't match what's on PATH, try "
-                "'pip install --upgrade ctranslate2' to move it onto the cuDNN 9 your current torch ships.",
+                "usually means ctranslate2's cuDNN version doesn't match what's on PATH; with torch 2.6 run "
+                "'" + CUDNN_FIX + "' to move it onto the cuDNN 9 torch ships.",
                 self._broken,
             )
             return None

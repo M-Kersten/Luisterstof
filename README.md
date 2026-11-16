@@ -429,7 +429,13 @@ That is Whisper listening back, after the take itself was made. Three causes, in
 
 1. **Whisper is not on the laptop yet.** Its first use used to download `large-v3` (about 3 GB) inside the take, with only a progress bar in the app's console window to show for it. Now the check is skipped instead; run `studiepodcast fetch-whisper` once. `studiepodcast doctor` says whether it is on disk.
 2. **The GPU is full.** Chatterbox stays loaded between takes and the writing model in OpenCode may hold the card as well. On Windows CUDA then spills into shared system memory and everything on the card crawls. The check now moves to the processor when less than 2.5 GB is free; `doctor` shows how much of the card is in use. Freeing the GPU on the Stemmen page or closing the model in OpenCode helps the takes themselves too.
-3. **torch and faster-whisper disagree about CUDA/cuDNN.** Then Whisper hangs or fails while loading, often with a message about `cudnn_ops_infer64_8.dll` or `cudnn_ops64_9.dll` in the app's console window. `pip install --upgrade ctranslate2` usually lines faster-whisper up with the CUDA that torch brought; `studiepodcast doctor` shows whether it imports. Until then the check gives up after its time limit and the takes are kept without a check.
+3. **torch and faster-whisper disagree about cuDNN.** The console says `Could not locate cudnn_ops_infer64_8.dll`. chatterbox-tts holds torch at 2.6, which brings cuDNN 9; whisperx 3.3.3 to 3.4.x pin CTranslate2 (faster-whisper's engine) below 4.5, and those versions want cuDNN 8. On a Windows GPU that does not fail, it hangs. The project now pins `whisperx==3.3.2` and `ctranslate2>=4.5`; an existing install is fixed with
+
+   ```bat
+   uv pip install --python .venv "whisperx==3.3.2" "ctranslate2>=4.5"
+   ```
+
+   `studiepodcast doctor` then says `whisper gpu: ok`. Until then the app finds the missing cuDNN before Whisper starts and lets Whisper listen on the processor (slower, it does not hang); takes and renders say so.
 
 A take that is already hanging in a version before this fix cannot be stopped from the page: close the app's window and start it again. A job that was running is closed as failed at startup ("worker restarted"), not started again.
 
@@ -446,7 +452,7 @@ studiepodcast doctor                            # is whisperx/faster-whisper act
 
 The web UI shows the same summary (verified turns, alignment fallback count) on a chapter's listen step, and `GET /api/books/{id}/chapters/{ch}` returns it as `manifest_quality`.
 
-**Abrupt cutoffs mid-sentence.** This is very likely `inspect` reporting turns with "geschatte uitlijning" (estimated alignment). When the real forced aligner (WhisperX on CUDA) is not actually working, every interrupt cut-point and backchannel insertion falls back to word positions spaced evenly across the clip's duration, not where the words were actually spoken. A cut that lands mid-word sounds exactly like a clipped sentence. Run `doctor` first, on the machine with the cuDNN/ctranslate2 mismatch this is the same root cause as the missing `cudnn_ops_infer64_8.dll` error above: `pip install --upgrade ctranslate2`, then re-render and check `inspect` again for the fallback count to drop to zero.
+**Abrupt cutoffs mid-sentence.** This is very likely `inspect` reporting turns with "geschatte uitlijning" (estimated alignment). When the real forced aligner (WhisperX on CUDA) is not actually working, every interrupt cut-point and backchannel insertion falls back to word positions spaced evenly across the clip's duration, not where the words were actually spoken. A cut that lands mid-word sounds exactly like a clipped sentence. Run `doctor` first, on the machine with the cuDNN/ctranslate2 mismatch this is the same root cause as the missing `cudnn_ops_infer64_8.dll` error above: `uv pip install --python .venv "whisperx==3.3.2" "ctranslate2>=4.5"`, then re-render and check `inspect` again for the fallback count to drop to zero.
 
 **Background noise, rustling ("gerritsel").** Chatterbox clones the reference clip, including its recording conditions; this is a named pitfall in `PLAN.md`, not a synthesis bug, so no render setting fixes it. Listen to `cast/refs/*.wav` directly. Any rustling, room tone, or mic handling noise there gets reproduced, often exaggerated, in every line cloned from it. Re-record 30 to 60 seconds in a quiet room, close to the mic, no fabric or paper handling, then re-run the M0 audition (`studiepodcast audition ...`) before trusting the new clip. The character's page in the web app measures the noise in a clip's pauses and says when it is too loud, and it filters low rumble, but it cannot take hiss or rustling out of the speech itself; audition and listen before freezing a clip.
 

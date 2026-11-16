@@ -229,6 +229,9 @@ def _say(stage: str, status: str, d: dict[str, Any]) -> tuple[str, str]:  # noqa
         if status == "made":
             return f"Take gemaakt in {duration(d.get('seconds'))}: {duration(d.get('audio_s'))} audio. Hij is bewaard.", "result"
         if status == "check_device":
+            if d.get("reason"):
+                return (f"Whisper luistert op de processor terug: {d['reason']}. Dat duurt langer; "
+                        "'studiepodcast doctor' zegt hoe je het oplost."), "problem"
             return (f"De GPU heeft nog maar {_number(float(d.get('free_gb') or 0))} GB vrij, dus Whisper luistert "
                     "op de processor terug. Dat duurt langer."), "detail"
         if status == "check":
