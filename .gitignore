@@ -39,3 +39,7 @@ cast/continuity.jsonl
 .idea/
 *.swp
 .DS_Store
+
+# The jingle's sample library (fetched on first run) and its loose instrument tracks.
+jingle/.samples/
+jingle/stems.npz
