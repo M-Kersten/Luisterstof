@@ -5,6 +5,7 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const state = {
   view: null, book: null, chapter: null, step: null, data: null, glossary: null, timings: null, status: null,
   books: [], jobs: [], health: null, names: {}, hosts: [], dirty: false, stageOpen: {}, runQuality: false,
+  watch: null, watchOpen: {},
   source: null, sourceFor: null, workTab: "script", selectedLine: null, selectedClaim: null,
   voices: null, voice: null, voiceTakes: [], voiceDraft: {}, character: null, characterDirty: false,
   engineDetail: { writer: "", voice: "" },
@@ -134,6 +135,8 @@ function parseHash() {
   if (c) return { view: "character", id: c[1] === "nieuw" ? null : c[1] };
   const v = h.match(/^\/stemmen(?:\/([^/]+))?$/);
   if (v) return { view: "voices", voice: v[1] || null };
+  const w = h.match(/^\/boek\/([^/]+)\/meekijken$/);
+  if (w) return { view: "watch", book: w[1] };
   const m = h.match(/^\/boek\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?$/);
   if (m) return { view: m[2] ? "chapter" : "book", book: m[1], chapter: m[2] || null, step: SLUG_STEP[m[3]] || null };
   return { view: "home" };
@@ -171,10 +174,11 @@ async function route() {
     try { await loadBooks(); } catch { /* shown below */ }
     if (!state.books.some(b => b.book_id === r.book)) { toast(`Het boek ${r.book} bestaat niet (meer).`, true); go("#/"); return; }
   }
-  if (r.book !== state.book || !state.status || r.view === "book") {
+  if (r.book !== state.book || !state.status || r.view === "book" || r.view === "watch") {
     try { await loadBook(r.book); } catch (err) { fail(err, "Boek openen"); return; }
   }
   if (r.view === "book") { state.chapter = null; state.data = null; showView("book"); renderBook(); return; }
+  if (r.view === "watch") { state.chapter = null; state.data = null; showView("watch"); await openWatch(r.book); return; }
   if (!state.status.chapters.some(c => c.id === r.chapter)) { toast(`Hoofdstuk ${r.chapter} bestaat niet.`, true); go(bookHash(r.book)); return; }
   await openChapter(r.chapter, r.step);
 }
@@ -182,12 +186,15 @@ async function route() {
 function showView(name) {
   const changed = name !== state.view;
   state.view = name;
-  for (const v of ["home", "new", "book", "chapter", "voices", "character"]) $(`#view-${v}`).hidden = v !== name;
-  $$(".site-nav a").forEach(a => a.toggleAttribute("aria-current", (a.dataset.nav === "home" && ["home", "book", "chapter"].includes(name)) || a.dataset.nav === name || (a.dataset.nav === "voices" && name === "character")));
+  for (const v of ["home", "new", "book", "chapter", "voices", "character", "watch"]) $(`#view-${v}`).hidden = v !== name;
+  if (name !== "watch") state.watch = null;
+  if (run.job) renderProgress();  // the banner steps aside on the watch page and comes back elsewhere
+  $$(".site-nav a").forEach(a => a.toggleAttribute("aria-current", (a.dataset.nav === "home" && ["home", "book", "chapter", "watch"].includes(name)) || a.dataset.nav === name || (a.dataset.nav === "voices" && name === "character")));
   $("#savebar").hidden = !(state.dirty && name === "chapter");
   if (changed) window.scrollTo(0, 0);
   document.title = name === "chapter" && state.data ? `${$("#chapter-title").textContent} · Luisterstof`
-    : name === "book" && state.status ? `${state.status.title || state.status.book_id} · Luisterstof` : "Luisterstof";
+    : name === "book" && state.status ? `${state.status.title || state.status.book_id} · Luisterstof`
+    : name === "watch" && state.status ? `Meekijken · ${state.status.title || state.status.book_id}` : "Luisterstof";
 }
 
 // ------------------------------------------------------------------ data
@@ -405,15 +412,16 @@ function journeyStages(s, c, button) {
 
   // 2 write the scripts
   const latest = latestBookRun();
-  const runLine = latest ? `<p class="muted">De laatste run begon ${fmtWhen(latest.started)} en duurde ${fmtSeconds(latest.seconds)}.</p>` : "";
+  const runLine = latest ? `<p class="muted">De laatste run begon ${fmtWhen(latest.started)} en duurde ${fmtSeconds(latest.seconds)}. <a href="${bookHash(s.book_id)}/meekijken">Lees wat die run deed</a>.</p>` : "";
   if (!s.ingested) {
     stages.push({ key: "write", title: "Scripts laten schrijven", status: "locked", summary: "Na het inlezen", body: "<p>Zodra de hoofdstukken bekend zijn, schrijft Luisterstof per hoofdstuk een script.</p>" });
   } else if (job) {
-    const at = run.job && run.job.id === job.id && run.book ? `Nu bij hoofdstuk ${run.book.index} van ${run.book.total}: ${escapeHtml(run.book.label)}.` : "Bezig.";
+    const at = run.job && run.job.id === job.id && run.book
+      ? `Nu bij hoofdstuk ${run.book.index} van ${run.book.total}: ${escapeHtml(chapterTitleOf(s.book_id, run.chapterId, run.book.label))}.${run.now ? " " + escapeHtml(run.now.text) : ""}` : "Bezig.";
     stages.push({ key: "write", title: "Scripts laten schrijven", status: "running", summary: job.status === "queued" ? "In de wachtrij" : "Bezig",
       body: `<p>${at} Je kunt dit venster sluiten: het werk gaat door zolang de app draait. Kijk morgen weer.</p>
         <p class="muted">${plural(c.n - c.write, "script is", "scripts zijn")} al klaar, ${c.write} nog te gaan. Wat klaar is, verschijnt meteen hieronder bij Nalezen.</p>
-        <div class="actions"><button class="btn btn--outline" data-action="stop" data-job="${escapeHtml(job.id)}">Stoppen</button></div>` });
+        <div class="actions"><a class="btn btn--secondary" href="${bookHash(s.book_id)}/meekijken">Meekijken</a><button class="btn btn--outline" data-action="stop" data-job="${escapeHtml(job.id)}">Stoppen</button></div>` });
   } else if (!c.write) {
     stages.push({ key: "write", title: "Scripts laten schrijven", status: "done", summary: `Alle ${c.n} scripts geschreven en gecontroleerd`, body: runLine || "<p>Alle scripts zijn er.</p>" });
   } else {
@@ -1167,13 +1175,25 @@ async function loadJobs() {
 
 // Events that announce the step about to start; "turn" reports a finished one.
 const DONE_KINDS = new Set(["turn"]);
-const run = { job: null, started: 0, stage: null, book: null, outer: null, inner: null, innerStart: 0, tokens: null, stopping: false, timer: null, chapterId: null };
+const run = { job: null, started: 0, stage: null, book: null, outer: null, inner: null, innerStart: 0, tokens: null, stopping: false, timer: null, chapterId: null,
+  now: null, call: null, written: null, chapterAt: 0, chapterSecs: [], typicalChapter: null, frac: 0 };
 const watching = new Set();
 
 function startRun(job, ts) {
-  Object.assign(run, { job, started: ts || Date.now(), stage: job.stage, book: null, outer: null, inner: null, tokens: null, stopping: false, chapterId: job.chapter_id || null });
+  Object.assign(run, { job, started: ts || Date.now(), stage: job.stage, book: null, outer: null, inner: null, tokens: null, stopping: false, chapterId: job.chapter_id || null,
+    now: null, call: null, written: null, chapterAt: ts || Date.now(), chapterSecs: [], typicalChapter: null, frac: 0, sub: null });
+  const w = state.watch;
+  if (state.view === "watch" && w && w.book === job.book_id && !w.picked && (!w.job || w.job.id !== job.id)) {
+    state.watchOpen = {};
+    openWatch(job.book_id);
+  }
+  if (job.book_id !== VOICELAB) {  // how long a chapter took before, for the finish time until this run has its own
+    api.get(`/api/books/${enc(job.book_id)}/activity?entries=false`).then(a => { if (run.job && run.job.id === job.id) run.typicalChapter = a.typical_chapter_seconds; }).catch(() => {});
+  }
   $("#stop-job").disabled = false;
   $("#stop-job").textContent = "Stop";
+  $("#now-stop").disabled = false;
+  $("#now-stop").textContent = "Stoppen";
   $("#progress-panel").classList.remove("stopping");
   $("#progress-panel").hidden = false;
   clearInterval(run.timer);
@@ -1182,6 +1202,7 @@ function startRun(job, ts) {
 
 function endRun(job) {
   if (!run.job || run.job.id !== job.id) return;
+  $("#watch-now").hidden = true;
   clearInterval(run.timer);
   run.job = null;
   run.chapterId = null;
@@ -1192,6 +1213,19 @@ function trackEvent(job, ev) {
   const d = ev.data || {};
   const ts = Date.parse(ev.ts) || Date.now();
   if (!run.job || run.job.id !== job.id) startRun(job, ts);
+  // What the banner and the watch page say: the latest sentence, the model's current question, the newest block.
+  if (d.say && ev.stage !== "llm" && ev.stage !== "timing") run.now = { ...d.say, at: ts };
+  if (ev.stage === "llm" && ev.status === "call") run.call = { what: d.what || "", typical: d.typical, at: ts };
+  if (ev.stage === "llm" && ev.status === "tokens") run.call = null;
+  if (ev.stage === "script" && ev.status === "written") run.written = { ...d, at: ts };
+  // A new chapter starts its steps from the beginning: what the last chapter's steps counted no longer applies.
+  if (ev.stage === "book" && ev.status === "chapter") Object.assign(run, { chapterAt: ts, written: null, call: null, sub: null, outer: null, inner: null });
+  if (ev.stage === "run") run.sub = null;
+  if (ev.stage === "script" && ev.status === "start") run.sub = "write";
+  if (ev.stage === "audit" && ev.status === "start") run.sub = run.sub === "rewrite" ? "final" : run.sub === "final" ? "final" : "audit";
+  if (ev.stage === "script" && ["revise", "polish"].includes(ev.status)) run.sub = "rewrite";
+  if (ev.stage === "timing" && d.pass_name === "chapter" && ev.status === "done" && d.seconds > 1) run.chapterSecs.push(d.seconds);
+  feedWatch(job, ev);
   if (ev.stage === "llm") trackWriter(ev.status, d);
   if (ev.stage === "llm" && ev.status === "tokens") { run.tokens = { ...d, at: Date.now() }; renderProgress(); return; }
   if (ev.stage === "job" && ev.status === "stopping") run.stopping = true;
@@ -1218,34 +1252,222 @@ function trackEvent(job, ev) {
   renderProgress();
 }
 
+function chapterTitleOf(bookId, id, label = "") {
+  if (label && id && label.startsWith(id)) return label.slice(id.length).trim();
+  const ch = state.status && state.status.book_id === bookId && state.status.chapters.find(c => c.id === id);
+  return ch ? ch.title : label || id || "";
+}
+const median = (xs) => {
+  const a = xs.filter(x => x > 0).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+};
+
+// How far the whole job is: chapters, then the steps of a chapter weighted by how long they take (writing and
+// checking the script is most of it), then the part of the step. Writing, checking and rewriting each count their
+// own blocks, so the script step is split into those phases. The bar only moves forward.
+const STEP_WEIGHTS = [0.2, 0.05, 0.75, 0, 0.6];  // plan, lexicon, script en audit, goedkeuren, render
+const SCRIPT_PHASES = { write: [0, 0.45], audit: [0.45, 0.6], rewrite: [0.6, 0.9], final: [0.9, 1] };
+function stepFraction(inner) {
+  const span = run.sub && SCRIPT_PHASES[run.sub];
+  return span ? span[0] + (span[1] - span[0]) * inner : inner;
+}
+function jobFraction() {
+  const inner = run.inner && run.inner.total ? Math.min(1, run.inner.done / run.inner.total) : 0;
+  let f = null;
+  if (run.outer) {
+    const weights = STEP_WEIGHTS.slice(0, run.outer.total);
+    const sum = weights.reduce((a, b) => a + b, 0) || 1;
+    const before = weights.slice(0, run.outer.index - 1).reduce((a, b) => a + b, 0);
+    f = Math.min(0.999, (before + weights[run.outer.index - 1] * stepFraction(inner)) / sum);
+  } else if (run.inner || run.sub) f = stepFraction(inner);
+  if (run.book) f = ((run.book.index - 1) + (f || 0)) / run.book.total;
+  if (f === null) return null;
+  run.frac = Math.max(run.frac || 0, f);
+  return run.frac;
+}
+
+// Time left: for a whole book, from how long a chapter takes (this run's chapters, else earlier runs); for one
+// step, from how fast its parts went.
+function etaText(now) {
+  let left = null;
+  if (run.book) {
+    const per = median(run.chapterSecs) || run.typicalChapter;
+    if (per) {
+      const inChapter = (now - run.chapterAt) / 1000;
+      left = per * (run.book.total - run.book.index) + Math.max(per - inChapter, per * 0.1);
+    }
+  } else if (run.inner && run.inner.done > 0 && run.inner.done < run.inner.total) {
+    left = ((now - run.innerStart) / 1000 / run.inner.done) * (run.inner.total - run.inner.done);
+  }
+  if (left === null) return run.book ? "hoe lang het boek duurt, is bekend na het eerste hoofdstuk" : "";
+  const at = new Date(now + left * 1000).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" });
+  return `nog ongeveer ${fmtSeconds(left)}, klaar rond ${at}`;
+}
+
+function whereText() {
+  if (run.book) return `Hoofdstuk ${run.book.index} van ${run.book.total}: ${chapterTitleOf(run.job.book_id, run.chapterId, run.book.label)}`;
+  if (run.job.chapter_id && run.job.book_id !== VOICELAB) return `Hoofdstuk ${chapterTitleOf(run.job.book_id, run.job.chapter_id)}`;
+  return STAGES[run.job.stage] || run.job.stage;
+}
+
+function modelText(now) {
+  if (!run.call) return "";
+  const usual = run.call.typical ? `, meestal ongeveer ${fmtSeconds(run.call.typical)}` : "";
+  return `Het schrijfmodel is bezig: ${run.call.what || "een vraag beantwoorden"} (${fmtDuration(now - run.call.at)}${usual})`;
+}
+
 function renderProgress() {
   if (!run.job) return;
   const now = Date.now();
-  const book = run.job.book_id === VOICELAB ? "Stemmen" : (state.books.find(b => b.book_id === run.job.book_id) || {}).title || run.job.book_id;
-  $("#progress-title").textContent = `${STAGES[run.stage] || STAGES[run.job.stage] || run.job.stage} · ${book}${run.job.chapter_id ? ", " + run.job.chapter_id : ""}`;
+  const voice = run.job.book_id === VOICELAB;
+  const book = voice ? "Stemmen" : (state.books.find(b => b.book_id === run.job.book_id) || {}).title || run.job.book_id;
+  $("#progress-title").textContent = `${book} · ${voice ? STAGES[run.job.stage] || run.job.stage : whereText()}`;
   $("#progress-panel").classList.toggle("stopping", run.stopping);
-  const outer = [];
-  if (run.book) outer.push(`hoofdstuk ${run.book.index} van ${run.book.total}: ${run.book.label}`);
-  if (run.outer) outer.push(`stap ${run.outer.index} van ${run.outer.total}: ${run.outer.label}`);
-  $("#progress-outer").textContent = outer.join(" · ");
+  $("#progress-outer").textContent = run.now ? run.now.text : `${STAGES[run.stage] || STAGES[run.job.stage] || run.job.stage}...`;
   const bar = $("#progress-bar");
+  const frac = jobFraction();
+  if (frac === null) bar.removeAttribute("value");  // no known total: an indeterminate bar
+  else { bar.max = 1; bar.value = frac; }
+  $("#progress-eta").textContent = frac === null ? "" : `${Math.round(frac * 100)}%`;
   const detail = [];
-  if (run.inner) {
-    bar.max = run.inner.total;
-    bar.value = run.inner.done;
-    detail.push(`${run.inner.index} van ${run.inner.total}${run.inner.label ? ": " + run.inner.label : ""}`);
-    if (run.inner.done > 0 && run.inner.done < run.inner.total) {
-      const per = (now - run.innerStart) / run.inner.done;
-      detail.push(`nog ~${fmtDuration(per * (run.inner.total - run.inner.done))}`);
-    }
-  } else {
-    bar.removeAttribute("value");  // no known total: an indeterminate bar
-  }
-  if (run.tokens && now - run.tokens.at < 10000) detail.push(`model schrijft: ${run.tokens.tokens} tokens`);
-  detail.push(`bezig ${fmtDuration(now - run.started)}`);
+  const model = modelText(now);
+  if (model) detail.push(model);
+  else if (run.tokens && now - run.tokens.at < 8000) detail.push("antwoord van het schrijfmodel binnen");
+  const eta = etaText(now);
+  if (eta) detail.push(eta);
+  detail.push(`bezig sinds ${new Date(run.started).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}`);
   if (run.stopping) detail.push("stopt bij het volgende controlepunt");
-  detail.push("je kunt dit venster sluiten");
   $("#progress-detail").textContent = detail.join(" · ");
+  const here = state.view === "watch" && state.watch && state.watch.job && state.watch.job.id === run.job.id;
+  $("#progress-panel").hidden = here;
+  const link = $("#progress-watch");
+  link.hidden = voice;
+  if (!voice) link.href = `${bookHash(run.job.book_id)}/meekijken`;
+  if (state.view === "watch") renderNow();
+}
+
+// ------------------------------------------------------------------ meekijken
+// One run of a book, told as it happened: what it does now, and per chapter what each step found.
+async function openWatch(bookId, jobId = null) {
+  let a;
+  try { a = await api.get(`/api/books/${enc(bookId)}/activity${jobId ? `?job=${enc(jobId)}` : ""}`); } catch (err) { fail(err, "Meekijken"); return; }
+  const same = state.watch && state.watch.book === bookId && state.watch.job && a.job && state.watch.job.id === a.job.id;
+  if (!same) state.watchOpen = {};
+  state.watch = { book: bookId, job: a.job, jobs: a.jobs || [], entries: a.entries || [], lastSeq: a.last_seq || 0 };
+  if (a.job && run.job && run.job.id === a.job.id && !run.typicalChapter) run.typicalChapter = a.typical_chapter_seconds;
+  $("#watch-details").checked = recall("watchDetails") === "1";
+  if (a.job && ACTIVE.includes(a.job.status)) watch(a.job);  // the live stream; events already shown are skipped
+  renderWatch();
+}
+
+function feedWatch(job, ev) {
+  const w = state.watch;
+  const d = ev.data || {};
+  if (!w || !w.job || w.job.id !== job.id || !d.say) return;
+  if (ev.seq && ev.seq <= w.lastSeq) return;
+  if (ev.seq) w.lastSeq = ev.seq;
+  w.entries.push({ seq: ev.seq, ts: ev.ts, stage: ev.stage, status: ev.status, chapter: d.chapter || null, ...d.say,
+    preview: d.preview, index: d.index, total: d.total });
+  scheduleWatchRender();
+}
+
+let watchRenderTimer = null;
+function scheduleWatchRender() {
+  if (state.view !== "watch" || watchRenderTimer) return;
+  watchRenderTimer = setTimeout(() => { watchRenderTimer = null; if (state.view === "watch") renderWatchList(); }, 400);
+}
+
+function renderWatch() {
+  const w = state.watch;
+  if (!w) return;
+  const title = (state.status && (state.status.title || state.status.book_id)) || w.book;
+  $("#crumb-watch-book").textContent = title;
+  $("#crumb-watch-book").href = bookHash(w.book);
+  $("#watch-pick-wrap").hidden = w.jobs.length < 2;
+  $("#watch-pick").innerHTML = w.jobs.map(j => `<option value="${escapeHtml(j.id)}"${w.job && j.id === w.job.id ? " selected" : ""}>${escapeHtml(fmtWhen(j.created_at))} · ${escapeHtml(jobName(j))} · ${escapeHtml((JOB_STATUS[j.status] || [j.status])[0])}</option>`).join("");
+  $("#watch-lead").textContent = watchLead(w.job);
+  renderNow();
+  renderWatchList();
+}
+
+function watchLead(j) {
+  if (!j) return "Voor dit boek is nog niets gestart. Zodra Luisterstof aan het werk is, zie je hier wat het doet en wat eruit komt.";
+  const took = fmtSeconds((Date.parse(j.updated_at) - Date.parse(j.created_at)) / 1000);
+  const what = jobName(j);
+  if (j.status === "queued") return `${what} staat in de wachtrij en begint zodra de taak ervoor klaar is.`;
+  if (j.status === "running") return `${what} loopt sinds ${fmtWhen(j.created_at)}. Hieronder zie je wat er nu gebeurt en wat er per hoofdstuk uit kwam. Je kunt dit venster sluiten: het werk gaat door.`;
+  if (j.status === "done") return `${what} begon ${fmtWhen(j.created_at)} en was na ${took} klaar.`;
+  if (j.status === "cancelled") return `${what} begon ${fmtWhen(j.created_at)} en is na ${took} gestopt. Wat klaar was, is bewaard.`;
+  return `${what} begon ${fmtWhen(j.created_at)} en stopte na ${took} met een fout: ${j.error || "onbekend"}`;
+}
+
+function renderNow() {
+  const w = state.watch;
+  const live = !!(w && w.job && run.job && run.job.id === w.job.id);
+  $("#watch-now").hidden = !live;
+  if (!live) return;
+  const now = Date.now();
+  $("#now-where").textContent = whereText();
+  $("#now-text").textContent = run.now ? run.now.text : "Luisterstof begint.";
+  const model = modelText(now);
+  $("#now-model").hidden = !model;
+  $("#now-model").textContent = model;
+  const frac = jobFraction();
+  const bar = $("#now-bar");
+  if (frac === null) bar.removeAttribute("value"); else { bar.max = 1; bar.value = frac; }
+  $("#now-eta").textContent = [frac === null ? "" : `${Math.round(frac * 100)}% van ${run.book ? "het boek" : "deze taak"}`, etaText(now)].filter(Boolean).join(" · ");
+  const wr = run.written;
+  const box = $("#now-written");
+  box.hidden = !(wr && wr.preview && wr.preview.length);
+  if (!box.hidden && box.dataset.at !== String(wr.at)) {
+    box.dataset.at = String(wr.at);
+    box.innerHTML = `<p class="written__head">${wr.polish ? "Net herschreven" : "Net geschreven"} · blok ${wr.index} van ${wr.total}: ${escapeHtml(wr.label || "")}</p>
+      ${previewHtml(wr.preview)}${wr.lines > wr.preview.length ? `<p class="muted small">en nog ${wr.lines - wr.preview.length} regels</p>` : ""}`;
+  }
+}
+
+const previewHtml = (lines) => `<div class="written__lines">${(lines || []).map(l => `<p><b>${escapeHtml(l.speaker)}</b><span>${escapeHtml(l.text)}</span></p>`).join("")}</div>`;
+
+function renderWatchList() {
+  const w = state.watch;
+  if (!w) return;
+  const details = $("#watch-details").checked;
+  const groups = new Map();
+  for (const e of w.entries) {
+    const key = e.chapter || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  const live = !!(w.job && ACTIVE.includes(w.job.status));
+  const current = live && run.job && run.job.id === w.job.id ? run.chapterId : null;
+  const keys = [...groups.keys()];
+  const lastKey = keys[keys.length - 1];
+  $("#watch-chapters").innerHTML = keys.map(key => {
+    const list = groups.get(key);
+    const failed = list.some(e => e.status === "chapter_failed");
+    const finished = list.some(e => e.stage === "timing" && e.status === "done");
+    const madeSomething = list.some(e => e.kind === "result" && e.stage !== "timing");
+    const skipped = finished && !madeSomething && list.some(e => e.status === "skipped");
+    const isCurrent = key && key === current;
+    // The part before the first chapter (reading the book in, waking the model) is done once a chapter started.
+    const before = !key && (keys.length > 1 || list.some(e => e.stage === "ingest" && e.kind === "result"));
+    const badge = failed ? chip("mislukt", "bad") : isCurrent ? chip("bezig", "run") : skipped ? chip("was al klaar")
+      : finished || before ? chip("klaar", "ok") : live ? chip("bezig", "run") : chip("onderbroken", "warn");
+    // The line under the title: what the chapter came to (the last check), and how long it took.
+    const took = list.find(e => e.stage === "timing");
+    const last = [...list].reverse().find(e => (e.kind === "result" || e.kind === "problem") && e.stage !== "timing") || took;
+    const shown = list.filter(e => details || e.kind !== "detail");
+    const open = state.watchOpen[key] ?? (isCurrent || (!current && key === lastKey));
+    const title = key ? chapterTitleOf(w.book, key) : list.some(e => e.stage === "ingest") ? "Het boek inlezen" : "Voorbereiding";
+    return `<details class="actgroup${isCurrent ? " is-current" : ""}" data-key="${escapeHtml(key)}"${open ? " open" : ""}>
+      <summary><span class="actgroup__head">${key ? `<span class="actgroup__id">${escapeHtml(key)}</span>` : ""}<b>${escapeHtml(title)}</b>${badge}</span>
+        ${last ? `<span class="actgroup__last act--${last.kind}">${escapeHtml(last.text)}${took && took !== last ? ` <span class="muted">${escapeHtml(took.text)}</span>` : ""}</span>` : ""}</summary>
+      <ol class="acts">${shown.map(e => `<li class="act act--${e.kind}"><time datetime="${escapeHtml(e.ts || "")}">${fmtClock(e.ts)}</time><div class="act__body"><span>${escapeHtml(e.text)}</span>${details && e.preview ? previewHtml(e.preview) : ""}</div></li>`).join("") || '<li class="act act--detail"><div class="act__body muted">Alleen details: zet "alle details" aan.</div></li>'}</ol>
+      ${key ? `<a class="link actgroup__open" href="${chapterHash(w.book, key)}">Open dit hoofdstuk</a>` : ""}
+    </details>`;
+  }).join("") || '<p class="empty">Nog niets te zien. Zodra Luisterstof begint, verschijnt hier wat het doet.</p>';
 }
 
 async function stopJob(jobId) {
@@ -1258,6 +1480,8 @@ async function stopJob(jobId) {
       run.stopping = true;
       $("#stop-job").disabled = true;
       $("#stop-job").textContent = "Stoppen...";
+      $("#now-stop").disabled = true;
+      $("#now-stop").textContent = "Stoppen...";
       renderProgress();
     }
     await loadJobs();
@@ -1294,6 +1518,7 @@ function watch(job) {
       es.close();
       watching.delete(j.id);
       endRun(j);
+      if (state.watch && state.watch.job && state.watch.job.id === j.id) { state.watch.job = j; renderWatch(); }
       if (j.status === "done") toast(`${jobName(j)} is klaar.`);
       else if (j.status === "failed") toast(`${jobName(j)} is mislukt. ${explainError(j.error) || j.error || "Onbekende fout."}`, true);
       else toast(`${jobName(j)} is gestopt. Wat klaar was, is bewaard.`);
@@ -2062,6 +2287,20 @@ $("#glossary").onclick = (e) => {
 };
 $("#clear-log").onclick = (e) => { e.preventDefault(); $("#log").textContent = ""; };
 $("#stop-job").onclick = () => run.job && stopJob(run.job.id);
+$("#now-stop").onclick = () => run.job && stopJob(run.job.id);
+$("#watch-details").addEventListener("change", (e) => { remember("watchDetails", e.target.checked ? "1" : "0"); renderWatchList(); });
+$("#watch-pick").addEventListener("change", async (e) => {
+  if (!state.watch) return;
+  state.watchOpen = {};
+  await openWatch(state.watch.book, e.target.value);
+  if (state.watch) state.watch.picked = true;
+});
+// A chapter someone opened or closed stays that way through the live updates. Only a click counts: a chapter that
+// was open because it was running closes again once the run moves on.
+$("#watch-chapters").addEventListener("click", (e) => {
+  const summary = e.target.closest(".actgroup > summary");
+  if (summary) state.watchOpen[summary.parentElement.dataset.key] = !summary.parentElement.open;
+});
 $("#jobs").onclick = (e) => {
   const id = e.target.dataset && e.target.dataset.cancel;
   if (id) stopJob(id);

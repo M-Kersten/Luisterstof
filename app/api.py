@@ -227,6 +227,35 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
 
         return manager.submit(book_id, None, "pipeline", work, settings=settings.with_quality(True) if req.quality else None)
 
+    @app.get("/api/books/{book_id}/activity")
+    def book_activity(book_id: str, job: str | None = None, entries: bool = True) -> dict[str, Any]:
+        """What a run did, in sentences: the running job of this book, else the newest one, or ``job``.
+        Also how long a chapter usually takes here, for the finish time in the banner."""
+        import statistics
+
+        from pipeline.narrate import entry
+        from pipeline.timings import load
+
+        paths = book_or_404(book_id)
+        jobs = store.list(book_id, limit=30)
+        if job:
+            chosen = next((j for j in jobs if j["id"] == job), None)
+            if chosen is None:
+                raise HTTPException(404, "unknown job")
+        else:
+            chosen = next((j for j in jobs if j["status"] in ("running", "queued")), jobs[0] if jobs else None)
+        done = [t.seconds for t in load(paths.timings) if t.pass_name == "chapter" and t.status == "done" and t.seconds > 1]
+        out: dict[str, Any] = {
+            "job": chosen,
+            "jobs": [{k: j.get(k) for k in ("id", "stage", "status", "chapter_id", "created_at", "updated_at")} for j in jobs[:15]],
+            "typical_chapter_seconds": round(statistics.median(done[-12:])) if done else None,
+        }
+        if chosen and entries:
+            events = store.events_since(chosen["id"], 0, limit=50000)
+            out["entries"] = [e for e in (entry(ev) for ev in events) if e]
+            out["last_seq"] = events[-1]["seq"] if events else 0
+        return out
+
     @app.get("/api/books/{book_id}/timings")
     def book_timings(book_id: str) -> dict[str, Any]:
         """Start, end and duration of every pass, newest run last, plus the latest run per chapter."""

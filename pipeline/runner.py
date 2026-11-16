@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import statistics
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -20,7 +21,18 @@ from pipeline.cancel import Cancelled
 from pipeline.config import Settings
 from pipeline.ingest.run import ingest_book
 from pipeline.llm import LLM, LLMUnavailable, make_llm
-from pipeline.models import Approval, AuditResult, Book, Cast, ContentPlan, Glossary, RenderManifest, Script
+from pipeline.models import (
+    Approval,
+    AuditResult,
+    Book,
+    Cast,
+    ContentPlan,
+    Glossary,
+    RenderManifest,
+    Script,
+    Segment,
+)
+from pipeline.narrate import say, task_text
 from pipeline.paths import BookPaths, list_books
 from pipeline.plan.glossary import load_or_create_glossary
 from pipeline.script.audit import audit_script
@@ -61,6 +73,7 @@ class Pipeline:
         self.banned = load_banned(settings.cast_dir)
         self.on_event = on_event
         self._aborted = False
+        self._call_seconds: dict[str, list[float]] = {}  # seconds per model task, for "usually takes"
         self.run_id = new_run_id()  # groups the timings of everything this pipeline does
 
     # ------------------------------------------------------------ timings
@@ -92,7 +105,9 @@ class Pipeline:
             log.warning("could not write timings: %s", exc)
         if self.on_event:  # straight to the listener: emit() would refuse after a Stop, and this must still land
             try:
-                self.on_event("timing", status, {**entry.model_dump(), "title": entry.title})
+                data = {**entry.model_dump(), "title": entry.title}
+                said = say("timing", status, data)
+                self.on_event("timing", status, {**data, "say": said} if said else data)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -106,7 +121,30 @@ class Pipeline:
                                                                           seconds=round(seconds))
         if hasattr(self._llm, "on_status") and self._llm.on_status is None:
             self._llm.on_status = lambda message: self.emit("llm", "wake", message=message)
+        if not getattr(self._llm, "_watched", False):
+            self._watch_calls(self._llm)
         return self._llm
+
+    def _watch_calls(self, llm: LLM) -> None:
+        """Announce every question to the writing model before it is asked, with how long that kind of question
+        took so far in this run: an answer takes minutes and the endpoint does not stream, so this is the only
+        sign of life a person watching gets in the meantime."""
+        inner = llm.generate
+
+        def generate(request):
+            past = self._call_seconds.get(request.task)
+            self.emit("llm", "call", task=request.task, what=task_text(request.task),
+                      typical=round(statistics.median(past)) if past else None)
+            started = time.monotonic()
+            out = inner(request)
+            self._call_seconds.setdefault(request.task, []).append(time.monotonic() - started)
+            return out
+
+        try:
+            llm.generate = generate
+            llm._watched = True
+        except AttributeError:  # a client that does not take attributes keeps working, only unannounced
+            pass
 
     def check_writer(self) -> None:
         """Before a job that needs the writing model: make sure it answers, starting it the way OpenCode does
@@ -136,7 +174,22 @@ class Pipeline:
             raise Cancelled()
         log.info("%s %s %s", stage, status, data if data else "")
         if self.on_event:
-            self.on_event(stage, status, data)
+            said = say(stage, status, data)  # the same event in a sentence, for the banner, the watch page and the CLI
+            self.on_event(stage, status, {**data, "say": said} if said else data)
+
+    def _preview(self, segment: Segment, lines: int = 3) -> list[dict[str, str]]:
+        """The first lines of a block just written, with the speaker's name, for the watch page."""
+        out = []
+        for line in segment.lines:
+            if len(out) >= lines:
+                break
+            try:
+                name = self.cast.speaker(line.speaker).name
+            except KeyError:
+                name = line.speaker
+            text = line.text if len(line.text) <= 220 else line.text[:217].rstrip() + "..."
+            out.append({"speaker": name, "text": text})
+        return out
 
     def paths(self, book_id: str) -> BookPaths:
         return BookPaths(self.settings.data_dir, book_id)
@@ -262,6 +315,9 @@ class Pipeline:
         writer = Writer(self.llm, self.cast, self.settings, continuity)
         writer.progress = lambda n, total, title: self.emit("script", "segment", chapter=chapter_id, index=n, total=total,
                                                             label=title)
+        writer.on_segment = lambda n, total, seg, polish: self.emit(
+            "script", "written", chapter=chapter_id, index=n, total=total, label=seg.title or seg.type,
+            lines=len(seg.lines), polish=polish, preview=self._preview(seg))
         rounds_left = max(0, self.settings.script_revise_rounds if revise_rounds is None else revise_rounds)
         self.emit("script", "start", book_id=book_id, chapter=chapter_id, guest=plan.needs_expert,
                   revise_rounds=rounds_left)

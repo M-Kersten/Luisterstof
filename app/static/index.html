@@ -48,12 +48,16 @@
   <div class="banner__inner">
     <span class="banner__pulse" aria-hidden="true"></span>
     <div class="banner__text">
-      <div class="banner__line"><b id="progress-title"></b> <span id="progress-outer"></span></div>
+      <div class="banner__line"><b id="progress-title"></b></div>
+      <div class="banner__now" id="progress-outer"></div>
       <div id="progress-detail" class="banner__detail"></div>
     </div>
-    <progress id="progress-bar" max="1"></progress>
-    <button id="stop-job" class="btn btn--outline btn--sm"
-            title="Stopt deze taak. Wat al klaar is, blijft bewaard; de stap die bezig was, start je later opnieuw.">Stop</button>
+    <div class="banner__progress"><progress id="progress-bar" max="1"></progress><span id="progress-eta" class="banner__eta"></span></div>
+    <div class="banner__actions">
+      <a id="progress-watch" class="btn btn--secondary btn--sm" href="#/" title="Kijk mee: wat Luisterstof nu doet en wat er per hoofdstuk uit kwam.">Meekijken</a>
+      <button id="stop-job" class="btn btn--outline btn--sm"
+              title="Stopt deze taak. Wat al klaar is, blijft bewaard; de stap die bezig was, start je later opnieuw.">Stop</button>
+    </div>
   </div>
 </section>
 
@@ -144,6 +148,28 @@
       </section>
     </form>
   </section>
+  <!-- ========================================================== meekijken -->
+  <section id="view-watch" class="page" hidden>
+    <nav class="crumbs" aria-label="Kruimelpad"><a href="#/">Je boeken</a><span aria-hidden="true">›</span><a id="crumb-watch-book" href="#/"></a><span aria-hidden="true">›</span><span>Meekijken</span></nav>
+    <div class="pagehead">
+      <div><h1>Meekijken</h1><p class="lead" id="watch-lead"></p></div>
+      <label class="field" id="watch-pick-wrap" hidden><span class="field__label">Welke run</span><select id="watch-pick"></select></label>
+    </div>
+    <section class="nowcard" id="watch-now" hidden aria-live="polite">
+      <div class="nowcard__top"><p class="overline" id="now-where"></p>
+        <button id="now-stop" class="btn btn--outline btn--sm" title="Stopt deze run. Wat al klaar is, blijft bewaard; de stap die bezig was, start je later opnieuw.">Stoppen</button></div>
+      <p class="nowcard__text" id="now-text"></p>
+      <p class="nowcard__model" id="now-model" hidden></p>
+      <div class="nowcard__bar"><progress id="now-bar" max="1"></progress><span id="now-eta"></span></div>
+      <div class="written" id="now-written" hidden></div>
+    </section>
+    <div class="watchbar">
+      <h2>Per hoofdstuk</h2>
+      <label class="check" title="Ook elke vraag aan het schrijfmodel en elk blok dat klaar is."><input type="checkbox" id="watch-details"> alle details</label>
+    </div>
+    <div id="watch-chapters" class="watchlist"></div>
+  </section>
+
 
   <!-- ============================================================ voices -->
   <section id="view-voices" class="page page--wide" hidden>

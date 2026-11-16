@@ -545,6 +545,8 @@ class Writer:
         self.continuity = continuity or []
         self.performance = performance
         self.progress: Callable[[int, int, str], None] | None = None  # (segment number, segments, title)
+        # (segment number, segments, the segment just written, whether it was the table read): for the watch page
+        self.on_segment: Callable[[int, int, Segment, bool], None] | None = None
 
     # System prefix: identical for every segment call of one episode.
     def _system(self, plan: ContentPlan, glossary: Glossary | None, guest: Guest | None, briefs: list[SegmentBrief]) -> list[dict]:
@@ -620,6 +622,8 @@ class Writer:
             new_seg = self._materialise(out, briefs[i], _with_max_id(new_script, script))
             new_seg.beats = seg.beats or new_seg.beats
             new_script.segments.append(new_seg if new_seg.lines else seg)
+            if self.on_segment:
+                self.on_segment(n, len(todo), new_script.segments[-1], True)
         return new_script
 
     def _speaker_id(self, raw: str, allowed: list[str]) -> str | None:
@@ -710,6 +714,8 @@ class Writer:
             assert isinstance(out, SegmentOut)
             script.segments.append(self._materialise(out, brief, script))
             log.info("segment %s: %d lines", brief.title, len(script.segments[-1].lines))
+            if self.on_segment:
+                self.on_segment(n, len(briefs), script.segments[-1], False)
         return script
 
     def write_scene(self, plan: ContentPlan, glossary: Glossary | None, brief: SegmentBrief, *,

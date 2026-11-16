@@ -29,7 +29,14 @@ def _pipeline(**setting_overrides: Any):
             state.pop("pipeline", None)
     if "pipeline" not in state:
         def on_event(stage: str, status: str, data: dict) -> None:
-            detail = " ".join(f"{k}={v}" for k, v in data.items() if k not in ("book_id",))
+            said = data.get("say")
+            if said:  # the same sentence the web app shows
+                if said["kind"] == "detail" and stage == "llm" and status == "tokens":
+                    return
+                marker = {"step": "▸", "result": "✓", "problem": "!", "detail": " "}.get(said["kind"], " ")
+                typer.echo(f"{marker} {said['text']}")
+                return
+            detail = " ".join(f"{k}={v}" for k, v in data.items() if k not in ("book_id", "say", "preview"))
             typer.echo(f"[{stage:>10}] {status:<8} {detail}")
 
         state["pipeline"] = Pipeline(state["settings"], fake_llm=state["fake_llm"], fake_audio=state["fake_audio"], on_event=on_event)
