@@ -166,6 +166,25 @@ class NullSynth:
 # Chatterbox Multilingual
 # ---------------------------------------------------------------------------
 
+TORCH_CUDA_FIX = ('uv pip install --python .venv "torch==2.6.0+cu124" "torchaudio==2.6.0+cu124" '
+                  "--index-url https://download.pytorch.org/whl/cu124")
+
+
+def torch_gpu_status() -> tuple[bool, str]:
+    """(True, "") when torch can use an NVIDIA GPU, else (False, why, in Dutch). The usual why on Windows:
+    PyPI only has the CPU-only build of torch for Windows; the CUDA build comes from PyTorch's own index."""
+    try:
+        import torch  # type: ignore
+    except Exception:  # noqa: BLE001
+        return False, "torch is niet geïnstalleerd"
+    if torch.cuda.is_available():
+        return True, ""
+    if getattr(torch.version, "cuda", None) is None:
+        return False, f"de geïnstalleerde torch ({torch.__version__}) is de versie zonder GPU-ondersteuning"
+    return False, (f"torch {torch.__version__} is gemaakt voor CUDA {torch.version.cuda}, maar ziet geen GPU; "
+                   "kijk of het NVIDIA-stuurprogramma recent genoeg is")
+
+
 def resolve_torch_device(requested: str) -> str:
     """Pick cuda, mps or cpu from the request and what torch can actually see.
 

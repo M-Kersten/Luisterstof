@@ -222,8 +222,11 @@ def _say(stage: str, status: str, d: dict[str, Any]) -> tuple[str, str]:  # noqa
         if status == "load":
             return "Het stemmodel laden. Dat gebeurt bij de eerste take en duurt een minuut of twee.", "step"
         if status == "loaded":
-            where = " op de processor (veel trager dan op de GPU)" if str(d.get("device", "")).startswith("cpu") else ""
-            return f"Stemmodel geladen in {duration(d.get('seconds'))}{where}.", "result"
+            if str(d.get("device", "")).startswith("cpu"):
+                why = f": {d['why']}" if d.get("why") else ""
+                return (f"Stemmodel geladen in {duration(d.get('seconds'))}, maar op de processor{why}. Een take duurt "
+                        "zo vele malen langer dan op de GPU; 'studiepodcast doctor' zegt hoe je dat oplost."), "problem"
+            return f"Stemmodel geladen op de GPU in {duration(d.get('seconds'))}.", "result"
         if status == "start":
             return f"{d.get('name') or 'De stem'} spreekt de zin in.", "step"
         if status == "made":

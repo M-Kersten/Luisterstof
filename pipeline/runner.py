@@ -480,6 +480,14 @@ class Pipeline:
             if warning:
                 log.warning(warning)
                 self.emit("render", "note", book_id=book_id, chapter=chapter_id, message=warning)
+            if self.settings.device.startswith("cuda"):
+                from pipeline.audio.synth import torch_gpu_status
+
+                gpu, why = torch_gpu_status()
+                if not gpu:  # a render on the processor takes hours per chapter: say so at the start, not after
+                    self.emit("render", "note", book_id=book_id, chapter=chapter_id,
+                              message=f"De stemmen draaien op de processor: {why}. Dit duurt vele malen langer; "
+                                      "'studiepodcast doctor' zegt hoe je de GPU-versie installeert.")
         result = render_final(script, glossary, self.cast, self.settings, self.paths(book_id), synth=synth,
                               transcriber=transcriber, aligner=aligner, fake=self.fake_audio,
                               on_event=lambda kind, data: self.emit("render", kind, **data))

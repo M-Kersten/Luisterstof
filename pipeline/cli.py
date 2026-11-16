@@ -373,7 +373,18 @@ def doctor():
     try:
         import torch  # type: ignore
 
-        typer.echo(f"torch devices: cuda={torch.cuda.is_available()}")
+        typer.echo(f"torch devices: cuda={torch.cuda.is_available()} (torch {torch.__version__}, built for "
+                   f"CUDA {getattr(torch.version, 'cuda', None) or 'none'})")
+        if settings.device.startswith("cuda") and not torch.cuda.is_available():
+            from pipeline.audio.synth import TORCH_CUDA_FIX
+
+            if getattr(torch.version, "cuda", None) is None:
+                typer.echo("  !! this is the CPU-only build of torch (PyPI's only Windows build): the voices run on the "
+                           "processor. Install the GPU build:\n"
+                           f"    {TORCH_CUDA_FIX}")
+            else:
+                typer.echo("  !! torch is built for CUDA but sees no GPU: update the NVIDIA driver and check that "
+                           "the card shows up in Task Manager")
     except Exception:  # noqa: BLE001
         typer.echo("torch devices: torch not installed")
     from pipeline.audio.gpu import BUSY_MIB, gpu_memory

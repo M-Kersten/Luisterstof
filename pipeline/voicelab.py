@@ -254,8 +254,13 @@ class VoiceLab:
                 say("voice", "load", {"speaker": sp.id})
                 started = time.monotonic()
                 load()
-                say("voice", "loaded", {"seconds": round(time.monotonic() - started, 1),
-                                        "device": getattr(synth, "device", "")})
+                device = str(getattr(synth, "device", ""))
+                why = ""
+                if device.startswith("cpu") and self.settings.device.startswith("cuda"):
+                    from pipeline.audio.synth import torch_gpu_status
+
+                    why = torch_gpu_status()[1]
+                say("voice", "loaded", {"seconds": round(time.monotonic() - started, 1), "device": device, "why": why})
             say("voice", "start", {"speaker": sp.id, "name": sp.name})
             started = time.monotonic()
             clip: AudioClip = synth.render(spoken, voice, exaggeration=params["exaggeration"], seed=seed)

@@ -224,3 +224,52 @@ def test_whisper_moves_to_the_processor_when_its_cudnn_is_missing(settings, monk
     t = asr.FasterWhisperTranscriber(settings.with_(device="cuda"))
     t._load()
     assert made["device"] == "cpu" and t.device == "cpu"
+
+
+# ------------------------------------------------------------------ the voices on the processor
+def _fake_torch(monkeypatch, *, cuda_build, sees_gpu, version):
+    import sys
+    import types
+
+    torch = types.SimpleNamespace(
+        __version__=version,
+        version=types.SimpleNamespace(cuda="12.4" if cuda_build else None),
+        cuda=types.SimpleNamespace(is_available=lambda: sees_gpu),
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+
+def test_why_the_voices_run_on_the_processor(monkeypatch):
+    from pipeline.audio.synth import torch_gpu_status
+
+    _fake_torch(monkeypatch, cuda_build=False, sees_gpu=False, version="2.6.0")  # PyPI's Windows wheel
+    ok, why = torch_gpu_status()
+    assert not ok and "versie zonder GPU-ondersteuning" in why and "2.6.0" in why
+
+    _fake_torch(monkeypatch, cuda_build=True, sees_gpu=False, version="2.6.0+cu124")
+    ok, why = torch_gpu_status()
+    assert not ok and "CUDA 12.4" in why and "stuurprogramma" in why
+
+    _fake_torch(monkeypatch, cuda_build=True, sees_gpu=True, version="2.6.0+cu124")
+    assert torch_gpu_status() == (True, "")
+
+
+def test_a_take_on_the_processor_says_why_and_where_to_look():
+    from pipeline.narrate import say
+
+    cpu = say("voice", "loaded", {"seconds": 70, "device": "cpu",
+                                  "why": "de geïnstalleerde torch (2.6.0) is de versie zonder GPU-ondersteuning"})
+    assert cpu["kind"] == "problem" and "op de processor" in cpu["text"] and "zonder GPU" in cpu["text"]
+    assert "studiepodcast doctor" in cpu["text"]
+    gpu = say("voice", "loaded", {"seconds": 40, "device": "cuda"})
+    assert gpu == {"text": "Stemmodel geladen op de GPU in 40 s.", "kind": "result"}
+
+
+def test_doctor_names_the_cpu_only_torch_and_the_fix(monkeypatch):
+    from typer.testing import CliRunner
+
+    from pipeline.cli import app
+
+    _fake_torch(monkeypatch, cuda_build=False, sees_gpu=False, version="2.6.0")
+    out = CliRunner().invoke(app, ["doctor"]).output
+    assert "CPU-only build of torch" in out and "torch==2.6.0+cu124" in out and "download.pytorch.org/whl/cu124" in out
