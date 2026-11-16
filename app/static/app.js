@@ -1625,8 +1625,27 @@ async function openVoices(voiceId) {
   renderVoiceList();
   renderVoiceEditor();
   if (!state.klank) await loadKlank();
-  if (voiceId) await loadTakes();
+  if (voiceId) await Promise.all([loadTakes(), loadVoiceKlank()]);
   renderVoiceState();
+}
+
+// For the voice you are working on: how many of its own breaths were found, and on which side it sits.
+async function loadVoiceKlank() {
+  const id = state.voice;
+  try { state.voiceKlank = { id, ...(await api.get(`/api/voices/${enc(id)}/klank`)) }; } catch { state.voiceKlank = null; }
+  renderKlankNotes();
+}
+
+function renderKlankNotes() {
+  const v = state.voiceKlank, voice = currentVoice(), k = state.klank;
+  const set = (key, text) => { const el = $(`#klank-note-${key}`); if (el) { el.textContent = text; el.hidden = !text; } };
+  if (!v || !voice || v.id !== voice.id || !k) { set("breath", ""); set("width", ""); return; }
+  const name = voice.name || voice.id;
+  set("breath", !k.draft.breath ? "" : v.source === "opname"
+    ? `${name}: ${v.breaths === 1 ? "één ademhaling" : `${v.breaths} ademhalingen`} uit de eigen opname gevonden.`
+    : `${name}: in de opname zit geen bruikbare ademhaling, dus ${name} krijgt een zachte nagemaakte. Een opname met rustige pauzes tussen de zinnen levert echte op.`);
+  set("width", !k.draft.width ? `${name} klinkt in het midden, zoals iedereen op 0.` : v.side === "midden"
+    ? `${name} is gast en zit in het midden.` : `${name} zit ${v.side}. Takes klinken hier zoals in een aflevering.`);
 }
 
 // ------------------------------------------------------------------ klank van de show
@@ -1638,6 +1657,8 @@ const KLANK_KNOBS = {
   warmth: ["Warmte", "Wat een goede microfoon en voorversterker doen: iets meer laag en een zachte rand."],
   deess: ["Scherpe s temmen", "Synthetische stemmen sissen op s, z en sch. Dit haalt die scherpte eraf, alleen waar ze uitschiet."],
   compression: ["Compressie", "Hoe dicht zachte en harde zinnen bij elkaar liggen. Hoger klinkt meer als radio."],
+  breath: ["Adem", "Voor een langere zin ademt de spreker in, met een ademhaling uit de eigen opname. Hoger: vaker en iets beter hoorbaar."],
+  width: ["Breedte", "Waar de presentatoren zitten. Op 0 is alles mono, in het midden; hoger zet de uitlegger meer links en de scepticus meer rechts. Gasten blijven in het midden. Het best te horen met een koptelefoon."],
 };
 const klankPct = (v) => Math.round(v * 100);
 
@@ -1665,7 +1686,8 @@ function renderKlank() {
       <div class="slider__head"><label for="klank-${key}">${label}</label><output id="klank-out-${key}">${klankPct(k.draft[key])}</output></div>
       <div class="slider__track"><input type="range" id="klank-${key}" min="0" max="1" step="0.05" value="${k.draft[key]}">
         <span class="slider__saved" style="left:${klankPct(k.saved[key])}%" title="opgeslagen: ${klankPct(k.saved[key])}"></span></div>
-      <p class="slider__help">${help}</p></div>`).join("");
+      <p class="slider__help">${help}</p>${key === "breath" || key === "width" ? `<p class="slider__note" id="klank-note-${key}" hidden></p>` : ""}</div>`).join("");
+  renderKlankNotes();
   renderKlankState();
   renderAbSwitch();
 }
@@ -2314,6 +2336,7 @@ $("#klank-sliders").addEventListener("input", (e) => {
   const key = el.dataset.klank, value = parseFloat(e.target.value);
   state.klank.draft[key] = value;
   $(`#klank-out-${key}`).textContent = klankPct(value);
+  if (key === "breath" || key === "width") renderKlankNotes();
   state.klank.draft.preset = klankPresetOf(state.klank.draft);
   $$("#klank-presets button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.preset === state.klank.draft.preset)));
   klankChangedSoon();

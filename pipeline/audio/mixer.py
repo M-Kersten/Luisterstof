@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -45,13 +46,15 @@ def normalise_loudness(samples: np.ndarray, sr: int, target_lufs: float, max_gai
 
 
 def fade(samples: np.ndarray, sr: int, fade_in: float = 0.0, fade_out: float = 0.0) -> np.ndarray:
+    """Fade in and out; mono, or (n, 2) with both channels together."""
     out = samples.astype(np.float32, copy=True)
     n_in = min(len(out), int(fade_in * sr))
     n_out = min(len(out), int(fade_out * sr))
+    shape = (-1,) + (1,) * (out.ndim - 1)
     if n_in > 0:
-        out[:n_in] *= np.linspace(0.0, 1.0, n_in, dtype=np.float32)
+        out[:n_in] *= np.linspace(0.0, 1.0, n_in, dtype=np.float32).reshape(shape)
     if n_out > 0:
-        out[-n_out:] *= np.linspace(1.0, 0.0, n_out, dtype=np.float32)
+        out[-n_out:] *= np.linspace(1.0, 0.0, n_out, dtype=np.float32).reshape(shape)
     return out
 
 
@@ -69,15 +72,12 @@ def duck(samples: np.ndarray, sr: int, from_s: float, depth_db: float, fade_s: f
 
 
 def room_tone(n: int, sr: int, level_db: float = -60.0, seed: int = 1) -> np.ndarray:
+    from scipy.signal import lfilter
+
     rng = np.random.default_rng(seed)
     white = rng.standard_normal(n).astype(np.float32)
-    # one-pole low-pass for a brownish, unobtrusive floor
-    out = np.empty_like(white)
-    acc = 0.0
-    alpha = 0.02
-    for i in range(n):
-        acc += alpha * (white[i] - acc)
-        out[i] = acc
+    alpha = 0.02  # one-pole low-pass for a brownish, unobtrusive floor
+    out = lfilter([alpha], [1.0, -(1.0 - alpha)], white.astype(np.float64)).astype(np.float32)
     rms = float(np.sqrt(np.mean(out**2)) + 1e-9)
     return out * (db_to_gain(level_db) / rms)
 
@@ -115,6 +115,9 @@ def mix(
     head_s: float = 0.3,
     acoustics=None,
     finish=None,
+    pans: dict[str, float] | None = None,
+    breaths: dict | None = None,
+    seed: int = 7,
 ) -> tuple[AudioClip, float]:
     """Returns the mixed episode and the offset (seconds) the dialogue was shifted by.
 
@@ -122,10 +125,16 @@ def mix(
     EQ + the shared recording profile per line, and a shared compressor and room on the dialogue bus.
     ``finish`` (pipeline.audio.finish.Finish, the sound of the show from cast/klank.yaml) does the same with the
     show's own settings: microphone, warmth and tamed s-sounds per line, compressor and room on the dialogue, a
-    limiter at the end. A dry Finish leaves the episode exactly as without it.
+    limiter at the end. With width, the episode comes out stereo with each speaker at ``pans[speaker]``; with
+    breath, ``breaths[speaker]`` (pipeline.audio.breaths.Breaths) gives the inhales before longer lines. A dry
+    Finish leaves the episode exactly as without it.
     """
     if finish is not None and finish.dry:
         finish = None
+    if acoustics is not None:
+        finish = None
+    stereo = finish is not None and finish.stereo
+    pans = pans or {}
     offset = head_s
     intro_samples = None
     if intro is not None:
@@ -138,16 +147,24 @@ def mix(
         outro_samples = resample(outro.samples, outro.sr, sr) if outro.sr != sr else outro.samples
         outro_samples = normalise_loudness(outro_samples, sr, target_lufs - 2)
         total += len(outro_samples) / sr
-    buffer = np.zeros(int(total * sr) + sr, dtype=np.float32)
+    n = int(total * sr) + sr
+    buffer = np.zeros((n, 2) if stereo else n, dtype=np.float32)
 
     if intro_samples is not None:
         _add(buffer, fade(intro_samples, sr, 0.01, 0.5), int(head_s * sr))
-    if acoustics is None and finish is not None:
+    if finish is not None:
         from pipeline.audio import finish as sound
 
         dialogue = np.zeros_like(buffer)
         for placement in timeline.placements:
-            _add(dialogue, _prepare(placement, sr, line_lufs, finish=finish), int((placement.start + offset) * sr))
+            line = _prepare(placement, sr, line_lufs, finish=finish)
+            pan = pans.get(placement.turn.speaker, 0.0)
+            _add(dialogue, sound.place(line, pan) if stereo else line, int((placement.start + offset) * sr))
+        if finish.breath > 0 and breaths:
+            for at, inhale, speaker in _breaths(timeline, breaths, finish, sr, line_lufs, seed):
+                inhale = sound.voice(inhale, sr, finish)
+                pan = pans.get(speaker, 0.0)
+                _add(dialogue, sound.place(inhale, pan) if stereo else inhale, int((at + offset) * sr))
         buffer += sound.bus(dialogue, sr, finish)  # one compressor, one room for everyone
     elif acoustics is None:
         for placement in timeline.placements:
@@ -160,7 +177,11 @@ def mix(
     if outro_samples is not None:
         _add(buffer, fade(outro_samples, sr, 0.3, 0.5), int((offset + timeline.duration + 0.4) * sr))
     if room_tone_db is not None:
-        buffer += room_tone(len(buffer), sr, room_tone_db)
+        if stereo:  # two quiet floors that do not match: the room is around you, not in the middle of your head
+            buffer += np.stack([room_tone(len(buffer), sr, room_tone_db, seed=1),
+                                room_tone(len(buffer), sr, room_tone_db, seed=2)], axis=1)
+        else:
+            buffer += room_tone(len(buffer), sr, room_tone_db)
 
     end = int((offset + timeline.duration + tail_s) * sr) + (len(outro_samples) if outro_samples is not None else 0)
     buffer = buffer[: min(len(buffer), end)]
@@ -177,10 +198,51 @@ def mix(
 
 
 def _add(buffer: np.ndarray, samples: np.ndarray, at: int) -> None:
+    """Mix ``samples`` in at ``at``; a mono clip in a stereo buffer goes to the middle, equally loud."""
     at = max(0, at)
     end = min(len(buffer), at + len(samples))
-    if end > at:
-        buffer[at:end] += samples[: end - at]
+    if end <= at:
+        return
+    part = samples[: end - at]
+    if buffer.ndim == 2 and part.ndim == 1:
+        part = part[:, None] * np.float32(np.sqrt(0.5))
+    buffer[at:end] += part
+
+
+MIN_BREATH_S = 0.12
+BREATH_MIN_LINE_S = 2.5
+BREATH_MIN_GAP_S = 0.22
+BREATH_AFTER_PREVIOUS_S = 0.05  # never right on top of the last word of the line before
+
+
+def _breaths(timeline: Timeline, breaths: dict, finish, sr: int, line_lufs: float, seed: int):
+    """Where the speakers breathe: before a longer line that moves the conversation on, when there is room for it.
+    The same script gives the same breaths every time. Yields (start in seconds, samples, speaker)."""
+    from pipeline.audio import finish as sound
+
+    order = sorted(timeline.placements, key=lambda p: p.start)
+    prev_end = 0.0
+    for p in order:
+        bank = breaths.get(p.turn.speaker)
+        line_s = p.end - p.start
+        gap = p.start - prev_end
+        prev_end = max(prev_end, p.end)
+        if bank is None or not bank.clips or not p.advances or p.turn.first.reaction or line_s < BREATH_MIN_LINE_S:
+            continue
+        if gap < BREATH_MIN_GAP_S:
+            continue
+        roll = zlib.crc32(f"{seed}:{p.turn.turn_id}".encode()) / 2**32
+        if roll >= sound.breath_chance(finish, line_s):
+            continue
+        clip = bank.clips[zlib.crc32(f"{p.turn.turn_id}:{seed}".encode()) % len(bank.clips)]
+        clip = resample(clip, bank.sr, sr) if bank.sr != sr else clip
+        room = gap - sound.BREATH_LEAD_S - BREATH_AFTER_PREVIOUS_S
+        n = min(len(clip), int(room * sr))
+        if n < int(MIN_BREATH_S * sr):
+            continue
+        inhale = fade(clip[len(clip) - n:], sr, 0.015, 0.0)  # cut from the front: the end of a breath leads into the word
+        inhale = sound.breath_level(inhale, line_lufs + p.gain_db, finish)
+        yield p.start - sound.BREATH_LEAD_S - n / sr, inhale, p.turn.speaker
 
 
 def load_sting(path: Path | None) -> AudioClip | None:

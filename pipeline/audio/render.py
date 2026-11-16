@@ -159,10 +159,19 @@ def render_episode(
     from pipeline.audio import finish as sound
 
     finish = None if acoustics is not None else sound.load(settings.cast_dir)  # the sound of the show, cast/klank.yaml
+    pans, inhales = {}, {}
     if finish is not None:
-        manifest.acoustics = {"klank": finish.knobs()}
+        pans = sound.pans(cast, finish)
+        if finish.breath > 0 and not finish.dry:
+            inhales = _breaths(cast, settings, sr)
+        record: dict = {"klank": finish.knobs()}
+        if inhales:
+            record["adem"] = {sid: b.source for sid, b in inhales.items()}
+        if finish.stereo:
+            record["plaats"] = pans
+        manifest.acoustics = record
     mixed, offset = mix(timeline, sr=sr, target_lufs=settings.target_lufs, line_lufs=settings.line_lufs, intro=intro, outro=outro,
-                        acoustics=acoustics, finish=finish)
+                        acoustics=acoustics, finish=finish, pans=pans, breaths=inhales, seed=seed)
 
     audio_path = paths.out_audio(script.episode_id)
     mixed.write(audio_path)
@@ -188,6 +197,14 @@ def render_episode(
                        "interrupt cut points and backchannel placement on those turns are approximate and can "
                        "land mid-word.", fallback_count, len(manifest.turns))
     return audio_path, transcript_path, manifest
+
+
+def _breaths(cast: Cast, settings: Settings, sr: int) -> dict:
+    """Every speaker's inhales, from their own recordings when those have any (see pipeline.audio.breaths)."""
+    from pipeline.audio import breaths
+
+    return {s.id: breaths.for_speaker(settings.cast_dir, settings.data_dir, s.id, s.voice_ref, sr)
+            for s in list(cast.hosts) + list(cast.guests)}
 
 
 def _fit_acoustics(timeline, cast: Cast, settings: Settings, sr: int):

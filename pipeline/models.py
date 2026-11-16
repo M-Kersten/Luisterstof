@@ -600,7 +600,9 @@ class RenderManifest(Contract):
     episode_id: str
     synth: str
     turns: list[TurnRender] = Field(default_factory=list)
-    acoustics: dict[str, dict[str, float]] = Field(default_factory=dict)  # prototype: per-speaker EQ correction applied
+    # the sound it was finished with: the klank knobs, whose breaths ("opname" or "nagemaakt") and where each
+    # speaker sits; or, for the acoustics prototype, the per-speaker EQ correction applied
+    acoustics: dict[str, dict[str, float | str]] = Field(default_factory=dict)
     created_at: str = Field(default_factory=now_iso)
 
     def flagged_turns(self) -> list[TurnRender]:

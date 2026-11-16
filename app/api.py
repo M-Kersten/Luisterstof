@@ -427,10 +427,12 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
     @app.get("/api/voices/{speaker_id}/takes/{take_id}.wav")
     def voice_take_audio(speaker_id: str, take_id: str, klank: bool = False, preset: str | None = None,
                          room: float | None = None, size: float | None = None, warmth: float | None = None,
-                         deess: float | None = None, compression: float | None = None):
+                         deess: float | None = None, compression: float | None = None, breath: float | None = None,
+                         width: float | None = None):
         """The take as made, or with ``klank=1`` through the sound of the show: the saved settings, or the values
-        in the query (sliders not saved yet). The file on disk stays dry."""
-        speaker_or_404(speaker_id)
+        in the query (sliders not saved yet). With breath the speaker inhales first, with width the take sits where
+        this speaker sits in an episode (stereo). The file on disk stays dry."""
+        sp = speaker_or_404(speaker_id)
         try:
             path = lab.take_path(speaker_id, take_id)
         except KeyError as exc:
@@ -441,18 +443,35 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         from pipeline.audio.synth import AudioClip
 
         given = {k: v for k, v in {"room": room, "size": size, "warmth": warmth, "deess": deess,
-                                   "compression": compression}.items() if v is not None}
+                                   "compression": compression, "breath": breath, "width": width}.items() if v is not None}
         try:
             chosen = sound.load(settings.cast_dir).model_copy(update={"preset": preset or "eigen", **given}) if given \
                 else (sound.Finish.from_preset(preset) if preset else sound.load(settings.cast_dir))
             chosen = sound.Finish.model_validate(chosen.model_dump())
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        from pipeline.audio import breaths
+
         clip = AudioClip.read(path)
-        treated = AudioClip(sound.take(clip.samples, clip.sr, chosen), clip.sr)
+        inhale = None
+        if chosen.breath > 0:
+            found = breaths.for_speaker(settings.cast_dir, settings.data_dir, speaker_id, sp.voice_ref, clip.sr)
+            inhale = found.clips[0] if found.clips else None
+        pan = sound.pans(casts["cast"], chosen).get(speaker_id, 0.0)
+        treated = AudioClip(sound.take(clip.samples, clip.sr, chosen, breath=inhale, pan=pan), clip.sr)
         buf = io.BytesIO()
         sf.write(buf, treated.samples, treated.sr, format="WAV", subtype="PCM_16")
         return Response(buf.getvalue(), media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/voices/{speaker_id}/klank")
+    def voice_klank(speaker_id: str) -> dict[str, Any]:
+        """Where this voice's breaths come from and where it sits, for the notes under the Adem and Breedte knobs."""
+        from pipeline.audio import breaths
+
+        sp = speaker_or_404(speaker_id)
+        found = breaths.for_speaker(settings.cast_dir, settings.data_dir, speaker_id, sp.voice_ref, settings.sample_rate)
+        side = {"explainer": "links", "skeptic": "rechts"}.get(getattr(sp, "role", ""), "midden")
+        return {"breaths": len(found.clips) if found.source == "opname" else 0, "source": found.source, "side": side}
 
     @app.get("/api/klank")
     def klank_get() -> dict[str, Any]:

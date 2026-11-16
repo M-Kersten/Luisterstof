@@ -480,6 +480,7 @@ mark.srcmark--missing:hover, mark.srcmark--missing.is-active { background: color
 .slider__track input[type="range"] { width: 100%; accent-color: var(--brand); margin: 0; }
 .slider__saved { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--signal-bright); border-radius: 1px; pointer-events: none; }
 .slider__help { color: var(--text-muted); font-size: 13px; line-height: 19px; }
+.slider__note { margin-top: 4px; padding-left: 10px; border-left: 2px solid var(--brand); color: var(--text-primary); font-size: 13px; line-height: 19px; }
 .slider__savedtext { color: var(--signal); }
 .seedrow { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; padding-top: var(--space-3); border-top: 1px solid var(--line); }
 .field--inline { flex-direction: row; align-items: center; gap: var(--space-2); }

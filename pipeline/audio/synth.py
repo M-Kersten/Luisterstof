@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class AudioClip:
-    samples: np.ndarray  # float32 mono, -1..1
+    samples: np.ndarray  # float32 mono, -1..1; a finished stereo episode is (n, 2)
     sr: int
     meta: dict[str, Any] = field(default_factory=dict)
 
