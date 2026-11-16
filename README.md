@@ -420,7 +420,7 @@ That is Whisper listening back, after the take itself was made. Three causes, in
 
 1. **Whisper is not on the laptop yet.** Its first use used to download `large-v3` (about 3 GB) inside the take, with only a progress bar in the app's console window to show for it. Now the check is skipped instead; run `studiepodcast fetch-whisper` once. `studiepodcast doctor` says whether it is on disk.
 2. **The GPU is full.** Chatterbox stays loaded between takes and the writing model in OpenCode may hold the card as well. On Windows CUDA then spills into shared system memory and everything on the card crawls. The check now moves to the processor when less than 2.5 GB is free; `doctor` shows how much of the card is in use. Freeing the GPU on the Stemmen page or closing the model in OpenCode helps the takes themselves too.
-3. **torch and faster-whisper disagree about CUDA/cuDNN.** Then Whisper hangs or fails while loading. See the cuDNN entry below; until it is fixed the check gives up after its time limit and the takes are kept without a check.
+3. **torch and faster-whisper disagree about CUDA/cuDNN.** Then Whisper hangs or fails while loading, often with a message about `cudnn_ops_infer64_8.dll` or `cudnn_ops64_9.dll` in the app's console window. `pip install --upgrade ctranslate2` usually lines faster-whisper up with the CUDA that torch brought; `studiepodcast doctor` shows whether it imports. Until then the check gives up after its time limit and the takes are kept without a check.
 
 A take that is already hanging in a version before this fix cannot be stopped from the page: close the app's window and start it again. A job that was running is closed as failed at startup ("worker restarted"), not started again.
 
