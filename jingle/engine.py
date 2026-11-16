@@ -158,6 +158,7 @@ class Note:
     swell: float = 0.0  # dB the note grows and falls back over its length
     fall: float = 0.0  # dB the note has lost by its end
     damp: float | None = None  # shorts: stop the ring after this many seconds
+    skip: float = 0.0  # seconds further into the recording, past an accent the players put on its start
     layer: float | None = None  # the written dynamic: picks soft or loud recordings, whatever vel ends up being
 
 
@@ -166,7 +167,7 @@ def render_sustain(patch: Patch, n: Note, cents: float = 0.0) -> np.ndarray:
     smp = patch.sample(region)
     ratio = 2 ** (((n.pitch - region.center) * 100 - smp.cents + cents) / 1200)
     start = int(np.argmax(smp.env >= n.speak * smp.steady))
-    start = max(0, start - int(0.03 * SR))
+    start = max(0, start - int(0.03 * SR)) + int(n.skip * SR)
     want = int((n.dur + n.release + 0.05) * SR)
     src = smp.data[start: start + int(want * ratio) + 64]
     seg = _pitch(src, ratio)[:want]
