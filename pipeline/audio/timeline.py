@@ -24,7 +24,7 @@ from __future__ import annotations
 import random
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from pipeline.audio.asr import WordTiming
 from pipeline.audio.synth import AudioClip
@@ -78,11 +78,21 @@ class Placement:
     cut_fade: float = FRAGMENT_FADE
     advances: bool = True
     deliberate_gap_after: float = 0.0
+    opening: bool = False  # part of the opening (teaser, welcome): heard before the script starts, not a script line
 
     @property
     def end(self) -> float:
         end = self.start + self.clip.duration_s
         return min(end, self.cut_at + self.cut_fade) if self.cut_at is not None else end
+
+    def moved(self, by: float, *, opening: bool | None = None) -> Placement:
+        """The same turn ``by`` seconds later, with everything that hangs on its clock."""
+        return replace(
+            self, start=self.start + by, words=[w.shifted(by) for w in self.words],
+            duck_at=None if self.duck_at is None else self.duck_at + by,
+            cut_at=None if self.cut_at is None else self.cut_at + by,
+            opening=self.opening if opening is None else opening,
+        )
 
     @property
     def line_ids(self) -> list[str]:

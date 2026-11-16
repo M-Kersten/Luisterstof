@@ -161,7 +161,7 @@ def test_reaction_bank_clip_replaces_synthesis(settings, cast):
                                     transcriber=None, aligner=None, performance=PerformanceOptions(reactions=True))
     laugh = manifest.turns[1]
     assert laugh.performance == {"reaction": "laugh", "source": "bank"} and laugh.chosen_take.reason == "reaction bank"
-    assert manifest.verification_coverage()[1] == 1  # the bank clip is not counted as an unverified take
+    assert manifest.verification_coverage()[1] == 2  # the line and the welcome; the bank clip is no unverified take
 
 
 def test_shared_chain_pulls_two_differently_coloured_voices_closer(cast):

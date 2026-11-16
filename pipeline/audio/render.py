@@ -10,7 +10,16 @@ from pipeline.audio.aligner_cache import load_alignment, save_alignment
 from pipeline.audio.asr import Aligner, Transcriber, UniformAligner, WordTiming
 from pipeline.audio.cache import RenderCache
 from pipeline.audio.chunker import chunk_script
-from pipeline.audio.mixer import build_transcript, export_blocks, hook_music_path, load_music, load_sting, mix
+from pipeline.audio.mixer import (
+    HOOK_LEAD_S,
+    build_transcript,
+    export_blocks,
+    hook_music_path,
+    load_music,
+    load_sting,
+    mix,
+)
+from pipeline.audio.opening import WELCOME_LIFT, build_opening, welcome_turn
 from pipeline.audio.performance_render import (
     PerformanceOptions,
     Tables,
@@ -22,7 +31,7 @@ from pipeline.audio.performance_render import (
 )
 from pipeline.audio.synth import AudioClip, Synth, VoiceSpec, voice_spec_for
 from pipeline.audio.takes import render_with_takes
-from pipeline.audio.timeline import assemble
+from pipeline.audio.timeline import Timeline, assemble
 from pipeline.audio.turns import Turn, group_turns
 from pipeline.config import Settings
 from pipeline.cues import pure_reaction
@@ -81,6 +90,7 @@ def render_episode(
 
     rendered: dict[str, tuple[AudioClip, list[WordTiming]]] = {}
     state: dict[str, float] = {}
+    lifts: dict[str, float] = {}  # per turn: how far above the speaker's everyday voice its take was rendered
     last_speaker: str | None = None
     last_exaggeration: float | None = None
     _emit(on_event, "render_start", turns=len(turns))
@@ -114,6 +124,7 @@ def render_episode(
             exaggeration = (1 - CROSS_SPEAKER_CARRY) * exaggeration + CROSS_SPEAKER_CARRY * last_exaggeration
         exaggeration = round(exaggeration, 3)
         state[turn.speaker] = exaggeration
+        lifts[turn.turn_id] = exaggeration - voice.base_exaggeration
         last_speaker, last_exaggeration = turn.speaker, exaggeration
         result = render_with_takes(
             turn.text, voice, synth, cache,
@@ -127,15 +138,7 @@ def render_episode(
                         flag_reason=result.flag_reason)
         manifest.turns.append(tr)
         if result.clip is not None:
-            cached = load_alignment(cache, result.take_key) if result.take_key else None
-            if cached is not None and not cached[1]:  # estimated timing is retried, so a fixed aligner heals the cache
-                words, used_fallback = cached
-            else:
-                words = aligner.align(result.clip, turn.text)
-                used_fallback = bool(getattr(aligner, "last_used_fallback", False))
-                if result.take_key:
-                    save_alignment(cache, result.take_key, words, fallback=used_fallback)
-            tr.aligned_with_fallback = used_fallback
+            words, used_fallback = _align(cache, aligner, result, turn.text, tr)
             clip = result.clip
             if performance:
                 tr.performance = _performance_record(turn, exaggeration)
@@ -147,18 +150,48 @@ def render_episode(
         _emit(on_event, "turn", index=i + 1, total=len(turns), turn=turn.turn_id, speaker=turn.speaker,
               cached=result.from_cache, flagged=result.flagged)
 
+    # The welcome: one more turn for the main host, outside the script, rendered and checked like the others.
+    welcome = welcome_turn(script, cast, glossary) if settings.opening else None
+    if welcome is not None and welcome.speaker in voices:
+        voice = voices[welcome.speaker]
+        result = render_with_takes(
+            welcome.text, voice, synth, cache,
+            transcriber=transcriber, exaggeration=round(min(0.95, voice.base_exaggeration + WELCOME_LIFT), 3),
+            n_takes=settings.takes_per_line, wer_threshold=settings.wer_threshold,
+            chars_per_second=settings.chars_per_second, glossary=glossary, seed_base=900,
+            on_take=lambda rec: _emit(on_event, "take", turn=welcome.turn_id, wer=rec.wer, accepted=rec.accepted),
+        )
+        tr = TurnRender(turn_id=welcome.turn_id, speaker=welcome.speaker, line_ids=welcome.line_ids,
+                        text_spoken=welcome.text, takes=result.takes, chosen=result.chosen, from_cache=result.from_cache,
+                        flagged=result.flagged, flag_reason=result.flag_reason)
+        manifest.turns.append(tr)
+        if result.clip is not None:
+            rendered[welcome.turn_id] = (result.clip, _align(cache, aligner, result, welcome.text, tr)[0])
+
     timing = turn_timing_gap(tables, seed) if performance and performance.timing and tables is not None else None
     timeline = assemble(turns, rendered, sr=synth.sample_rate, seed=seed, max_unwritten_gap=settings.max_unwritten_gap_s,
                         timing_gap=timing)
     sr = settings.sample_rate
     intro = load_sting(settings.cast_dir / "stings" / "intro.wav")
     outro = load_sting(settings.cast_dir / "stings" / "outro.wav")
-    hook, hook_end = None, None  # music under the hook: only when the episode opens with one
-    opening = script.segments[0] if script.segments else None
-    if settings.hook_music and opening is not None and opening.type == "cold_open":
-        hook = load_music(hook_music_path(settings.cast_dir))
-        ids = {line.id for line in opening.lines}
-        hook_end = max((p.end for p in timeline.placements if ids.intersection(p.line_ids)), default=None)
+    music = load_music(hook_music_path(settings.cast_dir)) if settings.hook_music else None
+    music_voices, music_until = None, None
+    first = script.segments[0] if script.segments else None
+    if welcome is not None and welcome.turn_id in rendered:
+        # the hook: a teaser from the recording, then the welcome, the music under both; the script follows
+        opened = build_opening(timeline, turns, rendered, welcome, lifts=lifts,
+                               music_s=music.duration_s if music is not None else None, sr=synth.sample_rate, seed=seed)
+        timeline = opened.timeline
+        music_voices, music_until = opened.layout.voices, opened.layout.music_until
+        manifest.opening = opened.record()
+    elif music is not None and first is not None and first.type == "cold_open":
+        # no opening: the music plays alone for a bar, then under the cold open, and leaves when that is over
+        ids = {line.id for line in first.lines}
+        hook_end = max((p.end for p in timeline.placements if ids.intersection(p.line_ids)), default=timeline.duration)
+        timeline = Timeline(placements=[p.moved(HOOK_LEAD_S) for p in timeline.placements], sr=timeline.sr, qa=timeline.qa)
+        music_until = HOOK_LEAD_S + hook_end + 1.0
+    else:
+        music = None
     acoustics = _fit_acoustics(timeline, cast, settings, sr) if performance and performance.acoustics else None
     if acoustics is not None:
         manifest.acoustics = acoustics.report()
@@ -177,7 +210,7 @@ def render_episode(
             record["plaats"] = pans
         manifest.acoustics = record
     mixed, offset = mix(timeline, sr=sr, target_lufs=settings.target_lufs, line_lufs=settings.line_lufs, intro=intro, outro=outro,
-                        hook=hook, hook_end=hook_end,
+                        music=music, music_voices=music_voices, music_until=music_until,
                         acoustics=acoustics, finish=finish, pans=pans, breaths=inhales, seed=seed)
 
     audio_path = paths.out_audio(script.episode_id)
@@ -204,6 +237,21 @@ def render_episode(
                        "interrupt cut points and backchannel placement on those turns are approximate and can "
                        "land mid-word.", fallback_count, len(manifest.turns))
     return audio_path, transcript_path, manifest
+
+
+def _align(cache: RenderCache, aligner: Aligner, result, text: str, tr: TurnRender) -> tuple[list[WordTiming], bool]:
+    """Word timings for a take, from the cache when a real alignment is there. Returns them and whether they are
+    estimated; estimated timing is retried on the next render, so a repaired aligner heals the cache."""
+    cached = load_alignment(cache, result.take_key) if result.take_key else None
+    if cached is not None and not cached[1]:
+        words, used_fallback = cached
+    else:
+        words = aligner.align(result.clip, text)
+        used_fallback = bool(getattr(aligner, "last_used_fallback", False))
+        if result.take_key:
+            save_alignment(cache, result.take_key, words, fallback=used_fallback)
+    tr.aligned_with_fallback = used_fallback
+    return words, used_fallback
 
 
 def _breaths(cast: Cast, settings: Settings, sr: int) -> dict:

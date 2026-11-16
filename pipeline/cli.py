@@ -157,6 +157,10 @@ def render(book_id: str, chapter: str, force: bool = False):
     verified, verifiable = manifest.verification_coverage()
     fallback = manifest.alignment_fallback_count()
     typer.echo(f"  {audio}\n  {transcript}\n  flagged turns: {len(flagged)}")
+    if manifest.opening:
+        teaser = manifest.opening.get("teaser")
+        picked = f"teaser {teaser['line_ids'][0]}-{teaser['line_ids'][-1]} ({teaser['duration_s']:.0f} s), " if teaser else ""
+        typer.echo(f"  opening: {picked}welcome: {manifest.opening['welcome']}")
     if verifiable:
         mark = "OK" if verified == verifiable else "!!"
         typer.echo(f"  [{mark}] WER verification: {verified}/{verifiable} turns. "
@@ -422,7 +426,8 @@ def doctor():
     typer.echo(f"stings: {', '.join(stings) or 'none'}")
     from pipeline.audio.mixer import hook_music_path
 
-    typer.echo(f"music under the hook: {(hook_music_path(settings.cast_dir) or 'none') if settings.hook_music else 'off'}")
+    typer.echo(f"opening (teaser and welcome): {'on' if settings.opening else 'off'}")
+    typer.echo(f"music under the opening: {(hook_music_path(settings.cast_dir) or 'none') if settings.hook_music else 'off'}")
 
 
 def _doctor_chatterbox(settings: Settings) -> None:

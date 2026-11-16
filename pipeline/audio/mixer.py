@@ -75,6 +75,9 @@ def duck(samples: np.ndarray, sr: int, from_s: float, depth_db: float, fade_s: f
 HOOK_LEAD_S = 2.4  # the music on its own before the first voice: one bar of the jingle
 HOOK_DUCK_DB = 14.0  # how far it drops under the voices
 HOOK_DUCK_FADE_S = 0.6
+HOOK_HOLD_S = 0.15  # it stays down this long after the last word
+HOOK_RISE_S = 0.8  # and takes this long to come back up
+HOOK_SWELL_MIN_S = 1.0  # a silence between voices shorter than this is not a place for the music to come up
 HOOK_OUT_S = 2.0  # its fade when the hook is over before the music is
 HOOK_EVEN = 0.5  # share of the music's own rise and fall that is taken out, so its soft bars survive under speech
 HOOK_EVEN_WINDOW_S = 3.0
@@ -98,13 +101,27 @@ def even_out(samples: np.ndarray, sr: int, amount: float = HOOK_EVEN) -> np.ndar
     return (samples * gain.reshape((-1,) + (1,) * (samples.ndim - 1))).astype(np.float32)
 
 
-def under_voices(samples: np.ndarray, sr: int, *, voices_at: float, until: float | None = None,
+def under_voices(samples: np.ndarray, sr: int, voices: list[tuple[float, float]], *, until: float | None = None,
                  duck_db: float = HOOK_DUCK_DB) -> np.ndarray:
-    """Music as a bed: at its own level until the first voice, then down under the voices. When the music runs
-    longer than ``until`` (seconds from its start: where the voices it belongs to stop), it fades out there."""
-    out = duck(samples, sr, max(0.0, voices_at - HOOK_DUCK_FADE_S), duck_db, HOOK_DUCK_FADE_S)
-    if until is not None and int((until + 1.0) * sr) < len(out):
-        out = fade(out[: int((until + 1.0) * sr)], sr, 0.0, HOOK_OUT_S)
+    """Music as a bed. ``voices`` are the stretches (start, end in seconds from the start of the music) in which
+    someone speaks: there the music is down by ``duck_db``, it goes down just before a voice and comes back up
+    after one, as long as the silence that follows is long enough to be heard as music. When the music runs longer
+    than ``until``, it has faded out by then."""
+    spans: list[list[float]] = []
+    for a, b in sorted(voices):
+        if spans and a - spans[-1][1] < HOOK_SWELL_MIN_S:
+            spans[-1][1] = max(spans[-1][1], b)
+        else:
+            spans.append([a, b])
+    low = db_to_gain(-duck_db)
+    t = np.arange(len(samples), dtype=np.float64) / sr
+    gain = np.ones(len(samples))
+    for a, b in spans:
+        down = [a - HOOK_DUCK_FADE_S, a, b + HOOK_HOLD_S, b + HOOK_HOLD_S + HOOK_RISE_S]
+        gain = np.minimum(gain, np.interp(t, down, [1.0, low, low, 1.0]))
+    out = (samples * gain.astype(np.float32).reshape((-1,) + (1,) * (samples.ndim - 1))).astype(np.float32)
+    if until is not None and int(until * sr) < len(out):
+        out = fade(out[: max(1, int(until * sr))], sr, 0.0, HOOK_OUT_S)
     return fade(out, sr, 0.01, 0.0)
 
 
@@ -147,8 +164,9 @@ def mix(
     line_lufs: float = -18.0,
     intro: AudioClip | None = None,
     outro: AudioClip | None = None,
-    hook: AudioClip | None = None,
-    hook_end: float | None = None,
+    music: AudioClip | None = None,
+    music_voices: list[tuple[float, float]] | None = None,
+    music_until: float | None = None,
     room_tone_db: float | None = -60.0,
     tail_s: float = 1.0,
     head_s: float = 0.3,
@@ -160,9 +178,10 @@ def mix(
 ) -> tuple[AudioClip, float]:
     """Returns the mixed episode and the offset (seconds) the dialogue was shifted by.
 
-    ``hook`` is music for under the opening of the episode (mono, or (n, 2) for a stereo mix): it starts on its
-    own, the first voice comes in ``HOOK_LEAD_S`` later and the music drops under it. It plays to its own end, or
-    fades when the voices reach ``hook_end`` (seconds on the timeline, the end of the hook) before that.
+    ``music`` plays from the start of the timeline (mono, or (n, 2) for a stereo mix), so a timeline that wants
+    the music to be heard first starts its first turn later. ``music_voices`` are the stretches of the timeline in
+    which the music stays under the voices (all of it when not given); between them it comes up. It plays to its
+    own end, or has faded out by ``music_until`` (seconds on the timeline).
 
     ``acoustics`` (pipeline.audio.acoustics.Acoustics, performance prototype) adds per-speaker
     EQ + the shared recording profile per line, and a shared compressor and room on the dialogue bus.
@@ -184,13 +203,12 @@ def mix(
         intro_samples = resample(intro.samples, intro.sr, sr) if intro.sr != sr else intro.samples
         intro_samples = normalise_loudness(intro_samples, sr, target_lufs - 2)
         offset = head_s + max(0.0, len(intro_samples) / sr - 0.5)
-    hook_samples, hook_at = None, offset  # after the intro sting, when there is one
-    if hook is not None and len(hook.samples):
-        hook_samples = resample(hook.samples, hook.sr, sr) if hook.sr != sr else hook.samples
-        if hook_samples.ndim == 2 and not stereo:
-            hook_samples = hook_samples.mean(axis=1)
-        hook_samples = normalise_loudness(even_out(hook_samples, sr), sr, line_lufs)  # alone, as loud as a voice
-        offset += HOOK_LEAD_S
+    music_samples = None
+    if music is not None and len(music.samples):
+        music_samples = resample(music.samples, music.sr, sr) if music.sr != sr else music.samples
+        if music_samples.ndim == 2 and not stereo:
+            music_samples = music_samples.mean(axis=1)
+        music_samples = normalise_loudness(even_out(music_samples, sr), sr, line_lufs)  # alone, as loud as a voice
     total = offset + timeline.duration + tail_s
     outro_samples = None
     if outro is not None:
@@ -202,9 +220,11 @@ def mix(
 
     if intro_samples is not None:
         _add(buffer, fade(intro_samples, sr, 0.01, 0.5), int(head_s * sr))
-    if hook_samples is not None:
-        until = min(timeline.duration, hook_end if hook_end is not None else timeline.duration)
-        _add(buffer, under_voices(hook_samples, sr, voices_at=HOOK_LEAD_S, until=HOOK_LEAD_S + until), int(hook_at * sr))
+    if music_samples is not None:
+        first = min((p.start for p in timeline.placements), default=0.0)
+        voices = music_voices if music_voices is not None else [(first, timeline.duration)]
+        until = min(timeline.duration + 1.0, music_until if music_until is not None else timeline.duration + 1.0)
+        _add(buffer, under_voices(music_samples, sr, voices, until=until), int(offset * sr))  # after the intro sting
     if finish is not None:
         from pipeline.audio import finish as sound
 
@@ -350,6 +370,9 @@ def build_transcript(
     seg_of = {line.id: seg.type for seg in script.segments for line in seg.lines}
     lines: list[TranscriptLine] = []
     for p in timeline.placements:
+        # a line of the opening is heard before the script starts (and a teaser line a second time later on), so
+        # it gets an id of its own and belongs to no segment
+        mark = "hook:" if p.opening else ""
         counts = p.turn.word_counts()
         words = p.words
         idx = 0
@@ -364,10 +387,10 @@ def build_transcript(
                 start = p.start + p.clip.duration_s * share_start
                 end = p.start + p.clip.duration_s * share_end
             lines.append(TranscriptLine(
-                line_id=line.id, speaker=line.speaker, text=spoken,
+                line_id=mark + line.id, speaker=line.speaker, text=spoken,
                 start=round(start + offset, 3), end=round(min(end, p.end) + offset, 3),
                 words=[TranscriptWord(word=w.word, start=round(w.start + offset, 3), end=round(w.end + offset, 3)) for w in chunk],
-                overlap=line.overlap.mode, segment=seg_of.get(line.id),
+                overlap=line.overlap.mode, segment=None if p.opening else seg_of.get(line.id),
             ))
     lines.sort(key=lambda l: l.start)
     spans: list[BlockSpan] = []

@@ -17,7 +17,7 @@ from pipeline.audio.mixer import (
     under_voices,
 )
 from pipeline.audio.synth import AudioClip, NullSynth, VoiceSpec
-from pipeline.audio.timeline import assemble
+from pipeline.audio.timeline import Timeline, assemble
 from pipeline.audio.turns import group_turns
 from pipeline.models import Line, Script, Segment
 
@@ -82,16 +82,19 @@ def _timeline(lines):
     return assemble(turns, rendered, sr=SR)
 
 
-def test_music_drops_under_the_voices_and_leaves_with_the_hook():
-    music = _tone(10.0)
-    bed = under_voices(music, SR, voices_at=2.0, until=6.0)
-    alone, under = _rms_db(bed[: SR]), _rms_db(bed[int(2.2 * SR): int(4.5 * SR)])
+def test_music_goes_under_the_voices_and_comes_up_between_them():
+    music = _tone(20.0)
+    bed = under_voices(music, SR, [(2.0, 6.0), (9.0, 12.0)], until=16.0)
+    alone, under = _rms_db(bed[: SR]), _rms_db(bed[int(2.2 * SR): int(5.8 * SR)])
     assert abs(alone - _rms_db(music[: SR])) < 0.1 and abs((alone - under) - HOOK_DUCK_DB) < 0.2
-    assert len(bed) == 7 * SR and _rms_db(bed[-SR // 10:]) < under - 20  # gone a second after the last hook line
-    whole = under_voices(music, SR, voices_at=2.0, until=30.0)  # the hook outlasts the music: it plays to its end
-    assert len(whole) == len(music) and abs(_rms_db(whole[-SR:]) - under) < 0.2
-    stereo = under_voices(np.stack([music, music * 0.5], axis=1), SR, voices_at=2.0, until=6.0)
-    assert stereo.shape == (7 * SR, 2) and abs(_rms_db(stereo[: SR, 0]) - _rms_db(stereo[: SR, 1]) - 6.0) < 0.1
+    assert abs(_rms_db(bed[int(7.2 * SR): int(8.2 * SR)]) - alone) < 0.2  # up again between the two voices
+    assert abs(_rms_db(bed[int(9.2 * SR): int(11.8 * SR)]) - under) < 0.2
+    assert len(bed) == 16 * SR and _rms_db(bed[-SR // 10:]) < under - 10  # faded out by the time it has to be gone
+    tight = under_voices(music, SR, [(2.0, 6.0), (6.5, 9.0)])  # half a second of silence is no place for a swell
+    assert abs(_rms_db(tight[int(6.1 * SR): int(6.4 * SR)]) - under) < 0.2
+    assert len(tight) == len(music) and abs(_rms_db(tight[-SR:]) - alone) < 0.2  # no end given: it plays out
+    stereo = under_voices(np.stack([music, music * 0.5], axis=1), SR, [(2.0, 6.0)], until=8.0)
+    assert stereo.shape == (8 * SR, 2) and abs(_rms_db(stereo[: SR, 0]) - _rms_db(stereo[: SR, 1]) - 6.0) < 0.1
 
 
 def test_music_that_grows_is_evened_out_by_half():
@@ -102,22 +105,26 @@ def test_music_that_grows_is_evened_out_by_half():
     assert np.array_equal(even_out(np.zeros(SR, dtype=np.float32), SR), np.zeros(SR, dtype=np.float32))
 
 
-def test_mix_with_music_under_the_hook():
+def test_mix_with_music_under_the_voices():
     tl = _timeline([
         Line(id="l001", speaker="tessa", text="Dit is de eerste regel van de test met genoeg woorden erin."),
         Line(id="l002", speaker="joris", text="En dit de tweede regel, ook met genoeg woorden."),
     ])
     plain, plain_offset = mix(tl, sr=SR)
+    later = Timeline(placements=[p.moved(HOOK_LEAD_S) for p in tl.placements], sr=SR)  # the music is heard first
     t = np.arange(44100 * 20) / 44100
     music = AudioClip(np.stack([0.1 * np.sin(2 * np.pi * 330 * t), 0.1 * np.sin(2 * np.pi * 495 * t)], axis=1).astype(np.float32), 44100)
-    mixed, offset = mix(tl, sr=SR, hook=music)
+    mixed, offset = mix(later, sr=SR, music=music)
     assert mixed.samples.ndim == 1  # a mono episode stays mono, whatever the music is
-    assert abs(offset - (plain_offset + HOOK_LEAD_S)) < 1e-6  # the voices wait for the music
+    assert offset == plain_offset  # the timeline says where the voices are; the music starts with it
     assert abs(measure_lufs(mixed.samples, SR) + 16.0) < 1.0 and float(np.max(np.abs(mixed.samples))) <= 0.985
-    lead = mixed.samples[int(0.5 * SR): int((offset - 0.8) * SR)]
+    first_word = offset + later.placements[0].start
+    lead = mixed.samples[int(0.5 * SR): int((first_word - 0.8) * SR)]
     assert _rms_db(lead) > _rms_db(plain.samples[: int(0.25 * SR)]) + 30  # music before the first word, not room tone
-    assert mixed.duration_s < offset + tl.duration + 2.5  # 20 s of music does not outlast 6 s of hook
+    assert mixed.duration_s < offset + later.duration + 2.5  # 20 s of music does not outlast the voices
     assert _rms_db(mixed.samples[-SR // 20:]) < _rms_db(lead) - 30
+    transcript = build_transcript(later, Script(episode_id="ch01", segments=[]), offset=offset, duration_s=mixed.duration_s)
+    assert abs(transcript.lines[0].start - first_word) < 0.1
 
 
 def test_hook_music_file(tmp_path):
