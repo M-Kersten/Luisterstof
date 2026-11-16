@@ -402,7 +402,7 @@ def test_the_checkpoint_is_part_of_the_render_cache_key(tmp_path):
 
 
 def test_v3_loads_through_our_own_loader_because_the_pypi_package_only_knows_v2(tmp_path, monkeypatch):
-    """chatterbox-tts 0.1.7 hardcodes V2, so from_local is mirrored in the repo to reach the V3 weights."""
+    """chatterbox-tts 0.1.7 on PyPI hardcodes V2, so from_local is mirrored in the repo for it."""
     from pipeline.audio import synth
 
     calls: list[dict] = []
@@ -436,15 +436,31 @@ def test_v3_loads_through_our_own_loader_because_the_pypi_package_only_knows_v2(
     with pytest.raises(RuntimeError, match="t3_mtl23ls_v3.safetensors"):
         synth.load_multilingual_model("cuda")  # no silent fallback: one episode, one voice
 
-    # a chatterbox that does accept t3_model may load V3 itself
+    # GitHub main loads V3 itself, from the same checkpoint folder (CHATTERBOX_CKPT_DIR still counts)
     @classmethod
-    def from_pretrained_v3(cls, device, t3_model=None):
-        calls.append({"from_pretrained": (device, t3_model)})
-        return "new-package-model"
+    def from_local_v3(cls, ckpt_dir, device, t3_model=None):
+        calls.append({"native": (str(ckpt_dir), device, t3_model)})
+        return "native-model"
 
-    mtl.ChatterboxMultilingualTTS = type("ChatterboxMultilingualTTS", (), {"from_pretrained": from_pretrained_v3})
-    assert synth.load_multilingual_model("cuda") == "new-package-model"
-    assert calls[-1]["from_pretrained"] == ("cuda", synth.T3_CHECKPOINT)
+    mtl.ChatterboxMultilingualTTS = type("ChatterboxMultilingualTTS", (),
+                                         {"from_pretrained": from_pretrained, "from_local": from_local_v3})
+    assert synth.load_multilingual_model("cuda") == "native-model"
+    assert calls[-1]["native"] == (str(Path(tmp_path)), "cuda", synth.T3_CHECKPOINT)
+
+
+def test_doctor_tells_github_main_from_a_pypi_release(tmp_path, monkeypatch):
+    from pipeline.audio import synth
+
+    pkg = tmp_path / "chatterbox"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "mtl_tts.py").write_text('DEFAULT_MULTILINGUAL_T3_MODEL = "t3_mtl23ls_v2.safetensors"\n')
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "chatterbox", raising=False)
+    assert synth.chatterbox_has_native_v3() is False
+    (pkg / "mtl_tts.py").write_text('MODELS = {"v3": "t3_mtl23ls_v3.safetensors"}\n')
+    assert synth.chatterbox_has_native_v3() is True
+    assert synth.CHATTERBOX_COMMIT in synth.CHATTERBOX_UPGRADE and "--no-deps" in synth.CHATTERBOX_UPGRADE
 
 
 def _fake_mtl(monkeypatch, package_vocab: int, checkpoint_vocab: int, built: dict):

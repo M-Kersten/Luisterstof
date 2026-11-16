@@ -401,6 +401,7 @@ def _doctor_chatterbox(settings: Settings) -> None:
         CHATTERBOX_MIN_VERSION,
         CHATTERBOX_UPGRADE,
         T3_CHECKPOINT,
+        chatterbox_has_native_v3,
         chatterbox_required,
         chatterbox_version,
         chatterbox_version_ok,
@@ -410,8 +411,11 @@ def _doctor_chatterbox(settings: Settings) -> None:
     if found and not chatterbox_version_ok(found):
         typer.echo(f"chatterbox-tts: {found} is too old for {T3_CHECKPOINT} (needs {CHATTERBOX_MIN_VERSION}+, "
                    f"the 2454-token vocabulary). Upgrade: {CHATTERBOX_UPGRADE}")
+    elif found and chatterbox_has_native_v3():
+        typer.echo(f"chatterbox-tts: {found}, GitHub main with native V3")
     elif found:
-        typer.echo(f"chatterbox-tts: {found}")
+        typer.echo(f"chatterbox-tts: {found} from PyPI: V3 loads, but with the V2 alignment analyzer that "
+                   f"Resemble removed for V3. Upgrade: {CHATTERBOX_UPGRADE}")
     local = os.environ.get("CHATTERBOX_CKPT_DIR")
     if local:
         roots = [Path(local).expanduser()]
