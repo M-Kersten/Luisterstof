@@ -594,6 +594,7 @@ mark.srcmark--missing:hover, mark.srcmark--missing.is-active { background: color
 .segment { display: flex; align-items: baseline; gap: var(--space-3); margin: var(--space-5) 0 var(--space-2); padding-bottom: var(--space-1); border-bottom: 1px solid var(--line); }
 .segment:first-child { margin-top: var(--space-2); }
 .segment__type { font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--brand); }
+.segment__question { color: var(--text-subtle); font-size: 13px; line-height: 16px; font-style: italic; }
 .segment__covers { color: var(--text-subtle); font-size: 12px; margin-left: auto; display: none; }
 .show-details .segment__covers { display: inline; }
 .line { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 2px var(--space-4); padding: var(--space-2) var(--space-3) var(--space-2) var(--space-2); border-left: 3px solid transparent; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }

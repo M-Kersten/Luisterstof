@@ -38,7 +38,7 @@ from pipeline.plan.glossary import load_or_create_glossary
 from pipeline.script.audit import audit_script
 from pipeline.script.cast import append_continuity, load_banned, load_cast, load_continuity
 from pipeline.script.continuity import extract_continuity
-from pipeline.script.writer import Writer, naturalness_issues
+from pipeline.script.writer import Writer, comprehension_issues, naturalness_issues
 from pipeline.timings import PassTiming, new_run_id, now_iso
 from pipeline.timings import append as append_timing
 
@@ -390,11 +390,12 @@ class Pipeline:
     def _needs_rewrite(self, audit: AuditResult) -> bool:
         """Whether another rewrite round is warranted.
 
-        A blocking issue always is. In quality mode a script that passes but speaks flat is not done
+        A blocking issue always is, and so is a line a first-time listener cannot follow or a hard claim
+        that is stated but never explained. In quality mode a script that passes but speaks flat is not done
         either: interruptions and reactions have to be written in, and a run that may take all night
         should spend some of it on the part the listener actually hears.
         """
-        if not audit.passed:
+        if not audit.passed or comprehension_issues(audit):
             return True
         return self.settings.quality_mode and bool(naturalness_issues(audit))
 

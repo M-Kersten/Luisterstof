@@ -155,3 +155,31 @@ def test_the_dialogue_edit_can_be_switched_off(ingested):
     p.settings = p.settings.with_(script_polish=False)
     p.run_chapter("demo", "ch01", upto="script")
     assert not any(c.task == "script_polish" for c in p.llm.calls)
+
+
+def test_a_script_the_listener_cannot_follow_goes_back_to_the_writer(ingested):
+    """Not blocking, and still not done: a reference nobody set up is rewritten in the normal mode too, in the
+    segment it is in, with the listener's note."""
+    p = ingested
+    p.plan("demo", "ch01")
+    heard = {"n": 0}
+
+    def listener(req):
+        heard["n"] += 1
+        user = req.user if isinstance(req.user, str) else ""
+        first = user.split("[", 1)[1].split("]", 1)[0]
+        if heard["n"] == 2:  # the first body block of the first audit
+            return {"hits": [{"line_id": first, "rule": "no_antecedent", "explanation": "Wie is Ellen? Ze is nooit genoemd."}]}
+        return {"hits": []}
+
+    p.llm.on("listener", listener)
+    p.settings = p.settings.with_(script_polish=False)
+    script, audit = p.script("demo", "ch01")
+    rewrites = [c for c in p.llm.calls if c.task == "script_segment" and c.metadata.get("revision")]
+    assert len(rewrites) == 1 and "Wie is Ellen?" in rewrites[0].user  # one segment, with what the listener missed
+    assert script.revision == 2 and not [i for i in audit.issues if i.rule == "no_antecedent"]
+
+    p.settings = p.settings.with_(script_listener=False)
+    before = len([c for c in p.llm.calls if c.task in ("listener", "landing")])
+    p.audit("demo", "ch01")
+    assert len([c for c in p.llm.calls if c.task in ("listener", "landing")]) == before  # switched off: no calls

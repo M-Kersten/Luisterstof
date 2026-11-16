@@ -33,7 +33,8 @@ HANDLERS = {"LexiconOut": fh.fake_lexicon, "SegmentOut": fh.fake_script_segment,
             "PerformanceSegmentOut": fh.fake_script_scene, "SupportOut": fh.fake_support,
             "ContinuityOut": fh.fake_continuity, "SectionPlanOut": fh.fake_plan_section,
             "QuoteFixOut": fh.fake_plan_quotes, "PlanMergeOut": fh.fake_plan_merge,
-            "PlanReviewOut": fh.fake_plan_review, "LintOut": fh.fake_lint, "StructureGuess": fh.fake_structure}
+            "PlanReviewOut": fh.fake_plan_review, "LintOut": fh.fake_lint, "StructureGuess": fh.fake_structure,
+            "OutlineOut": fh.fake_script_outline, "ListenerOut": fh.fake_listener, "LandingOut": fh.fake_landing}
 
 
 class Answer(BaseModel):
@@ -337,8 +338,8 @@ def test_whole_script_chain_runs_over_the_opencode_endpoint(tmp_path, cast_dir, 
     assert out["render"].is_file() and out["script"].segments
 
     titles = {schema_in(prompt)["title"] for prompt in server.prompts()}
-    assert {"SectionPlanOut", "QuoteFixOut", "PlanMergeOut", "PlanReviewOut", "LexiconOut", "SegmentOut",
-            "SupportOut", "ContinuityOut"} <= titles
+    assert {"SectionPlanOut", "QuoteFixOut", "PlanMergeOut", "PlanReviewOut", "LexiconOut", "OutlineOut", "SegmentOut",
+            "SupportOut", "ListenerOut", "ContinuityOut"} <= titles
     assert all(set(body) == {"prompt", "model"} for body in server.bodies())
     assert all(body["model"] == {"providerID": "strata", "id": "strata"} for body in server.bodies())
 

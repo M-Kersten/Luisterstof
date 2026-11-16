@@ -27,6 +27,7 @@ from pipeline.models import (
     Cast,
     ContentPlan,
     ContinuityEntry,
+    EpisodeOutline,
     Glossary,
     Guest,
     KeyClaim,
@@ -36,7 +37,8 @@ from pipeline.models import (
     Segment,
     SegmentType,
 )
-from pipeline.script.cast import cast_bible_text, continuity_text, pick_guest, voice_samples_text
+from pipeline.script.cast import cast_bible_text, continuity_text, pick_guest, story_seeds, voice_samples_text
+from pipeline.script.outline import MAX_MOMENTS, fallback_outline, plan_outline
 from pipeline.tags import known_tags
 
 log = logging.getLogger(__name__)
@@ -60,10 +62,7 @@ class SegmentBrief:
 SEGMENT_SECONDS = {
     "cold_open": 55,
     "recap": 90,
-    "guest": 6 * 60,
-    "reexplain": 3 * 60,
-    "quiz": 3.5 * 60,
-    "outro": 30,
+    "outro": 40,
 }
 
 
@@ -73,62 +72,157 @@ SEGMENT_SECONDS = {
 # one, and STUDIEPODCAST_TARGET_MINUTES is the ceiling.
 SECONDS_PER_CLAIM = {1: 15, 2: 25, 3: 40, 4: 60, 5: 85}
 SECONDS_PER_MISCONCEPTION = 10
-FRAME_SECONDS = 120  # cold open, a short quiz, the outro
 MIN_EPISODE_MINUTES = 6
-GUEST_MIN_MINUTES = 15  # a six-minute guest in a ten-minute episode is padding
+GUEST_MIN_MINUTES = 15  # a guest in a ten-minute episode is padding
+GUEST_MAX_CLAIMS = 4
+GUEST_INTRO_SECONDS = 40  # bringing someone in, and the hosts saying it back in plain words
+GUEST_TALK_FACTOR = 1.3  # three people take longer over the same point than two
 REEXPLAIN_MIN_DIFFICULTY = 4  # a second route only for a claim that is actually hard
+REEXPLAIN_SECONDS = 120
 QUIZ_SECONDS_PER_QUESTION = 50
-HUMAN_MOMENT_SECONDS = 45  # each body block makes room for a story, an argument, a tease or an aha, told at length
+HUMAN_MOMENT_SECONDS = 45  # a story, an argument or an aha, told at length
+BODY_SHORTFALL = 0.9  # below this share of what the claims need, the extras go before the claims are squeezed
+PASSAGE_CONTEXT = 400  # characters of the book on either side of a claim's quote that the writer gets to read
 
 
 def _block_count(claims: list[KeyClaim]) -> int:
     return max(3, min(5, round(len(claims) / 4))) if claims else 3
 
 
-def human_moment(i: int, explainer, skeptic) -> tuple[str, str]:
-    """(kind, instruction) for body block ``i`` (1-based). The kinds rotate so no two neighbouring blocks get the
-    same beat, and the anecdotes alternate between the hosts."""
-    kinds = ("anekdote", "meningsverschil", "plagen", "kwartje")
-    kind = kinds[(i - 1) % len(kinds)]
-    teller, listener = (explainer, skeptic) if ((i - 1) // len(kinds)) % 2 == 0 else (skeptic, explainer)
+def claim_seconds(claims: list[KeyClaim]) -> float:
+    return float(sum(SECONDS_PER_CLAIM.get(max(1, min(5, c.difficulty)), 35) for c in claims))
+
+
+def human_moment(kind: str, explainer, skeptic, *, note: str = "", teller=None) -> str:
+    """The instruction for one human moment. Which block gets which moment is the outline's call: a story in
+    every block is a format, and a format is what makes a conversation sound written."""
+    teller = teller or explainer
+    listener = skeptic if teller is explainer else explainer
     text = {
-        "anekdote": (f"{teller.name} vertelt iets uit eigen leven dat bij één van deze beweringen past: uit de "
-                     f"verhalen van {teller.name}, of een nieuw verhaal dat bij die persoon past. Als een echt verhaal, in "
-                     "een paar lange beurten: waar en wanneer, wie erbij was, wat er misging of verraste, hoe het afliep, "
-                     f"met de omwegen die mensen maken als ze vertellen. {listener.name} vraagt ertussen door en reageert op "
-                     "het verhaal zelf, voordat het gesprek terug naar de stof gaat."),
-        "meningsverschil": (f"{explainer.name} en {skeptic.name} zijn het hier echt oneens over de stof, allebei met een "
-                            "punt. Het wordt niet in één regel opgelost: ze duwen een paar keer heen en weer en komen er "
-                            "samen uit, met de bron als scheidsrechter."),
-        "plagen": (f"{skeptic.name} plaagt {explainer.name} (of andersom) met iets uit hun gedeelde geschiedenis of iets van "
-                   "eerder in deze aflevering, en de ander pareert. Kort en warm, daarna verder met de stof."),
+        "anekdote": (f"{teller.name} vertelt iets uit eigen leven dat dit punt duidelijker maakt. Als een echt verhaal, "
+                     "in een paar lange beurten: waar en wanneer, wie erbij was (zeg erbij wie dat is), wat er misging "
+                     f"of verraste, hoe het afliep. {listener.name} reageert op het verhaal zelf. Daarna zegt "
+                     f"{teller.name} hardop wat het verhaal met de stof te maken heeft. Een verhaal dat niet over dit "
+                     "punt gaat, vertel je niet."),
+        "meningsverschil": (f"{explainer.name} en {skeptic.name} zijn het hier echt oneens over wat de stof betekent, "
+                            "allebei met een punt. Het wordt niet in één regel opgelost: ze duwen een paar keer heen en "
+                            "weer en komen er samen uit. Wie een vraag stelt of een bezwaar maakt, krijgt daar antwoord op."),
+        "plagen": (f"{skeptic.name} plaagt {explainer.name} (of andersom) met iets wat eerder in deze aflevering is "
+                   "gezegd, en de ander pareert. Kort en warm, daarna verder met de stof."),
         "kwartje": (f"Bij {skeptic.name} valt hoorbaar het kwartje: eerst verwarring, dan het moment dat het klikt, en dan "
-                    f"vertelt {skeptic.name} het in een paar eigen zinnen terug, met een eigen voorbeeld erbij. "
-                    f"{explainer.name} laat dat moment staan en praat er niet meteen overheen."),
-    }[kind]
-    return kind, text
+                    f"vertelt {skeptic.name} het in een paar eigen zinnen terug. {explainer.name} zegt of het klopt en "
+                    "praat er niet meteen overheen."),
+    }.get(kind, "")
+    if text and note:
+        text += f" Uit het draaiboek: {note}"
+    return text
 
 
-def episode_minutes(plan: ContentPlan, max_minutes: int) -> int:
-    """The episode length this plan carries, between MIN_EPISODE_MINUTES and ``max_minutes``."""
-    body = sum(SECONDS_PER_CLAIM.get(max(1, min(5, c.difficulty)), 35) for c in plan.key_claims)
-    body += SECONDS_PER_MISCONCEPTION * len(plan.misconceptions)
-    body += HUMAN_MOMENT_SECONDS * _block_count(list(plan.key_claims))
-    return max(MIN_EPISODE_MINUTES, min(max_minutes, math.ceil((body + FRAME_SECONDS) / 60)))
+def _moment_teller(note: str, explainer, skeptic):
+    """Whose story an anecdote is: the host the outline's note names, else the explainer."""
+    low = note.casefold()
+    named = [h for h in (explainer, skeptic) if h.name.casefold() in low]
+    return named[0] if len(named) == 1 else explainer
 
 
 def quiz_questions(target_minutes: int) -> int:
     return 2 if target_minutes < 10 else 3 if target_minutes < 18 else 4
 
 
-def _assign_misconceptions(misconceptions: list, clusters: list[list[KeyClaim]], open_claim: KeyClaim | None,
+def guest_claims(plan: ContentPlan, guest: Guest | None, target_minutes: int) -> list[KeyClaim]:
+    """The claims a guest tells: the hardest few, in the order of the book. They are the guest's alone. Told
+    by the hosts first and by the guest again, a claim is heard twice in the same words."""
+    if guest is None or not plan.needs_expert or target_minutes < GUEST_MIN_MINUTES:
+        return []
+    claims = list(plan.key_claims)
+    share = max(1, min(GUEST_MAX_CLAIMS, len(claims) // 3))
+    hard = {c.id for c in sorted(claims, key=lambda c: -c.difficulty)[:share]}
+    return [c for c in claims if c.id in hard]
+
+
+@dataclass
+class Shape:
+    """What an episode holds and how its seconds are divided. The claims come first: a guest and a second
+    route are extras, and they go when the body would otherwise get less time than its claims need."""
+    body_claims: list[KeyClaim]
+    guest_claims: list[KeyClaim]
+    reexplain: KeyClaim | None
+    n_quiz: int
+    seconds: dict[str, float]
+
+
+def _body_need(claims: list[KeyClaim], plan: ContentPlan, moments: int) -> float:
+    return claim_seconds(claims) + SECONDS_PER_MISCONCEPTION * len(plan.misconceptions) + HUMAN_MOMENT_SECONDS * moments
+
+
+def plan_shape(plan: ContentPlan, *, guest: Guest | None, target_minutes: int, has_recap: bool = False,
+               moments: int = 0) -> Shape:
+    total = target_minutes * 60
+    claims = list(plan.key_claims)
+    n_quiz = quiz_questions(target_minutes)
+    seconds = {"cold_open": float(SEGMENT_SECONDS["cold_open"]), "outro": float(SEGMENT_SECONDS["outro"]),
+               "quiz": float(QUIZ_SECONDS_PER_QUESTION * n_quiz),
+               "recap": min(float(SEGMENT_SECONDS["recap"]), 0.08 * total) if has_recap else 0.0,
+               "guest": 0.0, "reexplain": 0.0}
+    frame = seconds["cold_open"] + seconds["outro"] + seconds["quiz"] + seconds["recap"]
+    hardest = plan.hardest_claim()
+    second_route = hardest if hardest is not None and hardest.difficulty >= REEXPLAIN_MIN_DIFFICULTY else None
+    for_guest = guest_claims(plan, guest, target_minutes)
+
+    def room(guest_part: list[KeyClaim], again: KeyClaim | None) -> tuple[float, float]:
+        """(seconds the body gets, seconds its claims need) with these extras in."""
+        ids = {c.id for c in guest_part}
+        guest_s = claim_seconds(guest_part) * GUEST_TALK_FACTOR + GUEST_INTRO_SECONDS if guest_part else 0.0
+        need = _body_need([c for c in claims if c.id not in ids], plan, moments)
+        return total - frame - guest_s - (REEXPLAIN_SECONDS if again else 0.0), need
+
+    got, need = room(for_guest, second_route)
+    if got < BODY_SHORTFALL * need and second_route is not None:
+        second_route = None
+        got, need = room(for_guest, None)
+    if got < BODY_SHORTFALL * need and for_guest:
+        for_guest = []
+        got, need = room([], None)
+    if for_guest:
+        seconds["guest"] = claim_seconds(for_guest) * GUEST_TALK_FACTOR + GUEST_INTRO_SECONDS
+    if second_route is not None:
+        seconds["reexplain"] = float(REEXPLAIN_SECONDS)
+    seconds["body"] = max(3 * 60.0, got)
+    ids = {c.id for c in for_guest}
+    return Shape(body_claims=[c for c in claims if c.id not in ids], guest_claims=for_guest, reexplain=second_route,
+                 n_quiz=n_quiz, seconds=seconds)
+
+
+def episode_minutes(plan: ContentPlan, max_minutes: int, *, with_guest: bool = False) -> int:
+    """The episode length this plan carries, between MIN_EPISODE_MINUTES and ``max_minutes``: what the claims
+    need, plus the frame around them, plus the second route and the guest where the plan asks for them."""
+    claims = list(plan.key_claims)
+    need = _body_need(claims, plan, min(MAX_MOMENTS, _block_count(claims)))
+    hardest = plan.hardest_claim()
+    if hardest is not None and hardest.difficulty >= REEXPLAIN_MIN_DIFFICULTY:
+        need += REEXPLAIN_SECONDS
+    if with_guest and plan.needs_expert:
+        need += GUEST_INTRO_SECONDS
+    minutes = MIN_EPISODE_MINUTES
+    for n_quiz in (2, 3, 4):
+        frame = SEGMENT_SECONDS["cold_open"] + SEGMENT_SECONDS["outro"] + QUIZ_SECONDS_PER_QUESTION * n_quiz
+        minutes = math.ceil((need + frame) / 60)
+        if quiz_questions(minutes) <= n_quiz:
+            break
+    return max(MIN_EPISODE_MINUTES, min(max_minutes, minutes))
+
+
+def _about(text: str, claims: list[KeyClaim]) -> float:
+    return max((fuzz.token_set_ratio(text, c.claim) for c in claims), default=0.0)
+
+
+def _assign_misconceptions(misconceptions: list, clusters: list[list[KeyClaim]], open_claim: KeyClaim | None = None,
                            min_score: float = 50.0) -> tuple[object | None, dict[int, object]]:
     """Each misconception goes to the block whose claims it is about (at most one per block), never by its
-    position in the list: a misconception about 1584 does not belong in the block about 1566. The cold open
-    may take one that is about its own claim."""
+    position in the list: a misconception about 1584 does not belong in the block about 1566. With
+    ``open_claim`` the opening may take one that is about that claim."""
     def about(m, claims: list[KeyClaim]) -> float:
-        text = f"{m.wrong} {m.right}"
-        return max((fuzz.token_set_ratio(text, c.claim) for c in claims), default=0.0)
+        return _about(f"{m.wrong} {m.right}", claims)
 
     pool = list(misconceptions)
     opener = None
@@ -156,18 +250,96 @@ def _claim_text(c: KeyClaim) -> str:
     return f"[{c.id}] (moeilijkheid {c.difficulty}, tentamen {c.exam_relevance}) {c.claim}"
 
 
-def _cluster(claims: list[KeyClaim], n_blocks: int) -> list[list[KeyClaim]]:
-    if not claims:
-        return []
-    n_blocks = max(1, min(n_blocks, len(claims)))
-    size = len(claims) / n_blocks
-    clusters: list[list[KeyClaim]] = []
-    for i in range(n_blocks):
-        start, end = round(i * size), round((i + 1) * size)
-        chunk = claims[start:end]
-        if chunk:
-            clusters.append(chunk)
-    return clusters
+def _claim_rows(claims: list[KeyClaim], *, numbered: bool = False) -> list[str]:
+    rows = []
+    for n, c in enumerate(claims, start=1):
+        rows.append((f"{n}. " if numbered else "") + _claim_text(c))
+        if c.context:
+            rows.append(f"   eerst vertellen, anders kan de luisteraar dit niet plaatsen: {c.context}")
+    return rows
+
+
+def _sentence_window(text: str, start: int, end: int) -> tuple[int, int]:
+    """[start, end) widened to whole sentences."""
+    before = max(text.rfind(mark, 0, start) for mark in (". ", "? ", "! ", "\n"))
+    after = min((i for i in (text.find(mark, end) for mark in (". ", "? ", "! ", "\n")) if i >= 0), default=len(text) - 1)
+    return (before + 1 if before >= 0 else 0), min(len(text), after + 1)
+
+
+def source_passages(book: Book | None, claims: list[KeyClaim], context: int = PASSAGE_CONTEXT) -> list[str]:
+    """What the book says around these claims, as rows for a brief. A claim's own quote is one sentence, and
+    a writer who gets one sentence reads it out. The paragraph around it has who did the study, what the
+    setup was and why the outcome is what it is. Passages that overlap are joined, so a block about one
+    experiment gets that experiment once. Without a book: the bare quotes."""
+    spans: list[tuple[str, int, int, list[str]]] = []
+    loose: list[str] = []
+    for c in claims:
+        span = c.source_span
+        text = None
+        if book is not None:
+            try:
+                text = book.section(span.section).text
+            except KeyError:
+                text = None
+        if text is None or span.end <= span.start or span.end > len(text):
+            if span.quote:
+                loose.append(f"  bij {c.id}: \"{span.quote[:300]}\"")
+            continue
+        start, end = _sentence_window(text, max(0, span.start - context), min(len(text), span.end + context))
+        spans.append((span.section, start, end, [c.id]))
+    spans.sort(key=lambda s: (s[0], s[1]))
+    merged: list[tuple[str, int, int, list[str]]] = []
+    for sec, start, end, ids in spans:
+        if merged and merged[-1][0] == sec and start <= merged[-1][2]:
+            last = merged[-1]
+            merged[-1] = (sec, last[1], max(last[2], end), last[3] + ids)
+        else:
+            merged.append((sec, start, end, ids))
+    rows = []
+    for sec, start, end, ids in merged:
+        passage = " ".join(book.section(sec).text[start:end].split())  # type: ignore[union-attr]
+        rows.append(f"  bij {', '.join(ids)}: \"{passage}\"")
+    return rows + loose
+
+
+BACKGROUND_HEADER = ("Wat er in het boek omheen staat. Lees het om te snappen wie, wat en waarom; vertel het na in je "
+                     "eigen woorden en neem er geen zin letterlijk uit over:")
+
+
+def _fit_outline(outline: EpisodeOutline | None, plan: ContentPlan, claims: list[KeyClaim]) -> EpisodeOutline:
+    """The outline over exactly these claims: an id that is not among them goes, a claim no block has is added
+    to the last one. Without an outline the claims go into blocks in book order."""
+    if outline is None or not outline.blocks:
+        return fallback_outline(plan, claims, _block_count(claims))
+    known = {c.id for c in claims}
+    seen: set[str] = set()
+    blocks = []
+    for b in outline.blocks:
+        ids = [cid for cid in b.claims if cid in known and cid not in seen]
+        seen.update(ids)
+        if ids:
+            blocks.append(b.model_copy(update={"claims": ids}))
+    if not blocks:
+        return fallback_outline(plan, claims, _block_count(claims))
+    blocks[-1].claims += [c.id for c in claims if c.id not in seen]
+    return outline.model_copy(update={"blocks": blocks})
+
+
+def _quiz_claims(blocks: list[list[KeyClaim]], n: int) -> list[KeyClaim]:
+    """One question per block where that works, the hardest of the claims that matter for the exam: a quiz on
+    the four easiest facts tests whether someone was awake, not whether they understood."""
+    def rank(c: KeyClaim) -> tuple:
+        return (-c.exam_relevance, -c.difficulty)
+
+    everything = [c for block in blocks for c in block]
+    if any(c.exam_relevance >= 4 for c in everything):
+        blocks = [[c for c in block if c.exam_relevance >= 4] for block in blocks]
+        everything = [c for block in blocks for c in block]
+    picked = sorted((min(block, key=rank) for block in blocks if block), key=rank)[:n]
+    rest = sorted((c for c in everything if c not in picked), key=rank)
+    picked += rest[:max(0, n - len(picked))]
+    order = {c.id: i for i, c in enumerate(everything)}
+    return sorted(picked, key=lambda c: order[c.id])
 
 
 def build_blueprint(
@@ -179,50 +351,43 @@ def build_blueprint(
     next_chapter_title: str | None,
     target_minutes: int,
     chars_per_second: float,
+    outline: EpisodeOutline | None = None,
+    book: Book | None = None,
 ) -> list[SegmentBrief]:
     explainer, skeptic = cast.by_role("explainer"), cast.by_role("skeptic")
     hosts = [explainer.id, skeptic.id]
     briefs: list[SegmentBrief] = []
 
-    total_seconds = target_minutes * 60
-    claims = list(plan.key_claims)
-    top = sorted(claims, key=lambda c: (-c.exam_relevance, c.difficulty))
-    hardest = plan.hardest_claim()
-    with_guest = guest is not None and plan.needs_expert and target_minutes >= GUEST_MIN_MINUTES
-    with_reexplain = hardest is not None and hardest.difficulty >= REEXPLAIN_MIN_DIFFICULTY
-    n_quiz = quiz_questions(target_minutes)
-    seconds = {
-        "cold_open": SEGMENT_SECONDS["cold_open"],
-        "outro": SEGMENT_SECONDS["outro"],
-        "quiz": QUIZ_SECONDS_PER_QUESTION * n_quiz,
-        "recap": min(SEGMENT_SECONDS["recap"], 0.08 * total_seconds),
-        "guest": min(SEGMENT_SECONDS["guest"], 0.25 * total_seconds),
-        "reexplain": min(SEGMENT_SECONDS["reexplain"], 0.15 * total_seconds),
-    }
-    fixed = seconds["cold_open"] + seconds["quiz"] + seconds["outro"]
-    if previous_plan is not None:
-        fixed += seconds["recap"]
-    if with_guest:
-        fixed += seconds["guest"]
-    if with_reexplain:
-        fixed += seconds["reexplain"]
-    body_seconds = max(3 * 60, total_seconds - fixed)
+    moments = sum(1 for b in (outline.blocks if outline else []) if b.moment)
+    shape = plan_shape(plan, guest=guest, target_minutes=target_minutes, has_recap=previous_plan is not None,
+                       moments=moments)
+    seconds = shape.seconds
+    outline = _fit_outline(outline, plan, shape.body_claims)
+    by_id = {c.id: c for c in plan.key_claims}
+    clusters = [[by_id[cid] for cid in b.claims] for b in outline.blocks]
+    question = outline.question or (plan.chapter_title if (plan.chapter_title or "").endswith("?") else "")
 
-    clusters = _cluster(claims, _block_count(claims))
-
-    # Cold open: an argument about something from the chapter.
-    open_claim = top[0] if top else None
-    misconception, block_misconceptions = _assign_misconceptions(plan.misconceptions, clusters, open_claim)
+    # Opening: a place to stand and the question the episode answers.
+    _, block_misconceptions = _assign_misconceptions(plan.misconceptions, clusters)
     briefs.append(SegmentBrief(
         type="cold_open", title="Koude opening",
-        covers=[open_claim.id] if open_claim else [],
+        covers=[],
         target_chars=_chars(seconds["cold_open"], chars_per_second),
         speakers=hosts,
         instructions=(
-            "De hosts zitten al midden in een meningsverschil over iets uit dit hoofdstuk. Geen intro, geen welkom, "
-            "geen namen noemen als begroeting. Begin midden in een zin of midden in een bezwaar. "
-            + (f"Onderwerp van het meningsverschil: {open_claim.claim}" if open_claim else "")
-            + (f"\nEventueel als inzet: de misvatting '{misconception.wrong}'." if misconception else "")
+            "Dit is het begin van de aflevering. De luisteraar weet nog niets: niet waar het over gaat en niet wat "
+            "jullie eerder bespraken. Begin daarom niet midden in een discussie.\n"
+            + (f"Begin in deze situatie: {outline.opening}\n" if outline.opening else
+               "Begin in een herkenbare situatie uit het gewone leven die bij dit hoofdstuk hoort.\n")
+            + f"{explainer.name} schetst die situatie in gewone woorden, {skeptic.name} reageert als iemand die het "
+            "herkent of juist niet. Na drie regels weet de luisteraar waar deze aflevering over gaat.\n"
+            "Wat hier niet in mag: een vakterm, een getal, de naam van een onderzoeker, een vergelijking of "
+            "beeldspraak, iets uit het leven van de hosts, een verwijzing naar iets wat nog niet is uitgelegd.\n"
+            + (f"Het eindigt met de vraag waar de aflevering om draait, hardop gesteld door {skeptic.name}: "
+               f"\"{question}\" Die vraag wordt hier nog niet beantwoord.\n" if question else
+               f"Het eindigt met de vraag waar de aflevering om draait, hardop gesteld door {skeptic.name} in "
+               "gewone woorden. Die vraag wordt hier nog niet beantwoord.\n")
+            + "Geen welkom en geen namen als begroeting. Dit segment dekt geen beweringen: 'covers' blijft leeg."
         ),
     ))
 
@@ -245,48 +410,82 @@ def build_blueprint(
             extra={"previous_chapter": previous_plan.chapter_id},
         ))
 
-    # Body blocks.
-    per_block_chars = _chars(body_seconds / max(1, len(clusters)), chars_per_second)
+    # Body blocks: one question each, in the order of the outline.
+    needs = [claim_seconds(cl) + (HUMAN_MOMENT_SECONDS if b.moment else 0) + (SECONDS_PER_MISCONCEPTION if i in block_misconceptions else 0)
+             for i, (b, cl) in enumerate(zip(outline.blocks, clusters, strict=True))]
+    example_block = None
+    if plan.worked_example and plan.worked_example.steps and clusters:
+        example_text = f"{plan.worked_example.setup} {plan.worked_example.answer}"
+        example_block = max(range(len(clusters)), key=lambda i: _about(example_text, clusters[i]))
     explained: set[str] = set()  # each definition is handed to one block only, so it is explained once
-    for i, cluster in enumerate(clusters, start=1):
+    for i, (block, cluster) in enumerate(zip(outline.blocks, clusters, strict=True), start=1):
         misc = block_misconceptions.get(i - 1)
         relevant_defs = [d for d in plan.definitions if d.term.casefold() not in explained
                          and any(d.term.casefold() in c.claim.casefold() for c in cluster)]
         explained.update(d.term.casefold() for d in relevant_defs)
-        lines = ["Beweringen die dit blok moet dekken (gebruik de id's in 'covers'):"]
-        lines += [_claim_text(c) for c in cluster]
-        lines += [f"  bron {c.id}: \"{(c.source_span.quote or '')[:300]}\"" for c in cluster]
+        previous = outline.blocks[i - 2] if i > 1 else None
+        lines = []
+        if block.question:
+            lines.append(f"Dit blok beantwoordt één vraag: \"{block.question}\"")
+        if previous is not None and previous.bridge:
+            lines.append(f"Het vorige blok eindigde op deze vraag, begin daar: \"{previous.bridge}\"")
+        elif previous is None:
+            lines.append("De opening eindigde op de vraag van de aflevering. Begin daar, zonder opnieuw te beginnen.")
+        lines.append(
+            f"Zo loopt het gesprek: {skeptic.name} wil het antwoord weten en vraagt wat de luisteraar zou vragen. "
+            f"{explainer.name} heeft het hoofdstuk gelezen en vertelt het in eigen woorden, en begint elke beurt met "
+            f"een antwoord op wat {skeptic.name} net vroeg of zei. {skeptic.name} kent de stof niet: hij raadt, "
+            "twijfelt en zegt terug wat hij net hoorde, maar brengt zelf geen feiten, namen of jaartallen uit het "
+            "hoofdstuk in.")
+        lines.append("Vertel deze punten in deze volgorde. Elk punt volgt uit het vorige, en je zegt hardop hoe "
+                     "('en daarom', 'maar dan', 'dus als dat zo is'). Elk punt komt in minstens één regel terug, "
+                     "feitelijk correct, met de id in 'covers':")
+        lines += _claim_rows(cluster, numbered=True)
+        passages = source_passages(book, cluster)
+        if passages:
+            lines.append(BACKGROUND_HEADER)
+            lines += passages
         if relevant_defs:
-            lines.append("Begrippen die hier thuishoren. Leg ze één keer uit, in eigen woorden en inhoudelijk juist, "
-                         "als deel van het gesprek; nooit voorlezen als 'term: omschrijving', nooit onder overlap:")
+            lines.append("Begrippen die hier voor het eerst vallen. Zeg het woord één keer, zeg er meteen in gewone "
+                         "woorden bij wat het betekent, en nooit als woordenboekregel ('term: omschrijving'):")
             lines += [f"- {d.term}: {d.definition}" for d in relevant_defs]
         if misc:
             lines.append(
-                f"Loop bewust in deze misvatting en corrigeer hem daarna: '{misc.wrong}' -> '{misc.right}' "
-                f"(verleidelijk omdat: {misc.why_tempting})."
+                f"Misvatting in dit blok: {skeptic.name} denkt hardop '{misc.wrong}', op een moment dat dat logisch "
+                f"volgt uit wat net gezegd is (verleidelijk omdat: {misc.why_tempting}). {explainer.name} zegt wat er "
+                f"wel klopt: '{misc.right}'. {explainer.name} trapt er zelf niet in."
             )
-        _, moment = human_moment(i, explainer, skeptic)
-        lines.append("Menselijk moment in dit blok (hier hangt het gesprek aan op, de beweringen eromheen): " + moment)
-        if i == 1 and plan.worked_example and plan.worked_example.steps:
+        if block.moment:
+            teller = _moment_teller(block.moment_note, explainer, skeptic)
+            moment = human_moment(block.moment, explainer, skeptic, note=block.moment_note, teller=teller)
+            lines.append("Menselijk moment in dit blok: " + moment)
+            if block.moment == "anekdote":
+                seeds = story_seeds(teller).strip()
+                if seeds:
+                    lines.append("Waar het verhaal uit kan komen (kies er hooguit één, en alleen als het past):\n" + seeds)
+        if example_block == i - 1:
             lines.append(
-                "Werk het uitgewerkte voorbeeld uit de bron door in dialoog: "
+                "Werk het uitgewerkte voorbeeld uit de bron door in dialoog, nadat de opstelling is uitgelegd: "
                 f"{plan.worked_example.setup} Stappen: " + " | ".join(plan.worked_example.steps)
                 + f" Antwoord: {plan.worked_example.answer}"
             )
+        if block.bridge:
+            lines.append(f"Het blok eindigt als de vraag beantwoord is, en met de vraag die dat antwoord oproept: "
+                         f"\"{block.bridge}\"")
+        elif i == len(clusters):
+            lines.append("Dit is het laatste blok van het verhaal: het eindigt als de vraag beantwoord is.")
         briefs.append(SegmentBrief(
             type="body", title=f"Blok {i}",
             covers=[c.id for c in cluster],
-            target_chars=per_block_chars,
+            target_chars=_chars(seconds["body"] * needs[i - 1] / max(1.0, sum(needs)), chars_per_second),
             speakers=hosts,
-            instructions=(
-                f"{explainer.name} vertelt dit blok als een verhaal of een gedachtegang, met een begin, een opbouw en "
-                f"een wending; {skeptic.name} vraagt door en duwt terug. Elke bewering hierboven moet in minstens één "
-                "regel terugkomen, feitelijk correct, met de bijbehorende id in 'covers'.\n" + "\n".join(lines)
-            ),
+            instructions="\n".join(lines),
         ))
-    # Guest block.
-    if with_guest:
-        hard = sorted(claims, key=lambda c: -c.difficulty)[:4]
+
+    # Guest block: the hardest claims, told here for the first time.
+    if shape.guest_claims:
+        hard = shape.guest_claims
+        passages = source_passages(book, hard)
         briefs.append(SegmentBrief(
             type="guest", title=f"Gast: {guest.name}",
             covers=[c.id for c in hard],
@@ -295,56 +494,87 @@ def build_blueprint(
             instructions=(
                 f"Driespreker-blok met gast {guest.name} (spreker-id {guest.id}), vakgebied: {plan.expert_domain}. "
                 f"Reden voor de gast: {plan.expert_reason or 'de stof is te moeilijk voor de hosts alleen'}. "
-                f"De gast wordt kort en zonder ceremonie binnengehaald (geen welkomstritueel). {skeptic.name} test de gast, "
-                f"{explainer.name} vertaalt naar een beeld. De gast dekt deze beweringen:\n"
-                + "\n".join(_claim_text(c) for c in hard)
-                + "\n" + "\n".join(f"  bron {c.id}: \"{(c.source_span.quote or '')[:300]}\"" for c in hard)
+                f"{skeptic.name} zegt in één zin wie {guest.name} is en waarom die erbij is; geen welkomstritueel.\n"
+                "De punten hieronder zijn het moeilijkste deel van het hoofdstuk en zijn nog niet verteld. "
+                f"{guest.name} vertelt ze, {skeptic.name} vraagt door tot hij het kan navertellen, {explainer.name} zegt "
+                f"het na in gewone woorden. {guest.name} praat als iemand die het vak kent en het aan vrienden uitlegt: "
+                "geen spreuken, en geen adviezen of feiten die niet in het boek staan.\n"
+                + "\n".join(_claim_rows(hard, numbered=True))
+                + ("\n" + BACKGROUND_HEADER + "\n" + "\n".join(passages) if passages else "")
             ),
         ))
 
-    # Wacht, opnieuw.
-    if with_reexplain:
+    # Wacht, opnieuw: the why behind the hardest claim.
+    if shape.reexplain is not None:
+        hardest = shape.reexplain
+        order = [c.id for c in plan.key_claims]
+        at = order.index(hardest.id)
+        nearby = [c for c in plan.key_claims[max(0, at - 2):at + 3] if c.id != hardest.id
+                  and c.source_span.section == hardest.source_span.section]
+        passages = source_passages(book, [hardest], context=2 * PASSAGE_CONTEXT)
         briefs.append(SegmentBrief(
             type="reexplain", title="Wacht, opnieuw",
             covers=[hardest.id],
             target_chars=_chars(seconds["reexplain"], chars_per_second),
             speakers=hosts,
             instructions=(
-                f"{skeptic.name} weigert de eerdere uitleg van het moeilijkste begrip en eist een tweede route. "
-                f"{explainer.name} legt het opnieuw uit langs een compleet andere weg (ander beeld, andere volgorde, "
-                "van het voorbeeld naar de regel in plaats van andersom). Het begrip:\n"
-                + _claim_text(hardest) + f"\n  bron: \"{(hardest.source_span.quote or '')[:400]}\""
+                f"Het moeilijkste punt van de aflevering krijgt een tweede uitleg. {skeptic.name} zegt eerlijk dat hij "
+                f"het nog niet kan navertellen en wat hem precies dwarszit. {explainer.name} legt het opnieuw uit langs "
+                "een andere weg: begin bij één concreet geval en loop van daar naar de regel.\n"
+                "Deze keer gaat het om het waarom. Het punt zelf is al genoemd, dus herhaal die zin niet: leg uit hoe "
+                "het kan dat het zo is, met wat er in het boek omheen staat. Geeft het boek geen verklaring, zeg dat "
+                "dan in één eerlijke zin en zeg wat er wel vaststaat. Praat niet over de uitleg zelf ('ik pak een ander "
+                "beeld'), geef de uitleg.\n"
+                f"Aan het eind vertelt {skeptic.name} het in eigen woorden na, en {explainer.name} zegt of dat klopt.\n"
+                "Het punt:\n" + "\n".join(_claim_rows([hardest]))
+                + ("\nWat er al over verteld is en waar het waarom in zit:\n" + "\n".join(f"- {c.claim}" for c in nearby)
+                   if nearby else "")
+                + ("\n" + BACKGROUND_HEADER + "\n" + "\n".join(passages) if passages else "")
             ),
         ))
 
     # Quiz.
-    quiz_pool = [c for c in top if c.exam_relevance >= 4] or top
-    quiz_claims = quiz_pool[:n_quiz]
+    quiz_claims = _quiz_claims(clusters + ([shape.guest_claims] if shape.guest_claims else []), shape.n_quiz)
+    quiz_misc = max(plan.misconceptions, key=lambda m: _about(f"{m.wrong} {m.right}", quiz_claims), default=None)
+    quiz_sources = [f"  bron {c.id}: \"{(c.source_span.quote or '')[:300]}\"" for c in quiz_claims]
     briefs.append(SegmentBrief(
         type="quiz", title="Quiz",
         covers=[c.id for c in quiz_claims],
         target_chars=_chars(seconds["quiz"], chars_per_second),
         speakers=hosts,
         instructions=(
-            f"{skeptic.name} overhoort {explainer.name} met precies {len(quiz_claims)} vragen, elk gebaseerd op één van deze beweringen. "
-            f"Na elke vraag valt een stilte voor de luisteraar: zet pause_after_ms op 3000 op de regel met de vraag. "
-            f"{explainer.name} heeft er precies één fout, {skeptic.name} corrigeert met de juiste informatie uit de bron. "
-            "Vragen en antwoorden moeten exact kloppen met de bron.\n"
+            f"{skeptic.name} overhoort {explainer.name} met precies {len(quiz_claims)} vragen, elk over één van deze "
+            f"punten. {skeptic.name} heeft de antwoorden voor zich liggen. Vraag naar begrip: waarom, hoe, wat betekent "
+            "het. Geen vraag naar een los getal of een jaartal.\n"
+            "Na elke vraag valt een stilte voor de luisteraar: zet pause_after_ms op 3000 op de regel met de vraag.\n"
+            f"{explainer.name} antwoordt zoals je het een vriend uitlegt: het klopt met het boek, maar het is geen zin "
+            f"uit het boek. Na elk antwoord zegt {skeptic.name} in een paar woorden of het klopt, zodat de luisteraar "
+            "het eigen antwoord kan nakijken.\n"
+            f"Precies één antwoord is fout: {explainer.name} geeft daar het antwoord dat veel mensen zouden geven"
+            + (f" (bijvoorbeeld deze misvatting: '{quiz_misc.wrong}')" if quiz_misc else "")
+            + f", en {skeptic.name} verbetert het met wat er wel klopt en waarom.\n"
+            "Tussen de vragen geen zijpaden, geen verhalen en geen grappen over iets anders.\n"
             + "\n".join(_claim_text(c) for c in quiz_claims)
-            + "\n" + "\n".join(f"  bron {c.id}: \"{(c.source_span.quote or '')[:300]}\"" for c in quiz_claims)
+            + "\n" + "\n".join(quiz_sources)
         ),
     ))
 
-    # Outro.
+    # Outro: the answer, and what comes next.
     briefs.append(SegmentBrief(
         type="outro", title="Uitsmijter",
         covers=[],
         target_chars=_chars(seconds["outro"], chars_per_second),
         speakers=hosts,
         instructions=(
-            "Dertig seconden. Geen samenvatting van wat er is besproken, geen bedankje aan de luisteraar. "
-            + (f"Een haakje naar het volgende hoofdstuk: '{next_chapter_title}'. " if next_chapter_title else "Een haakje naar wat er nog open ligt. ")
-            + "Mag eindigen op een open vraag of een plaagstoot."
+            "Kort. "
+            + (f"De aflevering begon met de vraag \"{question}\" " if question else "De aflevering begon met een vraag. ")
+            + f"{skeptic.name} zegt in één of twee gewone zinnen wat daar nu het antwoord op is, zoals je het na afloop "
+            f"tegen een vriend zou zeggen, en {explainer.name} zegt of dat klopt. Geen opsomming van wat er besproken "
+            "is en geen bedankje.\n"
+            + (f"Waar het antwoord op neerkomt: {outline.takeaway}\n" if outline.takeaway else "")
+            + (f"Daarna één haakje naar het volgende hoofdstuk: '{next_chapter_title}', als een vraag die nu open ligt. "
+               if next_chapter_title else "Daarna één vraag die nog open ligt. ")
+            + "Geen verwijzing naar iets wat niet in deze aflevering is verteld."
         ),
     ))
     return briefs
@@ -416,32 +646,56 @@ Elke regel krijgt labels die bepalen hoe hij klinkt. Kies ze op basis van wat er
 
 WRITER_RULES = """Je schrijft het script van een Nederlandse studiepodcast met een vaste cast. Eén aflevering per hoofdstuk van een studieboek. Alles in het Nederlands.
 
-## De twee motoren
-De rollen zijn tegelijk de leermotor en de comedymotor. De explainer vertelt: neemt de luisteraar mee in een verhaal of een gedachtegang, met beelden, en duwt een beeld soms te ver; de skeptic accepteert geen hand-wave en stelt de vraag die de luisteraar heeft. Het meningsverschil is echt en gaat over de stof.
+## Wat dit is
+Twee mensen die samen een hoofdstuk doorpraten, voor iemand die luistert om het te leren. Het is een gesprek, geen les en geen hoorspel. Na afloop kan de luisteraar de hoofdvraag van de aflevering beantwoorden en uitleggen waarom het antwoord klopt.
+
+## Wie weet wat
+- De explainer heeft het hoofdstuk gelezen en legt het uit. Alles wat uit de stof komt (feiten, namen, jaartallen, getallen, vaktermen) komt van de explainer, of van de gast als die er is.
+- De skeptic heeft het hoofdstuk niet gelezen. Hij vraagt wat de luisteraar zou vragen, gokt, twijfelt, en zegt in eigen woorden terug wat hij net hoorde. Hij brengt zelf niets uit de stof in. Een vakterm of een naam hoort hij eerst van de explainer. Alleen in de quiz heeft hij de antwoorden voor zich.
+- Een misvatting komt van de skeptic, op het moment dat ze logisch volgt uit wat net gezegd is. De explainer trapt er niet in en doet ook niet alsof.
+
+## Gewone woorden
+- Schrijf zoals je tegen een vriend praat aan de keukentafel. Kies het woord dat je hardop zou gebruiken: "nuttig" en niet "functioneel", "hoe vaak het voorkomt" en niet "prevalentie", "ooit in je leven" en niet "levenslang", "voorzichtig zijn" en niet "behoedzaamheid".
+- Een vakterm die de luisteraar moet leren, zeg je één keer, met er meteen bij wat hij betekent in gewone woorden. Daarna mag je hem gewoon gebruiken. Vaktermen die de luisteraar niet hoeft te kennen, laat je weg.
+- Gebruik alleen woorden die bestaan en waarvan je zeker bent. Geen zelfbedachte samenstellingen, geen plechtige of dichterlijke zinnen, geen spreuken.
+- Zinnen die je in één adem zegt. Geen puntkomma. Geen dubbele punt met een rijtje erachter. Geen zinsbouw die alleen op papier werkt ("Voorzichtig concludeerden zij dat...").
+
+## Niets uit de lucht
+- De luisteraar kent alleen wat in deze aflevering hardop is gezegd. Elke persoon, elk onderzoek, elke proef, elk begrip en elk voorwerp wordt eerst voorgesteld: wie of wat is het, en waarom gaat het er nu over. "Die enquête", "de onderzoekers" en "dat model" kunnen pas als ze genoemd zijn.
+- Een onderzoek krijgt de eerste keer een gezicht: wie het deed of waar, wat ze deden, en dan pas wat eruit kwam. Een proef leg je uit voordat je de uitkomst vertelt.
+- Dat geldt ook voor het leven van de hosts. Een broer, een zus, een hobby of een oude grap bestaat voor de luisteraar pas als het in deze aflevering is verteld. Vertel er alleen iets over waar de opdracht van het segment erom vraagt.
+- Een vergelijking gebruik je alleen als ze iets uitlegt. Je zegt erbij wat met wat overeenkomt, en je houdt het bij één beeld per blok. Een beeld waar je niet verder mee komt, laat je los; stapel er geen tweede op.
+
+## De draad
+- De aflevering beantwoordt één hoofdvraag (zie de opbouw onderaan). Elk blok beantwoordt een deelvraag en eindigt bij de vraag die dat antwoord oproept.
+- Binnen een blok volgt elk punt uit het vorige, en dat zeg je hardop: "en daarom", "maar dan klopt er iets niet", "dus als dat zo is". Spring niet van onderwerp zonder te zeggen waarom je daar nu heen gaat.
+- Een vraag krijgt antwoord in de eerstvolgende beurt van de ander. Wie iets vraagt en een ander onderwerp terugkrijgt, zit niet in een gesprek.
+- Vertel bij een uitkomst ook hoe het komt en wat het betekent, als de stof dat zegt. Een getal of een onderzoek zonder betekenis blijft niet hangen.
+- Wat al verteld is, herhaal je niet in dezelfde woorden. Terugverwijzen mag: "dat is dus dat alarm van net".
 
 ## Nauwkeurigheid (niet onderhandelbaar)
-- Dit is studiemateriaal. Elke feitelijke bewering komt uit het inhoudsplan en de bronfragmenten. Voeg geen feiten toe die niet in de bron staan.
-- Getallen, jaartallen en namen uit de bron zijn heilig. Begrippen leg je uit in eigen spreektaal, inhoudelijk juist; lees een definitie nooit voor als woordenboekregel ("term: omschrijving") en leg elk begrip één keer uit. Een analogie mag simplificeren, nooit tegenspreken.
+- Dit is studiemateriaal. Elke feitelijke bewering komt uit het inhoudsplan en de bronfragmenten. Voeg geen feiten toe die niet in de bron staan, ook geen adviezen.
+- Getallen, jaartallen en namen uit de bron zijn heilig, en de richting van een verband ook (meer of minder, sneller of trager). De formulering is van jou: de achtergrond uit het boek in een opdracht is er om het te begrijpen, neem er geen zin uit over.
+- Eén getal per zin is genoeg voor een luisteraar. Staan er in de stof vier percentages bij elkaar, verdeel ze dan over het gesprek en zeg bij elk wat het betekent.
 - Praat over het onderwerp, niet over de bron. Geen "de tekst zegt", "er staat", "volgens de bron": vertel wat er gebeurde of hoe het zit.
 - Markeer regels die een bewering overbrengen met de claim-id in 'covers'. Grappen, vragen en reacties krijgen geen covers.
-- Als een host expres iets fout zegt (misvatting, quizfout), corrigeer het in het gesprek binnen twee regels, en zet de covers alleen op de regel met de correcte informatie.
+- Als een host expres iets fout zegt (misvatting, quizfout), corrigeer het in het gesprek binnen twee regels, en zet de covers alleen op de regel met de correcte informatie. Wie verbetert, verbetert wat er echt fout was: zeg nooit "nee" tegen iets wat klopt.
 
 ## Humor
-- Humor hangt aan de stof. Toegestane bronnen: een analogie die tot hij breekt wordt doorgevoerd, een host die het begrip verkeerd toepast, een callback uit het continuïteitslogboek, de hosts die het oneens zijn over hoe moeilijk iets is.
-- Verboden: actuele grappen, grappen die in elke aflevering zouden werken, grappen waarvoor de luisteraar iets moet zien.
+- Humor is bijvangst van een echt gesprek: een verkeerde gok, een droge reactie, iemand die zichzelf betrapt. Het gaat over wat er net gezegd is. Liever geen grap dan een gezochte.
+- Verboden: actuele grappen, grappen die in elke aflevering zouden werken, grappen waarvoor de luisteraar iets moet zien, en grappen over iets uit het leven van de hosts dat in deze aflevering niet is verteld.
 - Een verbale tic is een kruiderij: hooguit één keer per segment, nooit als vaste opening van regels. De tics van de ander zijn verboden terrein.
 - Geen vaste formules. Laat regels niet steeds met dezelfde woorden beginnen en gebruik geen sjabloon dat terugkomt (zoals steeds "een X is geen Y").
 
 ## Vertellen
-- Dit is een verhaal dat de luisteraar meeneemt, geen les. Een blok begint ergens waar je kunt staan: een moment, een persoon, een plek, een vraag waar toen nog niemand het antwoord op had. Van daaruit bouwt het op: wat stond er op het spel, wat wist nog niemand, wat liep anders dan gedacht. De beweringen vallen in het verhaal op de plek waar ze thuishoren, met hun oorzaak en hun gevolg erbij.
-- Bij verhalende stof (geschiedenis, een verloop van gebeurtenissen) vertel je in de volgorde waarin het gebeurde, met wie, wanneer en waarom. Bij stof zonder verloop in de tijd (een begrip, een rekenregel, een mechanisme) is de gedachtegang het verhaal: begin bij een raadsel of een situatie, loop samen naar het antwoord en neem onderweg een verkeerde afslag die je hardop terugdraait.
+- Een blok begint ergens waar je kunt staan: een moment, een persoon, een plek, een vraag waar toen nog niemand het antwoord op had. Van daaruit bouwt het op: wat stond er op het spel, wat wist nog niemand, wat liep anders dan gedacht. De beweringen vallen in het verhaal op de plek waar ze thuishoren, met hun oorzaak en hun gevolg erbij.
+- Bij verhalende stof (geschiedenis, een verloop van gebeurtenissen) vertel je in de volgorde waarin het gebeurde, met wie, wanneer en waarom. Bij stof zonder verloop in de tijd (een begrip, een rekenregel, een mechanisme) is de gedachtegang het verhaal: begin bij een raadsel of een situatie en loop samen naar het antwoord.
 - Een feit staat nooit kaal. Een jaartal krijgt een persoon of een plek, een besluit krijgt een reden, een getal krijgt iets om het mee te vergelijken. Rijtjes losse zinnetjes zijn verboden, zoals "Nee. 1533, Duitsland. Zijn ouders waren protestant." of "Een kind ging. De koning wilde het.": zo klinkt een spiekbriefje dat wordt voorgelezen. Vertel hetzelfde in een lopende zin, met wie, waarom en wat het betekende.
-- Een beeld moet iets uitleggen: het koppelt het begrip aan iets wat de luisteraar kent, en uit het gesprek blijkt wat met wat overeenkomt. Waar niets uit te leggen valt, geen beeld.
-- De skeptic twijfelt aan de stof: waarom gebeurde dit, hoe hangt het samen, wat betekent het. Niet aan de woordkeus van de ander, en niet aan wat er wel of niet in de bron staat. Hij praat ook in hele zinnen: gokt hardop en zit er soms naast, maakt de zin van de ander af, haalt er iets uit zijn eigen leven bij.
+- De skeptic twijfelt aan de stof: waarom gebeurde dit, hoe hangt het samen, wat betekent het. Niet aan de woordkeus van de ander, en niet aan wat er wel of niet in de bron staat. Hij praat in hele zinnen: gokt hardop en zit er soms naast, maakt de zin van de ander af.
 
 ## Verboden taal (de linter blokkeert het script bij één treffer)
 - AI-podcastvulling: "dat is echt fascinerend", "goede vraag", "laten we eens duiken in", "aan het eind van de dag", "welkom bij", "in deze aflevering", "kortom", "samengevat", "in een notendop".
-- Elke zin die samenvat wat er net is besproken. Geen recap aan het einde van een blok.
+- Elke zin die samenvat wat er net is besproken. Geen recap aan het einde van een blok. Alleen de uitsmijter beantwoordt in één of twee zinnen de hoofdvraag.
 - Driedelige opsommingen als retorisch sierstukje ("snel, simpel en slim").
 - Constructies van het type "niet X maar Y" als stijlfiguur.
 - Zinnen die het gesprek aankondigen in plaats van voeren.
@@ -523,8 +777,28 @@ NATURALNESS_RULES = frozenset({
     "quiz_pause",                # a quiz question nobody waits for
     "ignores_previous",          # a line that walks past what the other one just said
     "stiff",                     # written language nobody would say out loud
+    "formal",                    # a word too solemn or bookish for a conversation
+    "forced_image",              # a comparison that explains nothing
     "telegraphic",               # facts in strings of three-word sentences instead of a story
+    "source_copy",               # a sentence lifted from the book
+    "claim_repeated",            # the same claim told again in another segment
+    "near_duplicate",            # nearly the same line twice
+    "skeptic_fact",              # the host who has not read the chapter brings in a fact from it
+    "term_before_intro",         # a term or a name that host uses before it has been introduced
+    "written_syntax",            # semicolons and colon lists in spoken text
+    "number_overload",           # more numbers in one line than a listener can hold
+    "unknown_word",              # a word that is in no dictionary, in the book or in the cast
+    "no_antecedent",             # a reference the listener has never been given
+    "unanswered",                # a question the next turn does not answer
+    "nonsense",                  # a sentence a listener cannot make sense of
+    "contradicts",               # a correction of something that was right
+    "not_landed",                # a hard claim that is stated but never explained
 })
+
+# What a listener cannot follow, or is told without being able to explain it afterwards. Unlike a flat
+# stretch this is not a matter of polish: a segment with one of these goes back to the writer in every mode,
+# with its brief, because the fix can need something the table read may not add (the why behind a claim).
+COMPREHENSION_RULES = frozenset({"no_antecedent", "unanswered", "nonsense", "contradicts", "not_landed"})
 
 # How many of the flattest body segments a script-wide note is handed to. Rewriting everything to
 # please one warning would put the whole episode at the model's mercy.
@@ -534,6 +808,26 @@ FLAT_SEGMENT_TARGETS = 3
 def naturalness_issues(audit: AuditResult) -> list[AuditIssue]:
     """The warnings worth a rewrite in quality mode: overlap, reactions, cut words, quiz beats."""
     return [i for i in audit.warnings() if i.rule in NATURALNESS_RULES]
+
+
+def comprehension_issues(audit: AuditResult) -> list[AuditIssue]:
+    """The warnings worth a rewrite in any mode: what a first-time listener cannot follow."""
+    return [i for i in audit.warnings() if i.rule in COMPREHENSION_RULES]
+
+
+def _thread_text(outline: EpisodeOutline | None) -> str:
+    """The thread of the episode as every segment call sees it: the question, and what each block answers."""
+    if outline is None or not (outline.question or any(b.question for b in outline.blocks)):
+        return ""
+    rows = []
+    if outline.question:
+        rows.append(f"Hoofdvraag van de aflevering: {outline.question}")
+    for i, b in enumerate(outline.blocks, start=1):
+        if b.question:
+            rows.append(f"- Blok {i} beantwoordt: {b.question}" + (f" En leidt naar: {b.bridge}" if b.bridge else ""))
+    if outline.takeaway:
+        rows.append(f"Waar het op uitkomt (pas in de uitsmijter hardop): {outline.takeaway}")
+    return "\n".join(rows) + "\n\n"
 
 
 class Writer:
@@ -549,11 +843,12 @@ class Writer:
         self.on_segment: Callable[[int, int, Segment, bool], None] | None = None
 
     # System prefix: identical for every segment call of one episode.
-    def _system(self, plan: ContentPlan, glossary: Glossary | None, guest: Guest | None, briefs: list[SegmentBrief]) -> list[dict]:
+    def _system(self, plan: ContentPlan, glossary: Glossary | None, guest: Guest | None, briefs: list[SegmentBrief],
+                episode_outline: EpisodeOutline | None = None) -> list[dict]:
         rules = WRITER_RULES.format(tags=", ".join(known_tags()), cps=int(self.settings.chars_per_second))
         if self.performance:
             rules += PERFORMANCE_RULES
-        outline = "## Opbouw van deze aflevering\n" + "\n".join(
+        outline = "## Opbouw van deze aflevering\n" + _thread_text(episode_outline) + "\n".join(
             f"{i + 1}. {b.title} ({b.type}, ~{b.target_chars} tekens, dekt {', '.join(b.covers) or 'niets'})"
             for i, b in enumerate(briefs)
         )
@@ -596,10 +891,10 @@ class Writer:
                 notes.setdefault(issue.line_id, []).append(issue.message)
         briefs = [SegmentBrief(type=s.type, title=s.title or s.type, covers=list(s.covers), target_chars=max(200, s.char_count),
                                instructions=s.brief or "", speakers=self._segment_speakers(s)) for s in script.segments]
-        system = self._system(plan, glossary, guest, briefs)
+        system = self._system(plan, glossary, guest, briefs, script.outline)
         budget = self._interrupt_budget(script.target_minutes)
         new_script = Script(episode_id=script.episode_id, target_minutes=script.target_minutes, title=script.title,
-                            guest_id=script.guest_id, revision=script.revision + 1)
+                            guest_id=script.guest_id, outline=script.outline, revision=script.revision + 1)
         todo = [s for s in script.segments if s.lines]
         for n, seg in enumerate(todo, start=1):
             if self.progress:
@@ -689,15 +984,25 @@ class Writer:
         next_chapter_title: str | None = None,
         target_minutes: int | None = None,
     ) -> Script:
-        target_minutes = target_minutes or episode_minutes(plan, self.settings.target_minutes)
-        guest = pick_guest(self.cast, plan.expert_domain) if plan.needs_expert else None
+        # A guest only when the cast has someone in this field: a stand-in expert has nothing of their own to say.
+        guest = pick_guest(self.cast, plan.expert_domain, generic=False) if plan.needs_expert else None
+        target_minutes = target_minutes or episode_minutes(plan, self.settings.target_minutes, with_guest=guest is not None)
+        shape = plan_shape(plan, guest=guest, target_minutes=target_minutes, has_recap=previous_plan is not None,
+                           moments=MAX_MOMENTS)
+        outline = self.outline(plan, book, shape.body_claims)
+        # With the moments the outline really has, the extras may fit after all: the blocks follow the final shape.
+        shape = plan_shape(plan, guest=guest, target_minutes=target_minutes, has_recap=previous_plan is not None,
+                           moments=sum(1 for b in outline.blocks if b.moment))
+        outline = _fit_outline(outline, plan, shape.body_claims)
         briefs = build_blueprint(
             plan, self.cast, guest=guest, previous_plan=previous_plan, next_chapter_title=next_chapter_title,
-            target_minutes=target_minutes, chars_per_second=self.settings.chars_per_second,
+            target_minutes=target_minutes, chars_per_second=self.settings.chars_per_second, outline=outline, book=book,
         )
+        with_guest = any(b.type == "guest" for b in briefs)
         script = Script(episode_id=plan.chapter_id, target_minutes=target_minutes, title=plan.chapter_title,
-                        guest_id=guest.id if guest and plan.needs_expert else None)
-        system = self._system(plan, glossary, guest, briefs)
+                        guest_id=guest.id if guest and with_guest else None, outline=outline)
+        guest = guest if with_guest else None
+        system = self._system(plan, glossary, guest, briefs, outline)
         budget = self._interrupt_budget(target_minutes)
         for n, brief in enumerate(briefs, start=1):
             if self.progress:
@@ -717,6 +1022,16 @@ class Writer:
             if self.on_segment:
                 self.on_segment(n, len(briefs), script.segments[-1], False)
         return script
+
+    def outline(self, plan: ContentPlan, book: Book | None, claims: list[KeyClaim]) -> EpisodeOutline:
+        """The thread of the episode: one question, the steps that answer it, the order the claims are told in."""
+        chapter = None
+        if book is not None:
+            try:
+                chapter = book.chapter(plan.chapter_id)
+            except KeyError:
+                chapter = None
+        return plan_outline(plan, claims, self.cast, self.llm, n_blocks=_block_count(claims), chapter=chapter)
 
     def write_scene(self, plan: ContentPlan, glossary: Glossary | None, brief: SegmentBrief, *,
                     fix: str | None = None, episode_id: str | None = None) -> Script:
@@ -740,13 +1055,13 @@ class Writer:
                *, also_naturalness: bool = False) -> Script:
         """Rewrite only the segments with problems, feeding the problems back to the model.
 
-        Blocking issues always go back to the writer. With ``also_naturalness`` the warnings about the
-        shape of the dialogue go along, which is the only place interruptions and reactions can still
+        Blocking issues always go back to the writer, and so does what a listener cannot follow
+        (``COMPREHENSION_RULES``). With ``also_naturalness`` the warnings about the shape of the dialogue go along, which is the only place interruptions and reactions can still
         come from: the mixer cannot overlap two lines the script never marked.
         """
-        issues = audit.blocking()
+        issues = audit.blocking() + comprehension_issues(audit)
         if also_naturalness:
-            issues = issues + naturalness_issues(audit)
+            issues = issues + [i for i in naturalness_issues(audit) if i.rule not in COMPREHENSION_RULES]
         if not issues:
             return script
         guest = self.cast.guest(script.guest_id) if script.guest_id else None
@@ -779,10 +1094,10 @@ class Writer:
 
         briefs = [SegmentBrief(type=s.type, title=s.title or s.type, covers=list(s.covers), target_chars=max(200, s.char_count),
                                instructions=s.brief or "", speakers=self._segment_speakers(s)) for s in script.segments]
-        system = self._system(plan, glossary, guest, briefs)
+        system = self._system(plan, glossary, guest, briefs, script.outline)
         budget = self._interrupt_budget(script.target_minutes)
         new_script = Script(episode_id=script.episode_id, target_minutes=script.target_minutes, title=script.title,
-                            guest_id=script.guest_id, revision=script.revision + 1)
+                            guest_id=script.guest_id, outline=script.outline, revision=script.revision + 1)
         todo = sorted(per_segment)
         for i, seg in enumerate(script.segments):
             if i not in per_segment:
@@ -832,11 +1147,13 @@ class Writer:
 
 POLISH_INSTRUCTIONS = """## Tafellezing: maak hier een echt gesprek van
 Dit segment klopt inhoudelijk. Lees het in je hoofd hardop en herschrijf het zo dat het klinkt als deze twee mensen, die elkaar kennen en het ergens over hebben.
-- Elke regel reageert op de vorige: op de woorden, de toon of de grap. Een vraag krijgt antwoord, een verhaal krijgt een reactie.
-- Laat ze klinken zoals de cast ze beschrijft. Het menselijke moment van dit segment moet hoorbaar zijn.
-- Maak er een verhaal van. Waar een host feiten opsomt in korte losse zinnen ("Nee. 1533, Duitsland."), smeed je ze tot een lopende zin met een persoon, een reden of een gevolg erbij. De explainer vertelt, met een zijpad dat terugkomt of een spoor dat doodloopt. Een vertelbeurt mag lang zijn; korte zinnen zijn voor reacties, vragen en de grap.
-- Spreektaal: een zin opnieuw beginnen, zichzelf verbeteren, een korte reactie onder de ander door (backchannel), iets niet meteen weten. Met mate.
-- De feiten liggen vast. Een regel met covers houdt zijn inhoud en zijn covers; je mag hem anders zeggen of in twee regels knippen (de covers gaan mee naar de regel met het feit). Voeg geen feit toe en laat er geen weg.
+- Elke regel reageert op de vorige: op de woorden, de toon of de grap. Een vraag krijgt antwoord in de eerstvolgende beurt, een verhaal krijgt een reactie.
+- Gewone woorden. Vervang elk woord dat je niet hardop tegen een vriend zou zeggen, elk woord dat niet bestaat en elke zin die naar een boek klinkt. Haal puntkomma's en dubbele punten uit gesproken zinnen.
+- Niets uit de lucht. Een naam, een onderzoek, een begrip of iets uit het leven van de hosts dat hier valt zonder dat het in de aflevering is voorgesteld, stel je voor of haal je weg. Een beeld dat niets uitlegt, haal je weg.
+- De draad. Elk punt volgt hoorbaar uit het vorige; zet er de zin tussen die zegt hoe ("en daarom", "maar dan"). Een punt dat alleen genoemd wordt, krijgt zijn waarom erbij als dat in de opdracht staat.
+- Maak er een verhaal van. Waar een host feiten opsomt in korte losse zinnen ("Nee. 1533, Duitsland."), smeed je ze tot een lopende zin met een persoon, een reden of een gevolg erbij. Een vertelbeurt mag lang zijn; korte zinnen zijn voor reacties en vragen.
+- De feiten liggen vast, de formulering niet. Een regel met covers zegt na afloop hetzelfde feit, met dezelfde getallen, namen en richting, en houdt zijn covers. Zeg hem wel in spreektaal: een zin die uit het boek is overgenomen, herschrijf je in eigen woorden, en een regel met veel getallen knip je in twee (de covers gaan mee naar de regel met het feit). Voeg geen feit toe en laat er geen weg.
+- Wat uit de stof komt, zegt de explainer of de gast. Staat een feit bij de skeptic, geef het dan aan de explainer en laat de skeptic ernaar vragen of erop reageren.
 - Ongeveer even lang (± 20%). Geef ook de beats: in twee zinnen wat je aan het gesprek veranderde."""
 
 

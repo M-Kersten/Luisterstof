@@ -73,7 +73,9 @@ def append_continuity(cast_dir: Path | str, entry: ContinuityEntry) -> Path:
     return path
 
 
-def pick_guest(cast: Cast, expert_domain: str | None) -> Guest | None:
+def pick_guest(cast: Cast, expert_domain: str | None, *, generic: bool = True) -> Guest | None:
+    """The guest whose field matches. With ``generic`` off there is no stand-in: an expert without a field
+    has nothing to add that the hosts cannot say themselves, and a guest block then only repeats the episode."""
     if not cast.guests:
         return None
     if expert_domain:
@@ -85,8 +87,10 @@ def pick_guest(cast: Cast, expert_domain: str | None) -> Guest | None:
                     best, best_score = g, score
         if best is not None:
             return best
-    generic = next((g for g in cast.guests if not g.domains), None)
-    return generic or cast.guests[0]
+    if not generic:
+        return None
+    stand_in = next((g for g in cast.guests if not g.domains), None)
+    return stand_in or cast.guests[0]
 
 
 def _bullets(items: list[str]) -> str:
@@ -101,18 +105,21 @@ def _section(title: str, items: list[str] | str) -> str:
     return f"{title}:\n{_bullets(items)}\n"
 
 
-def cast_bible_text(cast: Cast, guest: Guest | None = None) -> str:
+def cast_bible_text(cast: Cast, guest: Guest | None = None, *, personal: bool = False) -> str:
+    """How the cast talks and what they want. Their lives, their stories and what they share stay out unless
+    ``personal`` is set: a writer that sees the courgettes and the stew in every call puts them in every
+    segment, set up or not. A block that tells a story gets that one story in its own brief (``story_seeds``)."""
     parts = ["## De cast",
              "Dit zijn mensen, geen rollen. Schrijf ze zoals ze hieronder staan: hoe ze praten, wat ze willen, "
-             "wat ze meegemaakt hebben. Hun eigen verhalen zijn geen stof: een host mag uit eigen leven vertellen, "
-             "zolang het geen feit over de stof toevoegt. Een nieuw verhaal mag, als het bij de persoon past."]
+             "hoe ze reageren. Iets uit hun eigen leven komt alleen voor waar de opdracht van een segment erom "
+             "vraagt, en dan zo verteld dat een luisteraar die hen niet kent het kan volgen."]
     for h in cast.hosts:
         parts.append(
             f"### {h.name} (spreker-id: {h.id}, rol: {h.role})\n"
             f"Achtergrond: {h.background.strip()}\n"
             + _section("Zo praat " + h.name, h.voice)
-            + _section("Leven", h.life)
-            + _section("Verhalen die " + h.name + " kan vertellen", h.stories)
+            + (_section("Leven", h.life) + _section("Verhalen die " + h.name + " kan vertellen", h.stories)
+               if personal else "")
             + _section("Wat " + h.name + " wil", h.wants)
             + _section("Zo reageert " + h.name, h.behaviour)
             + _section("Nooit", h.never)
@@ -122,7 +129,7 @@ def cast_bible_text(cast: Cast, guest: Guest | None = None) -> str:
             f"Humor: {h.humour}\n"
             f"Meningen:\n{_bullets(h.opinions)}"
         )
-    if cast.relationship:
+    if cast.relationship and personal:
         parts.append("### Samen\n" + _bullets(cast.relationship))
     if guest is not None:
         parts.append(
@@ -131,6 +138,12 @@ def cast_bible_text(cast: Cast, guest: Guest | None = None) -> str:
             f"Persona: {guest.persona.strip()}"
         )
     return "\n\n".join(parts)
+
+
+def story_seeds(host) -> str:
+    """What one host can draw on for a story of their own: the people in their life and the stories they
+    tell. Handed to the one block that asks for it."""
+    return _section("Mensen en gewoontes van " + host.name, host.life) + _section("Verhalen van " + host.name, host.stories)
 
 
 _SAMPLE_LINE = re.compile(r"^\s*[A-ZÀ-Ý_]+\s*(?:\[[^\]]*\]|\([^)]*\))?\s*:\s*(?P<text>\S.*)$")
@@ -153,7 +166,10 @@ def voice_samples_text(cast: Cast) -> str:
 def continuity_text(entries: list[ContinuityEntry]) -> str:
     if not entries:
         return "## Continuïteit\nDit is de eerste aflevering. Er zijn nog geen callbacks."
-    parts = ["## Continuïteit (eerdere afleveringen, oud naar nieuw)"]
+    parts = ["## Continuïteit (eerdere afleveringen, oud naar nieuw)\n"
+             "De luisteraar van deze aflevering heeft de vorige niet per se gehoord. Gebruik hier hooguit één ding "
+             "uit, en vertel het dan opnieuw alsof de luisteraar het niet kent. Een running joke die je niet opnieuw "
+             "opzet, laat je liggen."]
     for e in entries:
         parts.append(
             f"### Aflevering {e.episode}" + (f" (gast: {e.guest})" if e.guest else "") + "\n"

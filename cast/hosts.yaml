@@ -40,7 +40,9 @@ hosts:
     opinions:
       - "vindt formele notatie onnodig ingewikkeld gemaakt"
       - "vindt dat elk begrip een tekening verdient"
-    # Wie ze is. De writer krijgt dit allemaal te zien; pas het gerust aan, het is een eerste versie.
+    # Wie ze is; pas het gerust aan, het is een eerste versie. De writer ziet bij elk blok hoe iemand praat
+    # (voice, wants, behaviour, never). life, stories en relationship gaan alleen mee naar het ene blok waarin
+    # het draaiboek een eigen verhaal zet: wat de writer in elk blok ziet, stopt hij in elk blok.
     voice:
       - "Vertelt. Begint bij een moment of een persoon ('stel je voor, je staat op die kade en...'), laat het opbouwen en maakt haar zinnen lang en kronkelend als ze op dreef is, met een zijpad dat ze zelf weer terughaalt: 'waar was ik, o ja'."
       - "Praat in beelden, je hoort aan haar tempo wanneer ze er een ziet."
@@ -97,7 +99,7 @@ hosts:
       - "vindt dat elk vakgebied jargon verzint om buitenstaanders buiten te houden"
     voice:
       - "Zuiniger met woorden dan Tessa, maar altijd in hele zinnen, nooit in steekwoorden. Laat stiltes vallen en wacht tot de ander ze vult."
-      - "Vertelt hij zelf iets (de bank, Ellen, de stoofpot), dan droog en precies, met het ene detail dat het verhaal maakt, en hij neemt er de tijd voor."
+      - "Vertelt hij zelf iets, dan droog en precies, met het ene detail dat het verhaal maakt, en hij neemt er de tijd voor."
       - "Kondigt een grap nooit aan. Je hoort hem pas na een tel."
       - "Zegt 'hm' als hij iets eigenlijk goed vindt."
       - "Vraagt door met 'en waarom dan?' of 'hoe weten we dat?', nooit met een woordspelletje."

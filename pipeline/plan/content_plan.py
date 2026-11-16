@@ -31,6 +31,12 @@ FORMULA_DENSITY_THRESHOLD = 0.02
 EXPERT_DIFFICULTY_THRESHOLD = 4.0
 
 
+CONTEXT_DESCRIPTION = (
+    "Wat een luisteraar eerst moet weten om deze bewering te kunnen volgen: wie het onderzocht, welk onderzoek "
+    "of welke opstelling, bij wie, wanneer. Eén korte zin, alleen uit de tekst. Leeg als de bewering op zichzelf staat."
+)
+
+
 # LLM output schema (kept free of dicts and numeric constraints; see llm.py).
 class ClaimOut(BaseModel):
     claim: str = Field(description="Eén feitelijke bewering, volledig en zelfstandig leesbaar, in het Nederlands.")
@@ -40,6 +46,7 @@ class ClaimOut(BaseModel):
     )
     difficulty: int = Field(description="1 (triviaal) tot 5 (zeer moeilijk voor een eerstejaars).")
     exam_relevance: int = Field(description="1 (bijzaak) tot 5 (zeker tentamenstof).")
+    context: str = Field(default="", description=CONTEXT_DESCRIPTION)
 
 
 class DefinitionOut(BaseModel):
@@ -131,7 +138,7 @@ def build_plan(chapter: Chapter, out: PlanOut) -> ContentPlan:
     for i, c in enumerate(out.key_claims, start=1):
         cid = f"c{i}"
         span = _locate(chapter, c.section, c.source_quote, warnings, cid)
-        claims.append(KeyClaim(id=cid, claim=c.claim.strip(), source_span=span,
+        claims.append(KeyClaim(id=cid, claim=c.claim.strip(), source_span=span, context=" ".join(c.context.split()),
                                difficulty=_clamp(c.difficulty), exam_relevance=_clamp(c.exam_relevance)))
 
     definitions = [

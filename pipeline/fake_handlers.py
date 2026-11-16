@@ -128,6 +128,35 @@ def fake_lexicon(req: LLMRequest) -> dict:
     return {"entries": entries}
 
 
+def fake_script_outline(req: LLMRequest) -> dict:
+    """The claims in the order given, in the number of blocks asked for. The first block gets a story, the
+    second an aha, and one claim is left out on purpose so the repair has something to put back."""
+    user = _text_of(req.user)
+    n = int(m.group(1)) if (m := re.search(r"in (\d+) blokken", user)) else 3
+    ids = re.findall(r"c\d+", user.split("precies één keer:", 1)[-1])
+    told = ids[:-1] if len(ids) > 3 else ids
+    n = max(1, min(n, len(told)))
+    blocks = []
+    for i in range(n):
+        chunk = told[round(i * len(told) / n):round((i + 1) * len(told) / n)]
+        blocks.append({"question": f"Hoe zit deel {i + 1} in elkaar?", "claims": chunk,
+                       "bridge": f"En wat volgt er dan uit deel {i + 1}?" if i + 1 < n else "",
+                       "moment": ("anekdote", "kwartje", "plagen")[i] if i < 3 else "",
+                       "moment_note": "Tessa vertelt over de student met de zak drop." if i == 0 else ""})
+    return {"question": "Waar gaat dit hoofdstuk eigenlijk over?",
+            "opening": "Je zit aan tafel met het boek open en je snapt de eerste bladzijde niet.",
+            "blocks": blocks, "takeaway": "Het hoofdstuk legt de kernbegrippen uit en wanneer ze gelden."}
+
+
+def fake_listener(req: LLMRequest) -> dict:
+    return {"hits": []}
+
+
+def fake_landing(req: LLMRequest) -> dict:
+    ids = re.findall(r"^\[(c\d+)\]", _text_of(req.user), re.MULTILINE)
+    return {"verdicts": [{"claim_id": i, "landed": True, "missing": ""} for i in ids]}
+
+
 def fake_script_segment(req: LLMRequest) -> dict:
     user = _text_of(req.user)
     seg_type = req.metadata.get("segment", "body")
@@ -279,10 +308,13 @@ def default_fake_llm() -> FakeLLM:
         "plan_merge": fake_plan_merge,
         "plan_review": fake_plan_review,
         "lexicon": fake_lexicon,
+        "script_outline": fake_script_outline,
         "script_segment": fake_script_segment,
         "script_scene": fake_script_scene,
         "script_polish": fake_script_polish,
         "support": fake_support,
         "lint": fake_lint,
+        "listener": fake_listener,
+        "landing": fake_landing,
         "continuity": fake_continuity,
     })

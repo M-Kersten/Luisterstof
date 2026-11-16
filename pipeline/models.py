@@ -139,6 +139,7 @@ class KeyClaim(Contract):
     source_span: SourceSpan
     difficulty: int = Field(ge=1, le=5)
     exam_relevance: int = Field(ge=1, le=5)
+    context: str = ""  # what a listener has to know first: who, which study, what setup
 
 
 class Definition(Contract):
@@ -320,11 +321,33 @@ class Segment(Contract):
         return sum(len(line.text) for line in self.lines)
 
 
+MomentKind = Literal["", "anekdote", "meningsverschil", "plagen", "kwartje"]
+
+
+class OutlineBlock(Contract):
+    question: str = ""  # the question this block answers, as a listener would ask it
+    claims: list[str] = Field(default_factory=list)  # claim ids in the order they are told
+    bridge: str = ""  # the question the answer raises: where the next block picks up
+    moment: MomentKind = ""  # a human moment, only where one fits
+    moment_note: str = ""  # which story, or what the disagreement is about
+
+
+class EpisodeOutline(Contract):
+    """The thread of one episode, decided before a line is written: one question, the steps that answer it,
+    and how each step leads to the next. Without it the blocks are slices of a list of claims."""
+    question: str = ""  # what the episode is about, in everyday words
+    opening: str = ""  # the situation the episode opens in
+    blocks: list[OutlineBlock] = Field(default_factory=list)
+    takeaway: str = ""  # the answer to the question, in a sentence or two
+    planned: bool = False  # False: the fallback (claims in book order), no model was involved
+
+
 class Script(Contract):
     episode_id: str
     target_minutes: int = 25
     title: str | None = None
     guest_id: str | None = None
+    outline: EpisodeOutline | None = None
     segments: list[Segment] = Field(default_factory=list)
     revision: int = 1
     created_at: str = Field(default_factory=now_iso)

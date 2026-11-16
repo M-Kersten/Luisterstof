@@ -884,7 +884,12 @@ function renderScript(data) {
     const h = document.createElement("div");
     h.className = "segment" + (seg.lines.some(l => issues[l.id]) ? " has-issues" : "");
     const label = seg.type === "body" ? `Blok ${++blockNo}` : SEGMENTS[seg.type] || seg.type;
+    // The thread of the episode: the question it opens with, and the question each block answers.
+    const outline = data.script.outline;
+    const block = seg.type === "body" && outline ? outline.blocks[blockNo - 1] : null;
+    const question = block ? block.question : seg.type === "cold_open" && outline ? outline.question : "";
     h.innerHTML = `<span class="segment__type">${escapeHtml(label)}</span>` +
+      (question ? `<span class="segment__question">${escapeHtml(question)}</span>` : "") +
       (seg.covers.length ? `<span class="segment__covers">dekt ${escapeHtml(seg.covers.join(", "))}</span>` : "");
     frag.appendChild(h);
     for (const line of seg.lines) {

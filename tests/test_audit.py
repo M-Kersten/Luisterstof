@@ -259,3 +259,116 @@ def test_telegraphic_lines_go_back_to_the_writer():
     from pipeline.script.writer import NATURALNESS_RULES
 
     assert "telegraphic" in NATURALNESS_RULES
+
+
+# ---------------------------------------------------------------------------
+# The first draft of the hoogtevrees episode, reviewed by hand. Every check below exists because of a line in it.
+# ---------------------------------------------------------------------------
+
+def _found(issues, rule):
+    return {i.line_id for i in issues if i.rule == rule}
+
+
+def test_a_sentence_from_the_book_is_not_a_spoken_line(hoogtevrees):
+    from pipeline.script.audit import lint_sources
+
+    copied = _found(lint_sources(hoogtevrees.script, hoogtevrees.plan), "source_copy")
+    assert {"l018", "l087", "l093", "l153"} <= copied  # the dakgoot sentence, and the 1998 finding three times over
+    assert {"l166", "l170", "l173"} <= copied  # quiz answers read off the page ("Die basisalarmering is functioneel.")
+    assert "l045" not in copied and "l083" not in copied  # the same facts told in the speaker's own words
+
+    own = _script([Line(id="l001", speaker="tessa", covers=["c2"],
+                        text="Bang zijn op een rand is gewoon nuttig, het houdt je weg van plekken waar je dood kunt vallen.")])
+    assert not lint_sources(own, hoogtevrees.plan)
+
+
+def test_a_claim_is_told_once_by_the_host_who_read_the_chapter(hoogtevrees, cast):
+    from pipeline.script.audit import lint_homes
+
+    issues = lint_homes(hoogtevrees.script, hoogtevrees.plan, cast)
+    again = {(i.line_id, i.claim_id) for i in issues if i.rule == "claim_repeated"}
+    assert {("l087", "c21"), ("l093", "c21")} <= again  # blok 4 told it; blok 5 and the guest tell it again
+    assert not any(line == "l153" for line, _ in again)  # the second route is where a claim may come back
+    assert {"l087", "l093", "l153"} <= _found(issues, "near_duplicate")
+    assert _found(issues, "skeptic_fact") == {"l018", "l072"}  # Joris corrects Tessa, and Joris cites the cohort study
+    early = {i.line_id: i.message for i in issues if i.rule == "term_before_intro"}
+    assert set(early) == {"l020", "l024", "l030"}  # the glass plate, hoogteduizeligheid and acrofobie: all first from Joris
+    assert "'hoogteduizeligheid'" in early["l024"] and "'acrofobie'" in early["l030"]
+
+
+def test_lines_for_the_page_and_lines_with_too_many_numbers(hoogtevrees):
+    from pipeline.script.audit import lint_speakable
+
+    issues = lint_speakable(hoogtevrees.script)
+    assert {"l015", "l031", "l074"} <= _found(issues, "written_syntax")  # semicolons, and a colon with a list after it
+    assert "l076" not in _found(issues, "written_syntax")  # "Ellen zei: lees het voorwoord" is how people talk
+    assert _found(issues, "number_overload") == {"l037"}  # four percentages and a year in one breath
+
+
+def test_words_that_exist_nowhere(hoogtevrees, cast):
+    import pytest
+
+    from pipeline.script.audit import _known_words, lint_spelling
+
+    pytest.importorskip("spellchecker")
+    known = _known_words(hoogtevrees.book, hoogtevrees.plan, cast, None)
+    issues = lint_spelling(hoogtevrees.script, known)
+    words = {i.message.split("'")[1]: i.line_id for i in issues}
+    assert words["vertrust"] == "l021" and words["lodsman"] == "l011"  # "vertraagt" and "loodsman" were meant
+    assert len(words) <= 4  # compounds (hoogteduizeligheid, stoofpot), names and the book's own words pass
+    assert all(i.severity == "warning" for i in issues)
+
+
+def test_the_listener_and_the_landing(hoogtevrees, cast, banned, settings, fake_llm):
+    """Two checks that read the script the way someone hears it: once, in order, knowing nothing else."""
+    def listener(req):
+        user = req.user if isinstance(req.user, str) else ""
+        hits = []
+        if "[l001]" in user:  # the opening: an argument about a "pot" nobody introduced
+            hits += [{"line_id": "l001", "rule": "no_antecedent", "explanation": "Welke pot? Er is nog niets verteld."},
+                     {"line_id": "l999", "rule": "nonsense", "explanation": "bestaat niet in dit segment"}]
+        if "[l053]" in user:
+            hits.append({"line_id": "l053", "rule": "contradicts", "explanation": "Joris zei het goed en krijgt 'dat is precies de fout'."})
+        return {"hits": hits}
+
+    def landing(req):
+        return {"verdicts": [{"claim_id": "c21", "landed": False, "missing": "Vier keer genoemd, nergens waarom."},
+                             {"claim_id": "c22", "landed": True, "missing": ""}]}
+
+    fake_llm.on("listener", listener).on("landing", landing)
+    audit = audit_script(hoogtevrees.script, hoogtevrees.plan, hoogtevrees.book, cast, banned, settings, llm=fake_llm)
+    by_rule = {i.rule: i for i in audit.issues}
+    assert by_rule["no_antecedent"].line_id == "l001" and by_rule["no_antecedent"].severity == "warning"
+    assert by_rule["contradicts"].line_id == "l053" and "nonsense" not in by_rule  # a hit outside its segment is dropped
+    assert by_rule["not_landed"].claim_id == "c21" and by_rule["not_landed"].line_id == "l072"  # the first line that carries it
+    assert "nergens waarom" in by_rule["not_landed"].message
+
+    calls = [c for c in fake_llm.calls if c.task == "listener"]
+    assert len(calls) == len(hoogtevrees.script.segments)  # one per segment
+    assert "nog niets" in calls[0].system[1]["text"]  # the opening is heard cold
+    assert "[l001]" in calls[1].system[1]["text"] and "[l011]" in calls[1].user  # then with everything before it
+    hard = next(c for c in fake_llm.calls if c.task == "landing")
+    assert "[c21]" in hard.user and "[c22]" in hard.user and "[c1]" not in hard.user  # only the hard claims
+    assert "Dunedin-studie" in hard.user  # with what the book says around them
+
+    # an expert's statement that carries no claim is checked against the chapter as well
+    guest_rows = [c.user for c in fake_llm.calls if c.task == "support" and "gast, zonder bewering" in c.user]
+    assert guest_rows and "### Regel l124" in guest_rows[0]  # "Bij een kind let je erop of het vermijden groter wordt."
+
+    from pipeline.script.writer import NATURALNESS_RULES, naturalness_issues
+    notes = {i.rule for i in naturalness_issues(audit)}  # what the table read gets as notes on a segment
+    assert {"no_antecedent", "contradicts", "not_landed", "source_copy", "claim_repeated", "skeptic_fact",
+            "term_before_intro", "written_syntax", "number_overload"} <= notes <= NATURALNESS_RULES
+
+
+def test_the_quiz_is_checked_against_its_own_length(cast, banned, settings):
+    from pipeline.script.audit import lint_rules
+
+    quiz = [Line(id="l001", speaker="joris", text="Waarom is dat zo?", pause_after_ms=3000),
+            Line(id="l002", speaker="tessa", text="Omdat het klopt."),
+            Line(id="l003", speaker="joris", text="En hoe weten we dat?", pause_after_ms=3000),
+            Line(id="l004", speaker="tessa", text="Dat is gemeten.")]
+    short = Script(episode_id="ch01", target_minutes=8, segments=[Segment(type="quiz", lines=quiz)])
+    assert "quiz_questions" not in {i.rule for i in lint_rules(short, cast, banned, None, settings)}  # two is what it got
+    long = short.model_copy(update={"target_minutes": 24})
+    assert "quiz_questions" in {i.rule for i in lint_rules(long, cast, banned, None, settings)}
