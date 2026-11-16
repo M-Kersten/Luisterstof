@@ -1624,8 +1624,103 @@ async function openVoices(voiceId) {
   if (voiceId) { remember("voice", voiceId); const h = `#/stemmen/${enc(voiceId)}`; if (location.hash !== h) { history.replaceState(null, "", h); lastHash = h; } }
   renderVoiceList();
   renderVoiceEditor();
+  if (!state.klank) await loadKlank();
   if (voiceId) await loadTakes();
   renderVoiceState();
+}
+
+// ------------------------------------------------------------------ klank van de show
+// One sound for every voice: presets and five knobs, heard on the takes you already have (no new take needed: the
+// server treats the dry take on request, at the same loudness, so the comparison is fair).
+const KLANK_KNOBS = {
+  room: ["Ruimte", "Hoeveel kamer je hoort. Een beetje maakt het echt; veel klinkt als een hal."],
+  size: ["Kamergrootte", "Klein klinkt als een gedempte studio, groter als een woonkamer."],
+  warmth: ["Warmte", "Wat een goede microfoon en voorversterker doen: iets meer laag en een zachte rand."],
+  deess: ["Scherpe s temmen", "Synthetische stemmen sissen op s, z en sch. Dit haalt die scherpte eraf, alleen waar ze uitschiet."],
+  compression: ["Compressie", "Hoe dicht zachte en harde zinnen bij elkaar liggen. Hoger klinkt meer als radio."],
+};
+const klankPct = (v) => Math.round(v * 100);
+
+async function loadKlank() {
+  try {
+    const k = await api.get("/api/klank");
+    state.klank = { saved: k.settings, draft: { ...k.settings }, presets: k.presets };
+  } catch (err) { fail(err, "Klank laden"); return; }
+  state.abMode = recall("abMode") || "klank";
+  renderKlank();
+}
+
+function klankPresetOf(d) {
+  return Object.keys(state.klank.presets).find(name => Object.keys(KLANK_KNOBS).every(k => Math.abs(state.klank.presets[name][k] - d[k]) < 0.001)) || "eigen";
+}
+const klankDry = (d) => Object.keys(KLANK_KNOBS).every(k => !d[k]);
+const klankChanged = () => Object.keys(KLANK_KNOBS).some(k => Math.abs(state.klank.draft[k] - state.klank.saved[k]) > 0.001);
+
+function renderKlank() {
+  const k = state.klank;
+  if (!k) return;
+  k.draft.preset = klankPresetOf(k.draft);
+  $$("#klank-presets button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.preset === k.draft.preset)));
+  $("#klank-sliders").innerHTML = Object.entries(KLANK_KNOBS).map(([key, [label, help]]) => `<div class="slider" data-klank="${key}">
+      <div class="slider__head"><label for="klank-${key}">${label}</label><output id="klank-out-${key}">${klankPct(k.draft[key])}</output></div>
+      <div class="slider__track"><input type="range" id="klank-${key}" min="0" max="1" step="0.05" value="${k.draft[key]}">
+        <span class="slider__saved" style="left:${klankPct(k.saved[key])}%" title="opgeslagen: ${klankPct(k.saved[key])}"></span></div>
+      <p class="slider__help">${help}</p></div>`).join("");
+  renderKlankState();
+  renderAbSwitch();
+}
+
+function renderKlankState() {
+  const k = state.klank;
+  const changed = klankChanged();
+  $("#klank-save").disabled = !changed;
+  $("#klank-reset").disabled = !changed;
+  const name = k.draft.preset === "eigen" ? "eigen instelling" : k.draft.preset;
+  $("#klank-state").textContent = changed ? `Nog niet opgeslagen (${name}). Luister op je takes met "Met klank".`
+    : klankDry(k.saved) ? "Opgeslagen: droog, zonder nabewerking." : `Opgeslagen: ${name}. Elke opname klinkt zo.`;
+}
+
+function renderAbSwitch() {
+  const mode = state.abMode || "klank";
+  $$("#ab-switch button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.ab === mode)));
+}
+
+function takeAudioUrl(base) {
+  const k = state.klank;
+  if (!k || state.abMode === "droog" || klankDry(k.draft)) return base;
+  const q = new URLSearchParams({ klank: "1", ...Object.fromEntries(Object.keys(KLANK_KNOBS).map(key => [key, String(k.draft[key])])) });
+  return `${base}?${q}`;
+}
+
+// Swap every take to the current sound, keeping where you were and whether it was playing: A/B while listening.
+function refreshTakeAudio() {
+  $$("#voice-takes audio[data-base]").forEach(audio => {
+    const url = takeAudioUrl(audio.dataset.base);
+    if (audio.getAttribute("src") === url) return;
+    const at = audio.currentTime, playing = !audio.paused;
+    audio.setAttribute("src", url);
+    if (at > 0 || playing) {
+      audio.addEventListener("loadedmetadata", () => { audio.currentTime = Math.min(at, audio.duration || at); if (playing) audio.play().catch(() => {}); }, { once: true });
+      audio.load();
+    }
+  });
+}
+let klankTimer = null;
+function klankChangedSoon() {
+  renderKlankState();
+  clearTimeout(klankTimer);
+  klankTimer = setTimeout(refreshTakeAudio, 350);
+}
+
+async function saveKlank() {
+  const k = state.klank;
+  try {
+    const out = await busy($("#klank-save"), "Opslaan...", () => api.send("/api/klank", "PUT", { ...k.draft, preset: klankPresetOf(k.draft) }));
+    k.saved = out.settings;
+    k.draft = { ...out.settings };
+    renderKlank();
+    toast(klankDry(k.saved) ? "Klank opgeslagen: droog. Opnames krijgen geen nabewerking." : "Klank opgeslagen. Elke volgende opname klinkt zo.");
+  } catch (err) { fail(err, "Klank opslaan"); }
 }
 
 function renderVoiceList() {
@@ -1742,7 +1837,7 @@ function renderTakes() {
       : t.wer <= 0.05 ? chip(`goed verstaan (${Math.round(t.wer * 100)}% fout)`, "ok", "Whisper verstond bijna alles; zo komt de take door de controle van een echte opname.")
       : chip(`${Math.round(t.wer * 100)}% verkeerd verstaan`, "bad", "Een echte opname keurt een take boven 5% af.");
     return `<div class="take${saved ? " is-saved" : ""}" data-take="${escapeHtml(t.id)}">
-      <div class="take__play"><audio controls preload="none" src="${escapeHtml(t.audio)}"></audio></div>
+      <div class="take__play"><audio controls preload="none" data-base="${escapeHtml(t.audio)}" src="${escapeHtml(takeAudioUrl(t.audio))}"></audio></div>
       <div class="take__body">
         <p class="take__text">${escapeHtml(t.text)}</p>
         ${t.wer > 0 && t.transcript ? `<p class="take__heard">Whisper hoorde: ${escapeHtml(t.transcript)}</p>` : ""}
@@ -2206,6 +2301,33 @@ $("#setup-voice-save").onclick = async () => {
   } catch (err) { fail(err, "Knoppen opslaan"); }
 };
 $("#voice-go").onclick = makeTake;
+$("#klank-presets").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-preset]");
+  if (!b || !state.klank) return;
+  state.klank.draft = { ...state.klank.draft, ...state.klank.presets[b.dataset.preset], preset: b.dataset.preset };
+  renderKlank();
+  klankChangedSoon();
+});
+$("#klank-sliders").addEventListener("input", (e) => {
+  const el = e.target.closest("[data-klank]");
+  if (!el || !state.klank) return;
+  const key = el.dataset.klank, value = parseFloat(e.target.value);
+  state.klank.draft[key] = value;
+  $(`#klank-out-${key}`).textContent = klankPct(value);
+  state.klank.draft.preset = klankPresetOf(state.klank.draft);
+  $$("#klank-presets button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.preset === state.klank.draft.preset)));
+  klankChangedSoon();
+});
+$("#klank-save").onclick = saveKlank;
+$("#klank-reset").onclick = () => { state.klank.draft = { ...state.klank.saved }; renderKlank(); klankChangedSoon(); };
+$("#ab-switch").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-ab]");
+  if (!b) return;
+  state.abMode = b.dataset.ab;
+  remember("abMode", state.abMode);
+  renderAbSwitch();
+  refreshTakeAudio();
+});
 $("#voice-text").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); makeTake(); } });
 $("#seed-new").onclick = () => { $("#voice-seed").value = Math.floor(Math.random() * 999998) + 1; };
 $("#voice-save").onclick = () => saveVoice(knobValues());

@@ -82,11 +82,15 @@ def room_tone(n: int, sr: int, level_db: float = -60.0, seed: int = 1) -> np.nda
     return out * (db_to_gain(level_db) / rms)
 
 
-def _prepare(placement: Placement, sr: int, line_lufs: float, acoustics=None) -> np.ndarray:
+def _prepare(placement: Placement, sr: int, line_lufs: float, acoustics=None, finish=None) -> np.ndarray:
     clip = placement.clip
     samples = resample(clip.samples, clip.sr, sr) if clip.sr != sr else clip.samples
     if acoustics is not None:
         samples = acoustics.process_speaker(placement.turn.speaker, samples, sr)  # before loudness, so levels stay even
+    elif finish is not None:
+        from pipeline.audio import finish as sound
+
+        samples = sound.voice(samples, sr, finish)  # the shared microphone, before the line's loudness is set
     samples = normalise_loudness(samples, sr, line_lufs)
     samples = samples * db_to_gain(placement.gain_db)
     if placement.duck_at is not None:
@@ -110,12 +114,18 @@ def mix(
     tail_s: float = 1.0,
     head_s: float = 0.3,
     acoustics=None,
+    finish=None,
 ) -> tuple[AudioClip, float]:
     """Returns the mixed episode and the offset (seconds) the dialogue was shifted by.
 
     ``acoustics`` (pipeline.audio.acoustics.Acoustics, performance prototype) adds per-speaker
     EQ + the shared recording profile per line, and a shared compressor and room on the dialogue bus.
+    ``finish`` (pipeline.audio.finish.Finish, the sound of the show from cast/klank.yaml) does the same with the
+    show's own settings: microphone, warmth and tamed s-sounds per line, compressor and room on the dialogue, a
+    limiter at the end. A dry Finish leaves the episode exactly as without it.
     """
+    if finish is not None and finish.dry:
+        finish = None
     offset = head_s
     intro_samples = None
     if intro is not None:
@@ -132,7 +142,14 @@ def mix(
 
     if intro_samples is not None:
         _add(buffer, fade(intro_samples, sr, 0.01, 0.5), int(head_s * sr))
-    if acoustics is None:
+    if acoustics is None and finish is not None:
+        from pipeline.audio import finish as sound
+
+        dialogue = np.zeros_like(buffer)
+        for placement in timeline.placements:
+            _add(dialogue, _prepare(placement, sr, line_lufs, finish=finish), int((placement.start + offset) * sr))
+        buffer += sound.bus(dialogue, sr, finish)  # one compressor, one room for everyone
+    elif acoustics is None:
         for placement in timeline.placements:
             _add(buffer, _prepare(placement, sr, line_lufs), int((placement.start + offset) * sr))
     else:
@@ -148,6 +165,10 @@ def mix(
     end = int((offset + timeline.duration + tail_s) * sr) + (len(outro_samples) if outro_samples is not None else 0)
     buffer = buffer[: min(len(buffer), end)]
     buffer = normalise_loudness(buffer, sr, target_lufs)
+    if finish is not None:
+        from pipeline.audio import finish as sound
+
+        buffer = sound.limit(buffer, sr, finish)  # peaks down, not the whole episode
     peak = float(np.max(np.abs(buffer))) if len(buffer) else 0.0
     if peak > 0.98:
         buffer = (buffer / peak * 0.98).astype(np.float32)

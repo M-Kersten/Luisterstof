@@ -217,8 +217,29 @@
             </div>
           </section>
 
+          <section class="card klankcard" id="klank" aria-labelledby="klank-title">
+            <div class="cardhead"><h3 id="klank-title">Klank van de show</h3><span class="muted small">Geldt voor elke stem en elke opname: dezelfde microfoon en dezelfde kamer.</span></div>
+            <div class="presets" id="klank-presets" role="group" aria-label="Klank kiezen">
+              <button type="button" data-preset="droog"><b>Droog</b><span>Precies wat Chatterbox maakt</span></button>
+              <button type="button" data-preset="studio"><b>Studio</b><span>Gedempt, dicht op de microfoon</span></button>
+              <button type="button" data-preset="huiskamer"><b>Huiskamer</b><span>Aan tafel, warmer, iets meer kamer</span></button>
+              <button type="button" data-preset="radio"><b>Radio</b><span>Strak en gelijkmatig, bijna geen kamer</span></button>
+            </div>
+            <div class="sliders" id="klank-sliders"></div>
+            <div class="actions">
+              <button id="klank-save" class="btn btn--secondary" disabled>Opslaan voor de hele show</button>
+              <button id="klank-reset" class="btn btn--ghost" disabled>Terug naar opgeslagen</button>
+              <span id="klank-state" class="muted small"></span>
+            </div>
+          </section>
+
           <section class="takes">
-            <div class="cardhead"><h3>Takes</h3><span class="muted small">Nieuwste bovenaan. Whisper luistert elke take terug: hoe minder het verkeerd verstaat, hoe duidelijker de stem.</span></div>
+            <div class="cardhead"><h3>Takes</h3>
+              <div class="abswitch" id="ab-switch" role="group" aria-label="Takes afspelen">
+                <button type="button" data-ab="droog" title="De take zoals Chatterbox hem maakte.">Droog</button>
+                <button type="button" data-ab="klank" title="De take met de klank van de show, even luid als droog, zodat je eerlijk vergelijkt.">Met klank</button>
+              </div>
+              <span class="muted small">Nieuwste bovenaan. Whisper luistert elke take terug: hoe minder het verkeerd verstaat, hoe duidelijker de stem. Wissel tijdens het luisteren tussen droog en met klank.</span></div>
             <div id="voice-takes"></div>
           </section>
         </div>

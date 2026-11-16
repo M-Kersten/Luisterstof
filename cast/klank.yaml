@@ -1,0 +1,12 @@
+# De klank van de show: dezelfde microfoon en dezelfde kamer voor elke stem.
+# Instellen en beluisteren op de pagina Stemmen; dit bestand schrijft die pagina.
+# preset: droog | studio | huiskamer | radio. Droog is precies het geluid van Chatterbox, zonder nabewerking.
+# De knoppen gaan van 0 (niets) tot 1 (veel):
+#   room: hoeveel kamer je hoort   size: hoe groot de kamer klinkt   warmth: warmte van microfoon en voorversterker
+#   deess: hoe sterk scherpe s-klanken getemperd worden   compression: hoe dicht zachte en harde zinnen bij elkaar liggen
+preset: studio
+room: 0.25
+size: 0.2
+warmth: 0.3
+deess: 0.5
+compression: 0.35

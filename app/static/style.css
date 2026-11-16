@@ -499,6 +499,19 @@ mark.srcmark--missing:hover, mark.srcmark--missing.is-active { background: color
 .take__actions { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
 .take__actions .iconbtn { align-self: flex-end; }
 
+/* ---------------------------------------------------------------- klank van de show */
+.klankcard { gap: var(--space-3); }
+.presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-2); }
+.presets button { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left; padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--line); background: var(--bg-000); color: var(--text-muted); font-size: 12.5px; line-height: 17px; transition: border-color var(--dur-fast), background-color var(--dur-fast), transform var(--dur-fast) var(--ease-out); }
+.presets button b { color: var(--text-primary); font-size: 14px; font-weight: 600; }
+.presets button:hover { border-color: var(--line-control); transform: translateY(-1px); }
+.presets button[aria-pressed="true"] { border-color: var(--brand); background: var(--tint); }
+.presets button[aria-pressed="true"] b { color: var(--brand); }
+.abswitch { display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--bg-200); }
+.abswitch button { height: 28px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--text-muted); font-size: 13px; font-weight: 600; transition: background-color var(--dur-fast), color var(--dur-fast), box-shadow var(--dur-fast); }
+.abswitch button:hover { color: var(--text-primary); }
+.abswitch button[aria-pressed="true"] { background: var(--bg-100); color: var(--brand); box-shadow: var(--shadow-sm), 0 0 0 1px var(--line); }
+
 /* ---------------------------------------------------------------- character setup */
 .voicecol { display: flex; flex-direction: column; gap: var(--space-3); position: sticky; top: calc(var(--header-h) + 16px); }
 .voicecol .voicelist { position: static; }
@@ -799,6 +812,7 @@ body.has-savebar .toast { bottom: 84px; }
   .voicelab { grid-template-columns: minmax(0, 1fr); }
   .voicecol { position: static; }
   .setupnav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .charfields { grid-template-columns: minmax(0, 1fr); }
   .voicelist { position: static; flex-direction: row; flex-wrap: wrap; }
   .sliders { grid-template-columns: minmax(0, 1fr); }

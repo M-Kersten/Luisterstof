@@ -156,8 +156,13 @@ def render_episode(
     acoustics = _fit_acoustics(timeline, cast, settings, sr) if performance and performance.acoustics else None
     if acoustics is not None:
         manifest.acoustics = acoustics.report()
+    from pipeline.audio import finish as sound
+
+    finish = None if acoustics is not None else sound.load(settings.cast_dir)  # the sound of the show, cast/klank.yaml
+    if finish is not None:
+        manifest.acoustics = {"klank": finish.knobs()}
     mixed, offset = mix(timeline, sr=sr, target_lufs=settings.target_lufs, line_lufs=settings.line_lufs, intro=intro, outro=outro,
-                        acoustics=acoustics)
+                        acoustics=acoustics, finish=finish)
 
     audio_path = paths.out_audio(script.episode_id)
     mixed.write(audio_path)

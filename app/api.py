@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -11,8 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import soundfile as sf
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -423,12 +425,51 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         return [{**t, "audio": f"/api/voices/{speaker_id}/takes/{t['id']}.wav"} for t in lab.takes(speaker_id)]
 
     @app.get("/api/voices/{speaker_id}/takes/{take_id}.wav")
-    def voice_take_audio(speaker_id: str, take_id: str):
+    def voice_take_audio(speaker_id: str, take_id: str, klank: bool = False, preset: str | None = None,
+                         room: float | None = None, size: float | None = None, warmth: float | None = None,
+                         deess: float | None = None, compression: float | None = None):
+        """The take as made, or with ``klank=1`` through the sound of the show: the saved settings, or the values
+        in the query (sliders not saved yet). The file on disk stays dry."""
         speaker_or_404(speaker_id)
         try:
-            return FileResponse(lab.take_path(speaker_id, take_id), media_type="audio/wav")
+            path = lab.take_path(speaker_id, take_id)
         except KeyError as exc:
             raise HTTPException(404, "unknown take") from exc
+        if not klank:
+            return FileResponse(path, media_type="audio/wav")
+        from pipeline.audio import finish as sound
+        from pipeline.audio.synth import AudioClip
+
+        given = {k: v for k, v in {"room": room, "size": size, "warmth": warmth, "deess": deess,
+                                   "compression": compression}.items() if v is not None}
+        try:
+            chosen = sound.load(settings.cast_dir).model_copy(update={"preset": preset or "eigen", **given}) if given \
+                else (sound.Finish.from_preset(preset) if preset else sound.load(settings.cast_dir))
+            chosen = sound.Finish.model_validate(chosen.model_dump())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        clip = AudioClip.read(path)
+        treated = AudioClip(sound.take(clip.samples, clip.sr, chosen), clip.sr)
+        buf = io.BytesIO()
+        sf.write(buf, treated.samples, treated.sr, format="WAV", subtype="PCM_16")
+        return Response(buf.getvalue(), media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/klank")
+    def klank_get() -> dict[str, Any]:
+        from pipeline.audio import finish as sound
+
+        return {"settings": sound.load(settings.cast_dir).model_dump(), "presets": sound.PRESETS}
+
+    @app.put("/api/klank")
+    def klank_put(req: dict[str, Any]) -> dict[str, Any]:
+        from pipeline.audio import finish as sound
+
+        try:
+            finish = sound.Finish.model_validate(req)
+        except ValueError as exc:
+            raise HTTPException(400, f"niet opgeslagen: {exc}") from exc
+        sound.save(settings.cast_dir, finish)
+        return {"settings": finish.model_dump(), "presets": sound.PRESETS}
 
     @app.delete("/api/voices/{speaker_id}/takes/{take_id}")
     def voice_take_delete(speaker_id: str, take_id: str) -> dict[str, Any]:
