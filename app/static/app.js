@@ -1337,6 +1337,7 @@ function renderProgress() {
   else if (run.tokens && now - run.tokens.at < 8000) detail.push("antwoord van het schrijfmodel binnen");
   const eta = etaText(now);
   if (eta) detail.push(eta);
+  if (run.now && now - run.now.at > 20000) detail.push(`deze stap loopt ${fmtDuration(now - run.now.at)}`);
   detail.push(`bezig sinds ${new Date(run.started).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}`);
   if (run.stopping) detail.push("stopt bij het volgende controlepunt");
   $("#progress-detail").textContent = detail.join(" · ");
@@ -1346,6 +1347,8 @@ function renderProgress() {
   link.hidden = voice;
   if (!voice) link.href = `${bookHash(run.job.book_id)}/meekijken`;
   if (state.view === "watch") renderNow();
+  const takeNow = $("#take-now");
+  if (takeNow && voice) takeNow.textContent = takeNowText(run.job);
 }
 
 // ------------------------------------------------------------------ meekijken
@@ -1707,17 +1710,30 @@ async function loadTakes() {
   renderTakes();
 }
 
+// What the take that is being made is doing now, and for how long: a phase that runs on and on is visible.
+function takeNowText(job) {
+  if (!job || job.status === "queued") {
+    const ahead = state.jobs.find(j => j.status === "running" && (!job || j.id !== job.id));
+    return ahead ? `Wacht tot ${jobName(ahead).toLowerCase()} klaar is: er draait één taak tegelijk.` : "Wacht op zijn beurt.";
+  }
+  if (!(run.job && run.job.id === job.id)) return state.voices.model_loaded ? "De take wordt gemaakt." : "De eerste take laadt ook het stemmodel; dat duurt een minuut of twee.";
+  const now = Date.now();
+  const text = run.now ? run.now.text : "Begint.";
+  return `${text} (${fmtDuration(now - (run.now ? run.now.at : run.started))})`;
+}
+
 function renderTakes() {
   const v = currentVoice();
   const root = $("#voice-takes");
   if (!v) return;
   const job = voiceJob();
   const pending = job ? `<div class="take take--pending"><span class="chip chip--run">${job.status === "queued" ? "in de wachtrij" : "bezig"}</span>
-    <span class="muted">${state.voices.model_loaded ? "De take wordt gemaakt." : "De eerste take laadt ook het stemmodel; dat duurt een minuut of twee."}</span></div>` : "";
+    <span class="muted" id="take-now">${escapeHtml(takeNowText(job))}</span></div>` : "";
   if (!state.voiceTakes.length) { root.innerHTML = pending || '<p class="empty">Nog geen takes voor deze stem.</p>'; return; }
   root.innerHTML = pending + state.voiceTakes.map(t => {
     const saved = sameParams(t.params, v.params);
-    const wer = t.wer === null || t.wer === undefined ? chip("niet teruggeluisterd")
+    const wer = t.check === "pending" && job ? chip("wordt teruggeluisterd", "run")
+      : t.wer === null || t.wer === undefined ? chip("niet teruggeluisterd", t.check === "timeout" || t.check === "error" ? "warn" : "", t.check_note || "")
       : t.wer <= 0.05 ? chip(`goed verstaan (${Math.round(t.wer * 100)}% fout)`, "ok", "Whisper verstond bijna alles; zo komt de take door de controle van een echte opname.")
       : chip(`${Math.round(t.wer * 100)}% verkeerd verstaan`, "bad", "Een echte opname keurt een take boven 5% af.");
     return `<div class="take${saved ? " is-saved" : ""}" data-take="${escapeHtml(t.id)}">
@@ -1725,6 +1741,7 @@ function renderTakes() {
       <div class="take__body">
         <p class="take__text">${escapeHtml(t.text)}</p>
         ${t.wer > 0 && t.transcript ? `<p class="take__heard">Whisper hoorde: ${escapeHtml(t.transcript)}</p>` : ""}
+        ${t.check_note ? `<p class="take__note">${escapeHtml(t.check_note)}</p>` : ""}
         <p class="take__meta">${Object.keys(KNOBS).map(k => `<span>${escapeHtml(knobText(k, t.params[k]))}</span>`).join("")}<span>seed ${t.seed}</span><span>${String(t.duration_s).replace(".", ",")} s</span><span>${fmtWhen(t.created_at)}</span></p>
         <p class="take__chips">${wer}${saved ? chip("opgeslagen instellingen", "ok") : ""}${v.ref_hash && t.ref_hash && t.ref_hash !== v.ref_hash ? chip("met een eerdere clip", "", "Deze take is gemaakt met de referentieclip van voor de laatste wissel.") : ""}</p>
       </div>

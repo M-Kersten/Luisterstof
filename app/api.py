@@ -446,7 +446,8 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
             raise HTTPException(409, f"{sp.name} heeft nog geen referentieclip: zet hem in cast/{sp.voice_ref or 'refs/'}.")
 
         def work(p: Pipeline):
-            return lab.generate(sp, req.text, params, req.seed, on_event=p.on_event)
+            return lab.generate(sp, req.text, params, req.seed, on_event=lambda stage, status, data: p.emit(stage, status, **data),
+                                should_stop=lambda: p.aborted)
 
         return manager.submit(VOICELAB_JOBS, speaker_id, "voice", work)
 

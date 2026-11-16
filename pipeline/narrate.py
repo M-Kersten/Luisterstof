@@ -214,6 +214,32 @@ def _say(stage: str, status: str, d: dict[str, Any]) -> tuple[str, str]:  # noqa
             return f"Controle vond {_n(blocking, 'probleem', 'problemen')}{tips}.{gaps}", "problem"
         return "", ""
 
+    # ------------------------------------------------------------ a take in the voice lab
+    if stage == "voice":
+        if status == "load":
+            return "Het stemmodel laden. Dat gebeurt bij de eerste take en duurt een minuut of twee.", "step"
+        if status == "loaded":
+            where = " op de processor (veel trager dan op de GPU)" if str(d.get("device", "")).startswith("cpu") else ""
+            return f"Stemmodel geladen in {duration(d.get('seconds'))}{where}.", "result"
+        if status == "start":
+            return f"{d.get('name') or 'De stem'} spreekt de zin in.", "step"
+        if status == "made":
+            return f"Take gemaakt in {duration(d.get('seconds'))}: {duration(d.get('audio_s'))} audio. Hij is bewaard.", "result"
+        if status == "check_device":
+            return (f"De GPU heeft nog maar {_number(float(d.get('free_gb') or 0))} GB vrij, dus Whisper luistert "
+                    "op de processor terug. Dat duurt langer."), "detail"
+        if status == "check":
+            where = {"cpu": " op de processor", "cuda": " op de GPU"}.get(str(d.get("device")), "")
+            what = "Whisper laden en terugluisteren" if d.get("loading") else "Terugluisteren"
+            return f"{what}{where}: verstaat Whisper wat er gezegd moest worden?", "step"
+        if status == "checked":
+            wer = float(d.get("wer") or 0)
+            verdict = "goed verstaan" if wer <= 0.05 else "te veel verkeerd verstaan voor een opname"
+            return f"Teruggeluisterd in {duration(d.get('seconds'))}: {round(wer * 100)}% verkeerd verstaan, {verdict}.", "result"
+        if status == "check_skipped":
+            return f"Niet teruggeluisterd. {d.get('reason') or ''}".strip(), "problem"
+        return "", ""
+
     if stage == "continuity" and status == "done":
         callbacks = int(d.get("callbacks") or 0)
         return (f"Onthouden voor de volgende afleveringen: {_n(callbacks, 'terugverwijzing', 'terugverwijzingen')}."

@@ -156,6 +156,10 @@ class Pipeline:
         seconds = ping()
         self.emit("llm", "ready", seconds=round(seconds, 1))
 
+    @property
+    def aborted(self) -> bool:
+        return self._aborted
+
     def abort(self) -> None:
         """Stop at the next checkpoint: the next event, or the next answer of a model call in flight."""
         self._aborted = True

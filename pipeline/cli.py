@@ -386,6 +386,7 @@ def doctor():
         busy = "  [!! something already holds the card: a render would share it]" if used > BUSY_MIB else ""
         typer.echo(f"gpu memory: {used / 1024:.1f} of {total / 1024:.1f} GB in use{busy}")
     _doctor_chatterbox(settings)
+    _doctor_whisper(settings)
     from pipeline.script.cast import load_cast
 
     try:
@@ -440,6 +441,44 @@ def _doctor_chatterbox(settings: Settings) -> None:
     typer.echo(f"chatterbox: T3 {T3_CHECKPOINT} is not complete on disk: missing {', '.join(missing)}")
     typer.echo("  run once with STUDIEPODCAST_OFFLINE=0 to download it, or point CHATTERBOX_CKPT_DIR at a "
                "folder that has the files")
+
+
+def _doctor_whisper(settings: Settings) -> None:
+    from pipeline.voicelab import whisper_status
+
+    status = whisper_status(settings.whisper_model)
+    if status == "ok":
+        typer.echo(f"whisper: {settings.whisper_model} ok, on disk")
+    elif status == "missing":
+        typer.echo(f"whisper: {settings.whisper_model} is not on disk; takes and renders are not checked until "
+                   "you run `studiepodcast fetch-whisper` once")
+    else:
+        typer.echo("whisper: faster-whisper is not installed; takes and renders are not checked")
+
+
+@app.command("fetch-whisper")
+def fetch_whisper():
+    """Download the Whisper model that listens back to takes and renders (once; about 3 GB for large-v3).
+    Only the model comes in; nothing about your books goes out."""
+    from pipeline.voicelab import whisper_status
+
+    settings = state["settings"]
+    name = settings.whisper_model
+    status = whisper_status(name)
+    if status == "no-package":
+        typer.echo("faster-whisper is not installed: pip install faster-whisper")
+        raise typer.Exit(1)
+    if status == "ok":
+        typer.echo(f"{name} is already on disk.")
+        return
+    if settings.offline:
+        typer.echo("Offline mode is on. Run this once with STUDIEPODCAST_OFFLINE=0 to download the model.")
+        raise typer.Exit(1)
+    from faster_whisper.utils import download_model  # type: ignore
+
+    typer.echo(f"Downloading {name}; the progress shows below.")
+    path = download_model(name)
+    typer.echo(f"Done: {path}")
 
 
 def _doctor_llm(settings: Settings) -> None:

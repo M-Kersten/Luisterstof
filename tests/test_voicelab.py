@@ -81,3 +81,89 @@ def test_the_voices_page_end_to_end(settings):
         assert tessa["params"] == KNOBS  # the cast was read again
         assert client.delete(f"/api/voices/tessa/takes/{takes[0]['id']}").status_code == 200
         assert client.get("/api/voices/nobody/takes").status_code == 404
+
+
+# ------------------------------------------------------------------ the check that listens back
+class _Hangs:
+    """A Whisper that never answers: a first download, a GPU spilling into shared memory, a DLL mix-up."""
+
+    def __init__(self):
+        self._model = object()
+
+    def transcribe(self, clip):
+        time.sleep(30)
+        return "te laat"
+
+
+def _clip():
+    import numpy as np
+
+    from pipeline.audio.synth import AudioClip
+
+    return AudioClip(np.zeros(24000, dtype=np.float32), 24000)
+
+
+def test_a_check_that_hangs_is_given_up_and_not_tried_again(settings, monkeypatch):
+    import pipeline.voicelab as vl
+
+    monkeypatch.setattr(vl, "CHECK_RUN_S", 0.5)
+    lab = VoiceLab(settings, fake_audio=False)
+    said = []
+    say = lambda stage, status, data: said.append((status, data))  # noqa: E731
+    monkeypatch.setattr(lab, "_checker", lambda say_: (_Hangs(), "cuda"))
+    started = time.monotonic()
+    out = lab._check(_clip(), "een zin van vijf woorden", say, None)
+    assert time.monotonic() - started < 5
+    assert out["check"] == "timeout" and "vast" in out["check_note"]
+    assert said[-1][0] == "check_skipped"
+    # the next take does not wait for it again, until the model is released
+    monkeypatch.undo()
+    transcriber, why = lab._checker(say)
+    assert transcriber is None and "vast" in why
+    lab.release()
+    assert lab._check_broken is None
+
+
+def test_stop_ends_the_check_at_once(settings, monkeypatch):
+    from pipeline.cancel import Cancelled
+
+    lab = VoiceLab(settings, fake_audio=False)
+    monkeypatch.setattr(lab, "_checker", lambda say_: (_Hangs(), "cuda"))
+    started = time.monotonic()
+    with pytest.raises(Cancelled):
+        lab._check(_clip(), "een zin van vijf woorden", lambda *a: None, lambda: True)
+    assert time.monotonic() - started < 3
+
+
+def test_no_download_inside_a_take_and_cpu_when_the_gpu_is_full(settings, monkeypatch):
+    import pipeline.voicelab as vl
+
+    lab = VoiceLab(settings.with_(device="cuda"), fake_audio=False)
+    said = []
+    say = lambda stage, status, data: said.append((status, data))  # noqa: E731
+    monkeypatch.setattr(vl, "whisper_status", lambda name: "missing")
+    transcriber, why = lab._checker(say)
+    assert transcriber is None and "fetch-whisper" in why
+
+    monkeypatch.setattr(vl, "whisper_status", lambda name: "ok")
+    monkeypatch.setattr(vl, "free_gpu_gb", lambda: 1.1)
+    transcriber, where = lab._checker(say)
+    assert where == "cpu" and transcriber.settings.device == "cpu"
+    assert said[-1] == ("check_device", {"device": "cpu", "free_gb": 1.1})
+
+
+def test_a_take_is_saved_before_it_is_checked(settings, cast, monkeypatch):
+    lab = VoiceLab(settings, fake_audio=True)
+    seen = {}
+
+    def check(clip, spoken, say, should_stop):
+        seen["files"] = sorted(p.suffix for p in (settings.data_dir / "voicelab" / "joris").iterdir())
+        return {"check": "timeout", "check_note": "Whisper liep vast."}
+
+    monkeypatch.setattr(lab, "_check", check)
+    sp = find_speaker(cast, "joris")[1]
+    take = lab.generate(sp, "Dit is een zin om te proberen.", clean_params(KNOBS), 7)
+    assert seen["files"] == [".json", ".wav"]  # on disk while the check ran
+    assert take["check"] == "timeout" and take["wer"] is None
+    kept = lab.takes("joris")[0]
+    assert kept["check_note"] == "Whisper liep vast."
