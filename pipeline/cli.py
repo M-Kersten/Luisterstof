@@ -385,6 +385,16 @@ def doctor():
             else:
                 typer.echo("  !! torch is built for CUDA but sees no GPU: update the NVIDIA driver and check that "
                            "the card shows up in Task Manager")
+        elif settings.device.startswith("cuda"):
+            from pipeline.audio.synth import gpu_fit
+
+            major, minor = torch.cuda.get_device_capability(0)
+            typer.echo(f"  gpu: {torch.cuda.get_device_name(0)}, sm_{major}{minor}; this torch has code for "
+                       f"{' '.join(torch.cuda.get_arch_list())}")
+            fit = gpu_fit(torch)
+            if fit:
+                typer.echo(f"  !! this torch has no code for this GPU, so the voices run on the processor. Install:\n"
+                           f"    {fit[1]}")
     except Exception:  # noqa: BLE001
         typer.echo("torch devices: torch not installed")
     from pipeline.audio.gpu import BUSY_MIB, gpu_memory

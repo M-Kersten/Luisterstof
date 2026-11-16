@@ -39,11 +39,13 @@ uv pip install -e ".[cuda]" --no-build-isolation-package pkuseg    # 24GB GPU bo
 studiepodcast doctor           # shows the platform profile and what is installed
 ```
 
-**On Windows** PyPI only has the CPU-only build of torch, so the voices would run on the processor. `pyproject.toml` points uv at PyTorch's CUDA 12.4 index for `torch` and `torchaudio` on Windows, and the command above installs the GPU build (`torch 2.6.0+cu124`, about 2.5 GB; it needs a recent NVIDIA driver). An install made before that, or with plain `pip`, has the CPU build; `doctor` says so, and this replaces it:
+**On Windows** PyPI only has the CPU-only build of torch, so the voices would run on the processor, and torch 2.6 (which chatterbox-tts pins) has no code for RTX 50 cards. `pyproject.toml` therefore gives Windows `torch 2.7.1+cu128` straight from PyTorch's index (about 3 GB; it needs a recent NVIDIA driver): the GTX 16 series and every RTX card up to the RTX 50 series. An install made before that, or with plain `pip`, has the wrong build; `doctor` says so, and this replaces it:
 
 ```bat
-uv pip install --python .venv "torch==2.6.0+cu124" "torchaudio==2.6.0+cu124" --index-url https://download.pytorch.org/whl/cu124
+uv pip install --python .venv "torch==2.7.1+cu128" "torchaudio==2.7.1+cu128" --index-url https://download.pytorch.org/whl/cu128
 ```
+
+A GTX 900 or 1000 card is too old for that build; `doctor` then gives the CUDA 12.4 one (`torch==2.6.0+cu124` from `.../whl/cu124`).
 
 `--no-build-isolation-package pkuseg` works around a real bug in `pkuseg` (a `chatterbox-tts` dependency, used for Chinese text segmentation): its `setup.py` calls `numpy.get_include()` without declaring numpy as a build dependency, which breaks under the isolated build environment `uv` (and modern `pip`) uses by default. The flag builds that one package against the venv's own packages instead of a throwaway one, so numpy — already installed by the `.[dev]` step above — is visible to it. If you're on plain `pip` instead of `uv`, run `pip install --no-build-isolation "pkuseg==0.0.25"` once first, then the normal `pip install -e ".[cuda]"`.
 
@@ -437,7 +439,9 @@ torch cannot use the GPU, so Chatterbox runs on the processor: a take of a few s
 .venv\Scripts\python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-That should print `2.6.0+cu124 True`. If it says `+cu124 False`, torch is right and the NVIDIA driver is too old or the card is not visible: update the driver. The same build also brings the cuDNN 9 that Whisper's GPU engine needs, so takes are then listened back on the GPU as well.
+That should print `2.7.1+cu128 True`. If it says `+cu128 False`, torch is right and the NVIDIA driver is too old or the card is not visible: update the driver. The same build also brings the cuDNN 9 that Whisper's GPU engine needs, so takes are then listened back on the GPU as well.
+
+The other reason is a card the installed torch has no code for. Loading used to fail with `CUDA error: no kernel image is available for execution on the device`; now the voice model goes to the processor and the take says which card it is. An RTX 50 card (Blackwell, `sm_120`) needs the CUDA 12.8 build above; `doctor` prints the card, what this torch has code for, and the command.
 
 ### A take in Stemmen stays on "take terugluisteren"
 
@@ -445,7 +449,7 @@ That is Whisper listening back, after the take itself was made. Three causes, in
 
 1. **Whisper is not on the laptop yet.** Its first use used to download `large-v3` (about 3 GB) inside the take, with only a progress bar in the app's console window to show for it. Now the check is skipped instead; run `studiepodcast fetch-whisper` once. `studiepodcast doctor` says whether it is on disk.
 2. **The GPU is full.** Chatterbox stays loaded between takes and the writing model in OpenCode may hold the card as well. On Windows CUDA then spills into shared system memory and everything on the card crawls. The check now moves to the processor when less than 2.5 GB is free; `doctor` shows how much of the card is in use. Freeing the GPU on the Stemmen page or closing the model in OpenCode helps the takes themselves too.
-3. **torch and faster-whisper disagree about cuDNN.** The console says `Could not locate cudnn_ops_infer64_8.dll`. chatterbox-tts holds torch at 2.6, whose GPU build brings cuDNN 9 (the CPU-only build brings none, see the entry above); whisperx 3.3.3 to 3.4.x pin CTranslate2 (faster-whisper's engine) below 4.5, and those versions want cuDNN 8. On a Windows GPU that does not fail, it hangs. The project now pins `whisperx==3.3.2` and `ctranslate2>=4.5`; an existing install is fixed with
+3. **torch and faster-whisper disagree about cuDNN.** The console says `Could not locate cudnn_ops_infer64_8.dll`. The GPU builds of torch bring cuDNN 9 (the CPU-only build brings none, see the entry above); whisperx 3.3.3 to 3.4.x pin CTranslate2 (faster-whisper's engine) below 4.5, and those versions want cuDNN 8. On a Windows GPU that does not fail, it hangs. The project now pins `whisperx==3.3.2` and `ctranslate2>=4.5`; an existing install is fixed with
 
    ```bat
    uv pip install --python .venv "whisperx==3.3.2" "ctranslate2>=4.5"

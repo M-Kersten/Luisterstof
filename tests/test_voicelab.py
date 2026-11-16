@@ -227,14 +227,22 @@ def test_whisper_moves_to_the_processor_when_its_cudnn_is_missing(settings, monk
 
 
 # ------------------------------------------------------------------ the voices on the processor
-def _fake_torch(monkeypatch, *, cuda_build, sees_gpu, version):
+CU124 = ["sm_50", "sm_60", "sm_61", "sm_70", "sm_75", "sm_80", "sm_86", "sm_90"]
+CU128 = ["sm_75", "sm_80", "sm_86", "sm_90", "sm_100", "sm_120", "compute_120"]
+
+
+def _fake_torch(monkeypatch, *, cuda_build, sees_gpu, version, card=("NVIDIA GeForce RTX 4060 Laptop GPU", (8, 9)),
+                archs=CU124):
     import sys
     import types
 
     torch = types.SimpleNamespace(
         __version__=version,
+        load=lambda *a, **k: None,  # resolve_torch_device maps checkpoints onto the processor when it falls back
+        device=lambda name: name,
         version=types.SimpleNamespace(cuda="12.4" if cuda_build else None),
-        cuda=types.SimpleNamespace(is_available=lambda: sees_gpu),
+        cuda=types.SimpleNamespace(is_available=lambda: sees_gpu, get_device_name=lambda i=0: card[0],
+                                   get_device_capability=lambda i=0: card[1], get_arch_list=lambda: archs),
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
 
@@ -272,4 +280,56 @@ def test_doctor_names_the_cpu_only_torch_and_the_fix(monkeypatch):
 
     _fake_torch(monkeypatch, cuda_build=False, sees_gpu=False, version="2.6.0")
     out = CliRunner().invoke(app, ["doctor"]).output
-    assert "CPU-only build of torch" in out and "torch==2.6.0+cu124" in out and "download.pytorch.org/whl/cu124" in out
+    assert "CPU-only build of torch" in out and "torch==2.7.1+cu128" in out and "download.pytorch.org/whl/cu128" in out
+
+
+def test_an_rtx_50_card_on_torch_26_is_named_and_gets_the_cuda_128_build(monkeypatch):
+    from typer.testing import CliRunner
+
+    from pipeline.audio.synth import (
+        TORCH_CUDA_FIX,
+        TORCH_CUDA_FIX_OLDER,
+        resolve_torch_device,
+        torch_gpu_status,
+    )
+    from pipeline.cli import app
+
+    blackwell = ("NVIDIA GeForce RTX 5070 Laptop GPU", (12, 0))
+    _fake_torch(monkeypatch, cuda_build=True, sees_gpu=True, version="2.6.0+cu124", card=blackwell, archs=CU124)
+    ok, why = torch_gpu_status()
+    assert not ok and "RTX 5070" in why and "sm_120" in why and "nieuwer" in why and "CUDA 12.8" in why
+    assert resolve_torch_device("cuda") == "cpu"  # no "no kernel image" crash: the processor, with a reason
+    out = CliRunner().invoke(app, ["doctor"]).output
+    assert "sm_120" in out and "no code for this GPU" in out and TORCH_CUDA_FIX in out
+
+    _fake_torch(monkeypatch, cuda_build=True, sees_gpu=True, version="2.7.1+cu128", card=blackwell, archs=CU128)
+    assert torch_gpu_status() == (True, "")
+
+    pascal = ("NVIDIA GeForce GTX 1060", (6, 1))  # too old for the CUDA 12.8 build
+    _fake_torch(monkeypatch, cuda_build=True, sees_gpu=True, version="2.7.1+cu128", card=pascal, archs=CU128)
+    ok, why = torch_gpu_status()
+    assert not ok and "ouder" in why
+    import sys
+
+    from pipeline.audio.synth import gpu_fit
+    assert gpu_fit(sys.modules["torch"])[1] == TORCH_CUDA_FIX_OLDER
+
+
+def test_a_gpu_error_while_loading_does_not_send_you_to_download_the_weights(monkeypatch):
+    import sys
+    import types
+
+    import pipeline.audio.synth as synth
+
+    class Model:
+        @classmethod
+        def from_local(cls, ckpt_dir, device, t3_model=None):
+            raise RuntimeError("CUDA error: no kernel image is available for execution on the device")
+
+    monkeypatch.setitem(sys.modules, "chatterbox", types.ModuleType("chatterbox"))
+    monkeypatch.setitem(sys.modules, "chatterbox.mtl_tts", types.SimpleNamespace(ChatterboxMultilingualTTS=Model))
+    monkeypatch.setattr(synth, "chatterbox_checkpoint_dir", lambda: "C:/cache/chatterbox")
+    with pytest.raises(RuntimeError) as err:
+        synth.load_multilingual_model("cuda")
+    assert "could not start on the GPU" in str(err.value) and "doctor" in str(err.value)
+    assert "download" not in str(err.value).lower()

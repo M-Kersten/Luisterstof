@@ -33,15 +33,11 @@ dependencies = [
 cuda = [
     "chatterbox-tts>=0.1.5",  # 0.1.4 and older only know the first multilingual vocabulary
     "faster-whisper>=1.0",
-    # chatterbox-tts holds torch at 2.6, whose GPU build brings cuDNN 9. CTranslate2 (faster-whisper's engine) needs 4.5 or
-    # newer to use cuDNN 9; 4.4 wants cuDNN 8 and hangs on a Windows GPU without it. whisperx 3.3.2 is the release
-    # that both takes torch 2.6 and allows CTranslate2 4.5+ (3.3.3 to 3.4.x pin it below 4.5, 3.5+ want torch 2.7).
+    # The GPU builds of torch (2.6 on Linux, 2.7.1 on Windows, see [tool.uv]) bring cuDNN 9. CTranslate2 (faster-whisper's
+    # engine) needs 4.5 or newer to use cuDNN 9; 4.4 wants cuDNN 8 and hangs on a Windows GPU without it. whisperx 3.3.2
+    # takes torch 2.6 and 2.7 and allows CTranslate2 4.5+ (3.3.3 to 3.4.x pin it below 4.5, 3.5+ want torch 2.7.1+).
     "whisperx==3.3.2",
     "ctranslate2>=4.5",
-    # Named here (chatterbox-tts pins the same versions) so the source below applies: PyPI's Windows wheel of torch
-    # is the CPU-only build, and the voices would run on the processor. Linux gets the CUDA build from PyPI.
-    "torch==2.6.0",
-    "torchaudio==2.6.0",
 ]
 local = ["studiepodcast[cuda]"]
 dev = [
@@ -50,14 +46,23 @@ dev = [
     "ruff",
 ]
 
-[tool.uv.sources]
-torch = [{ index = "pytorch-cu124", marker = "sys_platform == 'win32'" }]
-torchaudio = [{ index = "pytorch-cu124", marker = "sys_platform == 'win32'" }]
-
-[[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-explicit = true
+[tool.uv]
+# torch on Windows: PyPI only has the CPU-only build there, so the voices would run on the processor, and torch 2.6
+# (which chatterbox-tts pins) has no code for RTX 50 cards ("no kernel image is available for execution on the
+# device"). So Windows gets torch 2.7.1 built for CUDA 12.8, straight from PyTorch's index: the GTX 16 series and every
+# RTX card up to the RTX 50 series. Chatterbox's model code runs on it (its own pyproject allows torch 2.9 on Python
+# 3.14). A GTX 900/1000 card needs the CUDA 12.4 build instead; `studiepodcast doctor` gives that command. Linux keeps
+# the CUDA build of torch 2.6 from PyPI.
+override-dependencies = [
+    "torch @ https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp311-cp311-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.11'",
+    "torchaudio @ https://download.pytorch.org/whl/cu128/torchaudio-2.7.1%2Bcu128-cp311-cp311-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.11'",
+    "torch @ https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp312-cp312-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.12'",
+    "torchaudio @ https://download.pytorch.org/whl/cu128/torchaudio-2.7.1%2Bcu128-cp312-cp312-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.12'",
+    "torch @ https://download.pytorch.org/whl/cu128/torch-2.7.1%2Bcu128-cp313-cp313-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.13'",
+    "torchaudio @ https://download.pytorch.org/whl/cu128/torchaudio-2.7.1%2Bcu128-cp313-cp313-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.13'",
+    "torch==2.6.0; sys_platform != 'win32'",
+    "torchaudio==2.6.0; sys_platform != 'win32'",
+]
 
 [project.scripts]
 studiepodcast = "pipeline.cli:app"

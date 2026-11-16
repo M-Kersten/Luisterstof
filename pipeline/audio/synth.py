@@ -166,8 +166,49 @@ class NullSynth:
 # Chatterbox Multilingual
 # ---------------------------------------------------------------------------
 
-TORCH_CUDA_FIX = ('uv pip install --python .venv "torch==2.6.0+cu124" "torchaudio==2.6.0+cu124" '
-                  "--index-url https://download.pytorch.org/whl/cu124")
+# The GPU builds of torch for Windows. CUDA 12.8 (torch 2.7.1) has code for the GTX 16 series and every RTX card up to
+# the RTX 50 series (Turing to Blackwell); CUDA 12.4 (torch 2.6.0) for the GTX 900 series up to the RTX 40 series.
+TORCH_CUDA_FIX = ('uv pip install --python .venv "torch==2.7.1+cu128" "torchaudio==2.7.1+cu128" '
+                  "--index-url https://download.pytorch.org/whl/cu128")
+TORCH_CUDA_FIX_OLDER = ('uv pip install --python .venv "torch==2.6.0+cu124" "torchaudio==2.6.0+cu124" '
+                        "--index-url https://download.pytorch.org/whl/cu124")
+
+
+def _arch_runs(archs: list[str], major: int, minor: int) -> bool:
+    """Whether code built for ``archs`` runs on a card of compute capability major.minor: a cubin (sm_XY) runs on
+    the same major with an equal or higher minor, PTX (compute_XY) on anything at or above it."""
+    for arch in archs:
+        m = re.fullmatch(r"(sm|compute)_(\d+)(\d)a?", arch)
+        if not m:
+            continue
+        a_major, a_minor = int(m.group(2)), int(m.group(3))
+        if m.group(1) == "sm" and a_major == major and a_minor <= minor:
+            return True
+        if m.group(1) == "compute" and (a_major, a_minor) <= (major, minor):
+            return True
+    return False
+
+
+def gpu_fit(torch) -> tuple[str, str] | None:
+    """None when this torch has code for the card, else (why in Dutch, the install command that fixes it). Without
+    it the first kernel fails with "no kernel image is available for execution on the device"."""
+    try:
+        major, minor = torch.cuda.get_device_capability(0)
+        archs = list(torch.cuda.get_arch_list())
+        name = torch.cuda.get_device_name(0)
+    except Exception:  # noqa: BLE001 - cannot tell: let the load find out
+        return None
+    if not archs or _arch_runs(archs, major, minor):
+        return None
+    sm = f"sm_{major}{minor}"
+    known = sorted({int(m.group(1)) for a in archs if (m := re.fullmatch(r"(?:sm|compute)_(\d+)\da?", a))})
+    newer = bool(known) and major > known[-1]
+    if newer:
+        why = (f"jouw GPU ({name}, {sm}) is nieuwer dan deze torch ({torch.__version__}) kent; daarvoor is torch "
+               "2.7.1 of nieuwer met CUDA 12.8 nodig")
+        return why, TORCH_CUDA_FIX
+    why = f"jouw GPU ({name}, {sm}) is ouder dan deze torch ({torch.__version__}) ondersteunt"
+    return why, TORCH_CUDA_FIX_OLDER
 
 
 def torch_gpu_status() -> tuple[bool, str]:
@@ -178,7 +219,8 @@ def torch_gpu_status() -> tuple[bool, str]:
     except Exception:  # noqa: BLE001
         return False, "torch is niet geïnstalleerd"
     if torch.cuda.is_available():
-        return True, ""
+        fit = gpu_fit(torch)
+        return (True, "") if fit is None else (False, fit[0])
     if getattr(torch.version, "cuda", None) is None:
         return False, f"de geïnstalleerde torch ({torch.__version__}) is de versie zonder GPU-ondersteuning"
     return False, (f"torch {torch.__version__} is gemaakt voor CUDA {torch.version.cuda}, maar ziet geen GPU; "
@@ -199,6 +241,11 @@ def resolve_torch_device(requested: str) -> str:
     if requested.startswith("cuda") and not torch.cuda.is_available():
         log.warning("CUDA requested but not available; falling back to cpu")
         device = "cpu"
+    elif requested.startswith("cuda"):
+        fit = gpu_fit(torch)
+        if fit:  # loading would fail with "no kernel image is available": work on the processor and say why
+            log.warning("this torch has no code for the GPU (%s); falling back to cpu. Fix: %s", fit[0], fit[1])
+            device = "cpu"
     if requested.startswith("mps") and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
         log.warning("MPS requested but not available; falling back to cpu")
         device = "cpu"
@@ -391,6 +438,12 @@ def load_multilingual_model(device: str):
     except ChatterboxPackageTooOld:
         raise  # the weights are fine; the download hint below would send you the wrong way
     except Exception as exc:
+        text = str(exc)
+        if "CUDA" in text or "cuda" in type(exc).__name__.lower() or "kernel image" in text:
+            # the files were read; the GPU could not run them. Downloading again would not help.
+            raise RuntimeError(f"Chatterbox could not start on the GPU ({type(exc).__name__}: {text.splitlines()[0]}). "
+                               "Run `studiepodcast doctor`: it says whether this torch has code for this GPU and "
+                               "which install fixes it.") from exc
         raise RuntimeError(f"could not load Chatterbox {T3_CHECKPOINT} from {ckpt_dir} ({type(exc).__name__}: {exc}). "
                            "Run once with STUDIEPODCAST_OFFLINE=0 to download it, or put the files in "
                            "CHATTERBOX_CKPT_DIR.") from exc
