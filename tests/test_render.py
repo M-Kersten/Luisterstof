@@ -2,7 +2,7 @@
 
 from pipeline.audio.render import render_episode
 from pipeline.audio.synth import NullSynth
-from pipeline.models import Line, Script, Segment
+from pipeline.models import EpisodeTranscript, Line, Script, Segment
 from pipeline.paths import BookPaths
 
 
@@ -39,3 +39,22 @@ def test_first_turn_of_the_episode_has_no_predecessor_to_bleed_from(settings, ca
                                     transcriber=None, aligner=None)
     tessa_host = next(h for h in cast.hosts if h.id == "tessa")
     assert manifest.turns[0].chosen_take.exaggeration == tessa_host.exaggeration
+
+
+def test_music_under_the_hook_only_when_the_episode_opens_with_one(settings, cast):
+    """A cold open gets the jingle: the voices wait one bar for it. Any other opening, or the setting off, does not."""
+    from dataclasses import replace
+
+    from pipeline.audio.mixer import HOOK_LEAD_S
+
+    def first_word(segment_type, book_id, s=settings):
+        script = Script(episode_id="ch01", segments=[
+            Segment(type=segment_type, lines=[Line(id="l001", speaker="tessa", text="We beginnen bij het begin.")]),
+        ])
+        _, transcript_path, _ = render_episode(script, None, cast, s, BookPaths(s.data_dir, book_id).ensure(),
+                                               synth=NullSynth(jitter=0.0), transcriber=None, aligner=None)
+        return EpisodeTranscript.load(transcript_path).lines[0].start
+
+    plain = first_word("body", "plain")
+    assert abs(first_word("cold_open", "hook") - (plain + HOOK_LEAD_S)) < 0.01
+    assert abs(first_word("cold_open", "off", replace(settings, hook_music=False)) - plain) < 0.01

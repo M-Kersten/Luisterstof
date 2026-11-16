@@ -10,7 +10,7 @@ from pipeline.audio.aligner_cache import load_alignment, save_alignment
 from pipeline.audio.asr import Aligner, Transcriber, UniformAligner, WordTiming
 from pipeline.audio.cache import RenderCache
 from pipeline.audio.chunker import chunk_script
-from pipeline.audio.mixer import build_transcript, export_blocks, load_sting, mix
+from pipeline.audio.mixer import build_transcript, export_blocks, hook_music_path, load_music, load_sting, mix
 from pipeline.audio.performance_render import (
     PerformanceOptions,
     Tables,
@@ -153,6 +153,12 @@ def render_episode(
     sr = settings.sample_rate
     intro = load_sting(settings.cast_dir / "stings" / "intro.wav")
     outro = load_sting(settings.cast_dir / "stings" / "outro.wav")
+    hook, hook_end = None, None  # music under the hook: only when the episode opens with one
+    opening = script.segments[0] if script.segments else None
+    if settings.hook_music and opening is not None and opening.type == "cold_open":
+        hook = load_music(hook_music_path(settings.cast_dir))
+        ids = {line.id for line in opening.lines}
+        hook_end = max((p.end for p in timeline.placements if ids.intersection(p.line_ids)), default=None)
     acoustics = _fit_acoustics(timeline, cast, settings, sr) if performance and performance.acoustics else None
     if acoustics is not None:
         manifest.acoustics = acoustics.report()
@@ -171,6 +177,7 @@ def render_episode(
             record["plaats"] = pans
         manifest.acoustics = record
     mixed, offset = mix(timeline, sr=sr, target_lufs=settings.target_lufs, line_lufs=settings.line_lufs, intro=intro, outro=outro,
+                        hook=hook, hook_end=hook_end,
                         acoustics=acoustics, finish=finish, pans=pans, breaths=inhales, seed=seed)
 
     audio_path = paths.out_audio(script.episode_id)

@@ -420,6 +420,9 @@ def doctor():
     _doctor_llm(settings)
     stings = [p.name for p in (settings.cast_dir / "stings").glob("*.wav")] if (settings.cast_dir / "stings").exists() else []
     typer.echo(f"stings: {', '.join(stings) or 'none'}")
+    from pipeline.audio.mixer import hook_music_path
+
+    typer.echo(f"music under the hook: {(hook_music_path(settings.cast_dir) or 'none') if settings.hook_music else 'off'}")
 
 
 def _doctor_chatterbox(settings: Settings) -> None:

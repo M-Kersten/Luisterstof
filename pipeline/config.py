@@ -127,6 +127,8 @@ class Settings:
     min_emotional_reaction_rate: float = 0.3  # share of tagged lines the other host must pick up on (mirror or counter) in the next line
     max_unwritten_gap_s: float = 1.2
     sample_rate: int = 24000
+    # Music under the cold open: cast/stings/hook.wav, or the jingle in jingle/ when that file is not there.
+    hook_music: bool = True
 
     @classmethod
     def from_env(cls, dotenv: Path | str | None = ".env", **overrides) -> Settings:
@@ -150,6 +152,7 @@ class Settings:
             offline=_env_bool("STUDIEPODCAST_OFFLINE", False),
             script_polish=_env_bool("STUDIEPODCAST_POLISH", True),
             script_listener=_env_bool("STUDIEPODCAST_LISTENER", True),
+            hook_music=_env_bool("STUDIEPODCAST_HOOK_MUSIC", True),
             llm_backend=_env_str("STUDIEPODCAST_LLM_BACKEND", "opencode").strip().casefold(),
             opencode_url=_env_str("OPENCODE_URL"),
             opencode_password=_env_str("OPENCODE_PASSWORD"),

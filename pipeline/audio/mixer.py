@@ -1,4 +1,4 @@
-"""Mixing: loudness, fades, ducking, room tone, stings, final render, transcript."""
+"""Mixing: loudness, fades, ducking, room tone, stings, music under the hook, final render, transcript."""
 
 from __future__ import annotations
 
@@ -59,6 +59,7 @@ def fade(samples: np.ndarray, sr: int, fade_in: float = 0.0, fade_out: float = 0
 
 
 def duck(samples: np.ndarray, sr: int, from_s: float, depth_db: float, fade_s: float) -> np.ndarray:
+    """Down by ``depth_db`` from ``from_s`` on; mono, or (n, 2) with both channels together."""
     out = samples.astype(np.float32, copy=True)
     start = max(0, int(from_s * sr))
     if start >= len(out):
@@ -66,9 +67,45 @@ def duck(samples: np.ndarray, sr: int, from_s: float, depth_db: float, fade_s: f
     n_fade = max(1, int(fade_s * sr))
     ramp_end = min(len(out), start + n_fade)
     ramp = np.linspace(1.0, db_to_gain(-depth_db), ramp_end - start, dtype=np.float32)
-    out[start:ramp_end] *= ramp
+    out[start:ramp_end] *= ramp.reshape((-1,) + (1,) * (out.ndim - 1))
     out[ramp_end:] *= db_to_gain(-depth_db)
     return out
+
+
+HOOK_LEAD_S = 2.4  # the music on its own before the first voice: one bar of the jingle
+HOOK_DUCK_DB = 14.0  # how far it drops under the voices
+HOOK_DUCK_FADE_S = 0.6
+HOOK_OUT_S = 2.0  # its fade when the hook is over before the music is
+HOOK_EVEN = 0.5  # share of the music's own rise and fall that is taken out, so its soft bars survive under speech
+HOOK_EVEN_WINDOW_S = 3.0
+HOOK_EVEN_MAX_DB = 6.0
+
+
+def even_out(samples: np.ndarray, sr: int, amount: float = HOOK_EVEN) -> np.ndarray:
+    """Music that grows from soft to loud is inaudible under a voice at one end or in its way at the other. This
+    rides the level slowly, bar by bar and not note by note: ``amount`` of every difference with the piece's own
+    middle level is taken out, never more than 6 dB up or down."""
+    power = (samples.astype(np.float64) ** 2).reshape(len(samples), -1).mean(axis=1)
+    n = max(1, min(len(power), int(HOOK_EVEN_WINDOW_S * sr)))
+    padded = np.concatenate([np.full(n // 2, power[: n].mean()), power, np.full(n - n // 2, power[-n:].mean())])
+    total = np.cumsum(padded)
+    level_db = 10 * np.log10((total[n:] - total[:-n]) / n + 1e-12)
+    sounding = level_db[level_db > level_db.max() - 30]
+    if len(sounding) == 0:
+        return samples.astype(np.float32, copy=False)
+    gain_db = np.clip(-amount * (level_db - np.median(sounding)), -HOOK_EVEN_MAX_DB, HOOK_EVEN_MAX_DB)
+    gain = (10 ** (gain_db / 20)).astype(np.float32)
+    return (samples * gain.reshape((-1,) + (1,) * (samples.ndim - 1))).astype(np.float32)
+
+
+def under_voices(samples: np.ndarray, sr: int, *, voices_at: float, until: float | None = None,
+                 duck_db: float = HOOK_DUCK_DB) -> np.ndarray:
+    """Music as a bed: at its own level until the first voice, then down under the voices. When the music runs
+    longer than ``until`` (seconds from its start: where the voices it belongs to stop), it fades out there."""
+    out = duck(samples, sr, max(0.0, voices_at - HOOK_DUCK_FADE_S), duck_db, HOOK_DUCK_FADE_S)
+    if until is not None and int((until + 1.0) * sr) < len(out):
+        out = fade(out[: int((until + 1.0) * sr)], sr, 0.0, HOOK_OUT_S)
+    return fade(out, sr, 0.01, 0.0)
 
 
 def room_tone(n: int, sr: int, level_db: float = -60.0, seed: int = 1) -> np.ndarray:
@@ -110,6 +147,8 @@ def mix(
     line_lufs: float = -18.0,
     intro: AudioClip | None = None,
     outro: AudioClip | None = None,
+    hook: AudioClip | None = None,
+    hook_end: float | None = None,
     room_tone_db: float | None = -60.0,
     tail_s: float = 1.0,
     head_s: float = 0.3,
@@ -120,6 +159,10 @@ def mix(
     seed: int = 7,
 ) -> tuple[AudioClip, float]:
     """Returns the mixed episode and the offset (seconds) the dialogue was shifted by.
+
+    ``hook`` is music for under the opening of the episode (mono, or (n, 2) for a stereo mix): it starts on its
+    own, the first voice comes in ``HOOK_LEAD_S`` later and the music drops under it. It plays to its own end, or
+    fades when the voices reach ``hook_end`` (seconds on the timeline, the end of the hook) before that.
 
     ``acoustics`` (pipeline.audio.acoustics.Acoustics, performance prototype) adds per-speaker
     EQ + the shared recording profile per line, and a shared compressor and room on the dialogue bus.
@@ -141,6 +184,13 @@ def mix(
         intro_samples = resample(intro.samples, intro.sr, sr) if intro.sr != sr else intro.samples
         intro_samples = normalise_loudness(intro_samples, sr, target_lufs - 2)
         offset = head_s + max(0.0, len(intro_samples) / sr - 0.5)
+    hook_samples, hook_at = None, offset  # after the intro sting, when there is one
+    if hook is not None and len(hook.samples):
+        hook_samples = resample(hook.samples, hook.sr, sr) if hook.sr != sr else hook.samples
+        if hook_samples.ndim == 2 and not stereo:
+            hook_samples = hook_samples.mean(axis=1)
+        hook_samples = normalise_loudness(even_out(hook_samples, sr), sr, line_lufs)  # alone, as loud as a voice
+        offset += HOOK_LEAD_S
     total = offset + timeline.duration + tail_s
     outro_samples = None
     if outro is not None:
@@ -152,6 +202,9 @@ def mix(
 
     if intro_samples is not None:
         _add(buffer, fade(intro_samples, sr, 0.01, 0.5), int(head_s * sr))
+    if hook_samples is not None:
+        until = min(timeline.duration, hook_end if hook_end is not None else timeline.duration)
+        _add(buffer, under_voices(hook_samples, sr, voices_at=HOOK_LEAD_S, until=HOOK_LEAD_S + until), int(hook_at * sr))
     if finish is not None:
         from pipeline.audio import finish as sound
 
@@ -252,6 +305,32 @@ def load_sting(path: Path | None) -> AudioClip | None:
         return AudioClip.read(path)
     except Exception as exc:  # pragma: no cover
         log.warning("could not read sting %s: %s", path, exc)
+        return None
+
+
+SHIPPED_HOOK_MUSIC = Path(__file__).resolve().parents[2] / "jingle" / "hook_jingle.wav"
+
+
+def hook_music_path(cast_dir: Path | str) -> Path | None:
+    """The music for under the hook: your own ``cast/stings/hook.wav``, or the jingle that comes with the project."""
+    own = Path(cast_dir) / "stings" / "hook.wav"
+    if own.is_file():
+        return own
+    return SHIPPED_HOOK_MUSIC if SHIPPED_HOOK_MUSIC.is_file() else None
+
+
+def load_music(path: Path | None) -> AudioClip | None:
+    """Like a sting, but a stereo file stays stereo: (n, 2), for an episode that is mixed in stereo."""
+    if path is None or not Path(path).is_file():
+        return None
+    try:
+        import soundfile as sf
+
+        data, sr = sf.read(str(path), dtype="float32", always_2d=True)
+        samples = data[:, 0] if data.shape[1] == 1 else data[:, :2]
+        return AudioClip(np.ascontiguousarray(samples, dtype=np.float32), int(sr))
+    except Exception as exc:  # pragma: no cover
+        log.warning("could not read music %s: %s", path, exc)
         return None
 
 
