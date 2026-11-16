@@ -24,11 +24,14 @@ TASKS = {
     "plan_review": "het plan nalopen tegen het boek",
     "plan_quotes": "bij elke bewering de zin uit het boek zoeken",
     "lexicon": "de uitspraak van namen en vaktermen bepalen",
+    "script_outline": "de rode draad van de aflevering bepalen",
     "script_segment": "een blok van het gesprek schrijven",
     "script_scene": "een losse scène schrijven",
     "script_polish": "een blok herschrijven zodat het klinkt als een gesprek",
     "support": "nagaan of een regel klopt met het boek",
     "lint": "de regels van het gesprek nalopen",
+    "listener": "luisteren alsof je het voor het eerst hoort",
+    "landing": "nagaan of de moeilijkste punten echt zijn uitgelegd",
     "continuity": "onthouden wat er in deze aflevering gebeurde",
 }
 

@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from pipeline.llm import LLM, LLMRequest, text_block
 from pipeline.models import Book, Cast, Chapter, ContentPlan, Glossary, LexiconEntry, Section
 from pipeline.plan.content_plan import (
+    CONTEXT_DESCRIPTION,
     ClaimOut,
     DefinitionOut,
     MisconceptionOut,
@@ -61,6 +62,7 @@ class SectionClaimOut(BaseModel):
                                           "Exact overnemen, inclusief getallen en leestekens.")
     difficulty: int = Field(description="1 (triviaal) tot 5 (zeer moeilijk voor een eerstejaars).")
     exam_relevance: int = Field(description="1 (bijzaak) tot 5 (zeker tentamenstof).")
+    context: str = Field(default="", description=CONTEXT_DESCRIPTION)
 
 
 class SectionDefinitionOut(BaseModel):
@@ -117,6 +119,8 @@ Werk uitsluitend vanuit de tekst hieronder. Voeg geen kennis van buiten toe. Wat
 
 Regels:
 - Een bewering is één zelfstandig leesbare zin die letterlijk uit de tekst te herleiden is. Neem alle beweringen op die ertoe doen, ook de lastige.
+- Zelfstandig leesbaar betekent: zonder de tekst ernaast te volgen. Schrijf niet "die enquête", "de onderzoekers" of "dat model", maar zeg welke enquête, welke onderzoekers, welk model. Wat de luisteraar verder vooraf moet weten (wie, welk onderzoek, welke opstelling) zet je in context.
+- Neem ook het waarom op. Staat er in de tekst een verklaring bij een uitkomst, dan is die verklaring een eigen bewering.
 - Geef bij elke bewering en definitie een letterlijk citaat van 20 tot 300 tekens. Kopieer het teken voor teken uit de tekst. Verzin of herformuleer geen citaten.
 - difficulty en exam_relevance: 1 tot 5.
 - Misvattingen alleen als de tekst ze expliciet of impliciet weerlegt.
@@ -459,6 +463,7 @@ def plan_chapter_thorough(book: Book, chapter_id: str, llm: LLM, cast: Cast | No
         learning_objectives=merged.learning_objectives,
         key_claims=[ClaimOut(claim=p.claim, section=pool.claim(p.candidate)[1],  # type: ignore[index]
                              source_quote=pool.claim(p.candidate)[2].source_quote,  # type: ignore[index]
+                             context=pool.claim(p.candidate)[2].context,  # type: ignore[index]
                              difficulty=p.difficulty, exam_relevance=p.exam_relevance) for p in selected],
         definitions=[DefinitionOut(term=d.term, definition=d.definition, section=sid, source_quote=d.source_quote)
                      for sid, d in definitions],

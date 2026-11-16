@@ -96,6 +96,9 @@ class Settings:
     # How many times a script the audit blocks gets rewritten before it is accepted as it is.
     script_revise_rounds: int = 1
     script_polish: bool = True  # after the facts pass: one dialogue edit per segment (Writer.polish)
+    # In every audit: one call per segment that hears the episode once, in order, and one over the hard claims
+    # (audit.check_listener, audit.check_landing). Off saves about a dozen calls per audit on a slow model.
+    script_listener: bool = True
 
     # Quality over speed. On, the four passes above go to the values in QUALITY_PASSES and a script
     # that merely passes the audit but speaks flat gets rewritten too. See Settings.with_quality().
@@ -146,6 +149,7 @@ class Settings:
             quality_mode=quality,
             offline=_env_bool("STUDIEPODCAST_OFFLINE", False),
             script_polish=_env_bool("STUDIEPODCAST_POLISH", True),
+            script_listener=_env_bool("STUDIEPODCAST_LISTENER", True),
             llm_backend=_env_str("STUDIEPODCAST_LLM_BACKEND", "opencode").strip().casefold(),
             opencode_url=_env_str("OPENCODE_URL"),
             opencode_password=_env_str("OPENCODE_PASSWORD"),
@@ -216,5 +220,6 @@ class Settings:
             "plan_part_chars": self.plan_part_chars,
             "script_revise_rounds": self.script_revise_rounds,
             "script_polish": self.script_polish,
+            "script_listener": self.script_listener,
             "seconds_per_llm_call": self.opencode_timeout_s,
         }

@@ -1,0 +1,421 @@
+{
+ "chapter_id": "ch01",
+ "chapter_title": "Wat is hoogtevrees?",
+ "summary": "Wat hoogtevrees is, hoe vaak het voorkomt, wat babyproeven op de visuele klif lieten zien en of de angst aangeboren of aangeleerd is.",
+ "learning_objectives": [],
+ "key_claims": [
+  {
+   "id": "c1",
+   "claim": "In de wetenschap wordt de ervaring van hoogtevrees met minstens drie namen aangeduid die niet hetzelfde betekenen.",
+   "difficulty": 2,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Wat je daar voelt, heeft in de wetenschap minstens drie namen, en die namen betekenen niet hetzelfde."
+   }
+  },
+  {
+   "id": "c2",
+   "claim": "Gewone hoogteangst is functioneel omdat ze mensen weghoudt van plekken waar één misstap dodelijk kan zijn.",
+   "difficulty": 2,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Die basisalarmering is functioneel. Ze houdt je weg van plekken waar één misstap dodelijk is."
+   }
+  },
+  {
+   "id": "c3",
+   "claim": "Wie zonder enige spanning over de dakgoot van een flatgebouw loopt, is verdachter dan iemand die aarzelt.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Wie zonder enige spanning over de dakgoot van een flatgebouw loopt, heeft eerder een probleem dan wie aarzelt."
+   }
+  },
+  {
+   "id": "c4",
+   "claim": "Hoogteduizeligheid kan bestaan uit lichamelijke en emotionele klachten, zoals een onrustig gevoel, buikklachten, het idee dat het lichaam heen en weer zwaait en knikkende knieën.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Wie het heeft, beschrijft een mengeling van lichamelijke en emotionele klachten: een onrustig gevoel van binnen, een zwaar of misselijk gevoel in de buik, het idee dat het lichaam heen en weer zwaait, knikkende knieën."
+   }
+  },
+  {
+   "id": "c5",
+   "claim": "Hoogteduizeligheid kan zo hinderlijk zijn dat iemand er dingen voor laat, zonder dat er sprake is van een psychiatrische stoornis.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "De klachten zijn hinderlijk, soms zo hinderlijk dat iemand er dingen voor laat, zonder dat er sprake is van een psychiatrische stoornis."
+   }
+  },
+  {
+   "id": "c6",
+   "claim": "Iemand met acrofobie vermijdt hoogte situaties concreet, zoals door geen baan op de zesde verdieping aan te nemen, een verjaardag op een dakterras over te slaan of een omweg om een hoge brug te maken.",
+   "difficulty": 2,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Iemand met acrofobie neemt geen baan op de zesde verdieping aan, slaat de verjaardag op een dakterras over, of maakt een omweg van kilometers om een hoge brug te ontwijken."
+   }
+  },
+  {
+   "id": "c7",
+   "claim": "In die 2013-enquête had 28 procent van de respondenten, ongeveer één op de drie, ooit hoogteduizeligheid meegemaakt.",
+   "difficulty": 2,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "De uitkomst gaf het artikel een pakkende titel: ongeveer één op de drie heeft last van hoogteduizeligheid. Het precieze getal voor de levenslange prevalentie, dus het aandeel mensen dat het ooit heeft meegemaakt, was 28 procent."
+   }
+  },
+  {
+   "id": "c8",
+   "claim": "Mensen met hoogteduizeligheid hadden vaker familieleden met dezelfde klacht, een angststoornis, migraine en last van wagenziekte of zeeziekte.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Mensen met hoogteduizeligheid hadden vaker familieleden met dezelfde klacht, vaker een angststoornis, vaker migraine en vaker last van wagenziekte of zeeziekte."
+   }
+  },
+  {
+   "id": "c9",
+   "claim": "Met psychiatrische criteria kwam acrofobie in die 2015-studie op 6,4 procent levenslang, 8,6 procent bij vrouwen, 4,1 procent bij mannen en 2,0 procent op dat moment.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Daarnaast keken de onderzoekers met psychiatrische criteria naar acrofobie. De levenslange prevalentie daarvan was 6,4 procent: 8,6 procent bij vrouwen en 4,1 procent bij mannen. Op het moment van de enquête voldeed 2,0 procent aan de criteria."
+   }
+  },
+  {
+   "id": "c10",
+   "claim": "Gibson en Walk beschreven in 1960 in Scientific American proeven met 36 kruipende baby's van zes tot veertien maanden, die op de middenplank werden gezet en door hun moeder eerst vanaf de ondiepe en daarna vanaf de diepe kant werden geroepen.",
+   "difficulty": 2,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "In 1960 beschreven ze in Scientific American hun proeven met 36 baby’s van zes tot veertien maanden oud, allemaal al in staat om te kruipen. Elke baby werd op de middenplank gezet. De moeder riep het kind vervolgens eerst vanaf de ondiepe kant en daarna vanaf de diepe kant."
+   }
+  },
+  {
+   "id": "c11",
+   "claim": "In de babyproef bleven negen kinderen op de plank zitten, kropen 27 minstens één keer naar de ondiepe kant, en waagden slechts drie kinderen zich over het glas boven de diepte; veel kinderen kropen weg of begonnen te huilen als de moeder vanaf de diepe kant riep.",
+   "difficulty": 2,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Negen kinderen bleven op de plank zitten. De andere 27 kropen allemaal minstens één keer naar de ondiepe kant. Slechts drie van hen waagden zich over de rand op het glas boven de diepte. Veel kinderen die door hun moeder vanaf de diepe kant werden geroepen, kropen weg of begonnen te huilen."
+   }
+  },
+  {
+   "id": "c12",
+   "claim": "Gibson en Walk concludeerden voorzichtig dat diepteperceptie aanwezig is zodra een kind kan kruipen.",
+   "difficulty": 2,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Gibson en Walk concludeerden voorzichtig dat diepteperceptie aanwezig is zodra een kind kan kruipen."
+   }
+  },
+  {
+   "id": "c13",
+   "claim": "Omdat alle baby's in het onderzoek al maanden oud waren en al ervaring hadden opgebouwd, bleef de vraag of de angst voor diepte aangeboren is open.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Meer konden ze niet zeggen, en dat zagen ze zelf ook. Alle baby’s in het onderzoek waren al maanden oud en hadden al lang rondgekeken, gekropen en gevallen. De vraag of de angst voor diepte aangeboren is, bleef dus open."
+   }
+  },
+  {
+   "id": "c14",
+   "claim": "Bij het hartslagexperiment met de visuele klif vertraagde de hartslag op de diepe kant en gebeurde er op de ondiepe kant weinig.",
+   "difficulty": 2,
+   "exam_relevance": 4,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Op de diepe kant vertraagde de hartslag. Op de ondiepe kant gebeurde weinig."
+   }
+  },
+  {
+   "id": "c15",
+   "claim": "De onderzoekers concludeerden in 1992 dat eigen beweging door de ruimte de wantrouwigheid voor hoogte doet ontstaan.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "De onderzoekers concludeerden in 1992 dat de eigen beweging door de ruimte de wantrouwigheid voor hoogte doet ontstaan."
+   }
+  },
+  {
+   "id": "c16",
+   "claim": "Een team rond Mikako Ueno vatte in 2012 samen dat 10 tot 40 procent van de ervaren kruipers alsnog de diepe kant op gaat als de moeder roept.",
+   "difficulty": 3,
+   "exam_relevance": 4,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Een Japans-Amerikaans team rond Mikako Ueno vatte in 2012 samen dat 10 tot 40 procent van de ervaren kruipers alsnog de diepe kant op gaat als moeder roept."
+   }
+  },
+  {
+   "id": "c17",
+   "claim": "Karen Adolph en collega's stelden in 2014 dat baby's niet per se bang zijn voor hoogte; haar antwoord was dat vermijden iets anders is dan bang zijn.",
+   "difficulty": 3,
+   "exam_relevance": 4,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Karen Adolph van New York University gaat nog een stap verder. Zij en haar collega’s stelden in 2014 de vraag of baby’s eigenlijk wel bang zijn voor hoogte. Haar antwoord: vermijden is iets anders dan bang zijn."
+   }
+  },
+  {
+   "id": "c18",
+   "claim": "Kari Kretch en Adolph lieten zien dat baby's die als kruiper hebben geleerd een gevaarlijke afstap te vermijden, die kennis niet meenemen wanneer ze net beginnen te lopen.",
+   "difficulty": 3,
+   "exam_relevance": 4,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Kari Kretch en Adolph lieten zien dat baby’s die als kruiper hebben geleerd een gevaarlijke afstap te vermijden, die kennis niet meenemen wanneer ze net beginnen te lopen. In de nieuwe houding stappen ze opnieuw over de rand."
+   }
+  },
+  {
+   "id": "c19",
+   "claim": "Fobieën concentreren zich op evolutionair gevaarlijke dingen, en Seligman stelde dat mensen voorbereid zijn om deze angsten snel te leren en dat zulke angsten moeilijk uitdoven.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Fobieën concentreren zich op dingen die in de evolutionaire geschiedenis van onze soort echt gevaarlijk waren: slangen, spinnen, open water, donker, diepte. Seligman stelde dat mensen ‘voorbereid’ zijn om deze angsten snel te leren, soms na één enkele ervaring, en dat zulke angsten moeilijk uitdoven"
+   }
+  },
+  {
+   "id": "c20",
+   "claim": "Slechts 18 procent van de angstige groep kon worden ingedeeld als iemand bij wie de angst begon na een directe, angstaanjagende gebeurtenis, en later was dat in een klinische groep van 148 patiënten 11,5 procent.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Slechts 18 procent van de angstige groep kon worden ingedeeld als iemand bij wie de angst begon na een directe, angstaanjagende gebeurtenis. In een grotere klinische groep van 148 patiënten was dat later 11,5 procent."
+   }
+  },
+  {
+   "id": "c21",
+   "claim": "De onderzoekers vonden in 1998 geen positief verband tussen vroege valpartijen en latere hoogtevrees; juist wie tussen vijf en negen jaar een val met letsel had gehad, had op achttienjarige leeftijd vaker geen hoogtevrees.",
+   "difficulty": 4,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "De onderzoekers vonden in 1998 geen positief verband tussen vroege valpartijen en latere hoogtevrees. Het omgekeerde kwam eerder voor: wie tussen vijf en negen jaar een val met letsel had gehad, had op achttienjarige leeftijd vaker geen hoogtevrees."
+   }
+  },
+  {
+   "id": "c22",
+   "claim": "Volgens het niet-associatieve model hoeft angst voor hoogte niet aangeleerd te worden; kinderen beginnen met natuurlijke behoedzaamheid, die bij de meeste kinderen slijt door herhaalde, veilige ervaringen.",
+   "difficulty": 4,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Volgens dat model hoeft een angst voor hoogte niet aangeleerd te worden. Kinderen beginnen met een natuurlijke behoedzaamheid. Bij de meeste kinderen slijt die door herhaalde, veilige ervaringen: klimmen, springen, vallen zonder ernstig letsel. De angst dooft uit omdat er niets ergs gebeurt."
+   }
+  },
+  {
+   "id": "c23",
+   "claim": "Bij een kleine groep blijft uitdoving uit door weinig gelegenheid, gevoeliger reageren of snel vermijden; dit verklaart dat kinderen die vaak vielen later minder bang waren.",
+   "difficulty": 4,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Bij een kleine groep blijft die uitdoving uit, bijvoorbeeld omdat het kind weinig gelegenheid krijgt, omdat het gevoeliger reageert of omdat het hoogtes snel gaat vermijden. Zo verklaart het model ook de ogenschijnlijk vreemde uitkomst dat kinderen die vaak vielen, later minder bang waren."
+   }
+  },
+  {
+   "id": "c24",
+   "claim": "Stanley Rachman beschreef al in 1977 drie routes naar angst: een eigen nare ervaring, het zien van iemand anders die bang reageert, en informatie of waarschuwingen van anderen.",
+   "difficulty": 3,
+   "exam_relevance": 5,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "De Britse psycholoog Stanley Rachman beschreef al in 1977 drie routes naar angst: een eigen nare ervaring, het zien van iemand anders die bang reageert, en informatie of waarschuwingen van anderen."
+   }
+  },
+  {
+   "id": "c25",
+   "claim": "Brandt en collega’s zien hoogteduizeligheid als een continuüm van licht ongemak tot een volwaardige fobie.",
+   "difficulty": 3,
+   "exam_relevance": 4,
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": "Brandt en zijn collega’s beschrijven hoogteduizeligheid als een continuüm dat loopt van licht ongemak tot een volwaardige fobie."
+   }
+  }
+ ],
+ "definitions": [
+  {
+   "term": "gewone hoogteangst",
+   "definition": "De redelijke voorzichtigheid die vrijwel iedereen voelt bij een onbeschermde hoogte.",
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": null
+   }
+  },
+  {
+   "term": "hoogteduizeligheid",
+   "definition": "Een onaangenaam gevoel van onvastheid, draaierigheid of angst dat opkomt zodra je vanaf een hoogte naar beneden kijkt.",
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": null
+   }
+  },
+  {
+   "term": "acrofobie",
+   "definition": "Een specifieke hoogtefobie die in DSM-5 onder het subtype natuurlijke omgeving staat, naast angst voor water en onweer.",
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": null
+   }
+  },
+  {
+   "term": "diepe kant",
+   "definition": "De zijde van de visuele klif waar hetzelfde geblokte patroon veel lager op de vloer ligt, waardoor die kant visueel als diepte of afgrond verschijnt.",
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": null
+   }
+  },
+  {
+   "term": "visuele klif",
+   "definition": "Een proefopstelling met een stevige glasplaat over een tafel, waardoor een geblokt patroon aan de ene kant direct tegen het glas ligt en aan de andere kant veel lager op de vloer, zodat de tafel tastend hetzelfde voelt maar visueel een afgrond lijkt te hebben.",
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": null
+   }
+  },
+  {
+   "term": "ondiepe kant",
+   "definition": "De zijde van de visuele klif waar een geblokt patroon direct tegen het glas ligt, zodat die kant visueel ondiep lijkt.",
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": null
+   }
+  },
+  {
+   "term": "drie routes naar angst",
+   "definition": "Drie manieren waarop angst kan ontstaan: een eigen nare ervaring, het zien van iemand anders die bang reageert, en informatie of waarschuwingen van anderen.",
+   "source_span": {
+    "section": "ch01.1",
+    "start": 0,
+    "end": 0,
+    "quote": null
+   }
+  }
+ ],
+ "misconceptions": [
+  {
+   "wrong": "Wie boven geen spanning voelt, is juist de normaalste variant.",
+   "right": "Wie zonder enige spanning over de dakgoot van een flatgebouw loopt, heeft eerder een probleem dan wie aarzelt.",
+   "why_tempting": "Mensen verwarren moed met de afwezigheid van een functioneel alarmsysteem."
+  },
+  {
+   "wrong": "Een andere hartslag van baby's boven de diepe kant betekent altijd dat ze bang zijn.",
+   "right": "Een vertragende hartslag wijst bij baby's op aandacht en opname van informatie, terwijl een versnellende hartslag hoort bij afweer en schrik; de baby's zagen het verschil, maar leken eerder geïnteresseerd dan verontrust.",
+   "why_tempting": "Hartslagreacties lijken een eenvoudig angstsignaal, maar de richting van de verandering is bepalend."
+  },
+  {
+   "wrong": "Het vermijden van de diepe kant door baby's bewijst dat hoogtevrees aangeboren is.",
+   "right": "Gibson en Walk concludeerden alleen dat diepteperceptie aanwezig is zodra een kind kan kruipen; doordat alle baby's al ervaring hadden, bleef de vraag of diepte-angst aangeboren is open.",
+   "why_tempting": "Baby's lijken al jong te vermijden, en vermijden wordt snel als aangeboren angst geïnterpreteerd."
+  },
+  {
+   "wrong": "Hoogtevrees ontstaat meestal doordat iemand zelf een angstaanjagende val heeft meegemaakt, en kinderen die vaak vallen, worden later juist vaker bang.",
+   "right": "Slechts 18 procent van de angstige groep kon zo worden ingedeeld en later 11,5 procent in een klinische groep van 148 patiënten; de Dunedin-studie vond geen positief verband, en wie tussen vijf en negen jaar een val met letsel had gehad, had op achttienjarige leeftijd vaker geen hoogtevrees.",
+   "why_tempting": "De klassieke leertheorie en pijnlijke valervaringen lijken natuurlijke oorzaken van hoogtevrees."
+  },
+  {
+   "wrong": "Hoogtevrees is altijd een psychiatrische stoornis of een fobie.",
+   "right": "Gewone hoogteangst is functioneel, hoogteduizeligheid kan hinderlijk zijn zonder psychiatrische stoornis, en alleen acrofobie is een specifieke fobie.",
+   "why_tempting": "In één kerktorensituatie worden drie woorden gebruikt en één daarvan is een DSM-fobienaam."
+  }
+ ],
+ "worked_example": {
+  "setup": "Een baby die nog niet kan kruipen wordt bij Campos voorzichtig boven de diepe kant van de visuele klif gezakt, terwijl de hartslag wordt gemeten.",
+  "steps": [
+   "Noteer dat de hartslag op de diepe kant vertraagde.",
+   "Noteer dat op de ondiepe kant weinig gebeurde.",
+   "Interpreteer een vertragende hartslag bij baby’s als aandacht en opname van informatie, niet automatisch als schrik.",
+   "Gebruik een versnellende hartslag als teken van afweer en schrik.",
+   "Concludeer dat de baby’s het verschil tussen de twee kanten zagen, maar dat het hen eerder interesseerde dan verontrustte."
+  ],
+  "answer": "De baby reageert op de diepe kant met vertraging van de hartslag; dit wijst op gespannen aandacht, niet zonder meer op bangheid."
+ },
+ "needs_expert": true,
+ "expert_domain": "klinische psychologie en ontwikkelingspsychologie",
+ "expert_reason": "Tessa en Joris hebben geen achtergrond in klinische begrippen, epidemiologie van fobieën of babyonderzoek naar diepteperceptie, waardoor een gastexpert geloofwaardiger is"
+}
