@@ -9,17 +9,19 @@ voice. This module measures a recording and makes that clip from it, without tou
 - rumble under 70 Hz filtered out, DC removed,
 - silence at the start and the end trimmed,
 - the liveliest stretch that starts after a pause put first (the rest follows it, so nothing is lost),
+- a start chosen whose first 10 s hold no plosive pop, when the recording has pops and such a start exists,
 - pauses longer than 0.45 s shortened, the clip cut to at most 55 s at a pause,
 - loudness set to -20 LUFS with the peaks below -1.5 dBFS, short fades, 24-bit WAV.
 
 No noise reduction and no equaliser: their artifacts would be cloned along with the voice. What the processing
-cannot fix (clipping, echo, noise, a phone-quality recording) is reported, with what to do about it.
+cannot fix (clipping, pops, echo, noise, a phone-quality recording) is reported, with what to do about it.
 Every cut lands at the quietest point inside a pause, so no word is clipped.
 """
 
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +38,13 @@ MIN_GOOD_S = 30.0
 MIN_S = 8.0
 OPENING_S = 6.0  # what Chatterbox takes the speaking style from
 ROTATE_MARGIN = 1.5  # semitones of extra pitch range an opening must win by before the clip is reordered
+TIMBRE_S = 10.0  # what Chatterbox takes the timbre from (DEC_COND_LEN in its mtl_tts.py): no pop belongs in it
+F0_LO, F0_HI = 65.0, 400.0  # the pitch range searched, in Hz
+VOICED = 0.45  # how periodic a frame must be to count as voiced (1 is a perfect repeat)
+OCTAVE_COST = 0.02  # what a lag twice as long must score above a shorter one to be taken as the period
+F0_FIX, F0_NEAR, F0_JUMP = 0.6, 0.3, 0.85  # in octaves, see _f0
+POP_HZ, VOICE_HZ = 150.0, 300.0  # a pop is a push of air below POP_HZ; a voice has its energy above VOICE_HZ
+POP_DB = 10.0  # how far a pop's low band lies above its voice band
 FADE_S, PAD_S = 0.015, 0.12
 HOP = 0.01
 
@@ -83,24 +92,63 @@ def _frames_db(x: np.ndarray, sr: int, win: float = 0.02) -> np.ndarray:
 
 
 def _f0(x: np.ndarray, sr: int) -> np.ndarray:
-    """Pitch per 10 ms (NaN where unvoiced), by autocorrelation at 16 kHz."""
+    """Pitch per 10 ms (NaN where unvoiced), by autocorrelation at 16 kHz.
+
+    Low voices are where autocorrelation goes wrong. The first formant of an oe or ie sits near 300 Hz, three times the
+    pitch of a man who speaks at 100 Hz, so that harmonic dominates and the wave nearly repeats every third of a period.
+    A windowed frame also matches itself less the further it is shifted, which favours the short lag, and together they
+    read 100 Hz as 300. So the correlation is divided by the window's own: a periodic voice then scores about the same
+    at its period and at every multiple of it, and a lag an octave longer has to win by OCTAVE_COST. A frame that still
+    lies more than F0_FIX octave from the pitch around it (the median of the voiced frames within 0.3 s) takes its
+    candidate nearest that median when it has one; without one, a jump of F0_JUMP octave or more is dropped.
+    """
     from scipy import signal
 
-    y = signal.resample_poly(x, 16000, sr) if sr != 16000 else x
-    n, h = 640, 160
+    fs, n, h = 16000, 768, 160  # 48 ms frames: three periods of the lowest pitch, which a Hann window needs
+    y = signal.resample_poly(x, fs, sr) if sr != fs else np.asarray(x, dtype=np.float64)
     if len(y) < n:
         return np.full(1, np.nan)
-    idx = np.arange(0, len(y) - n, h)
-    frames = np.stack([y[i:i + n] for i in idx]) * np.hanning(n)
-    loud = np.sqrt(np.mean(frames ** 2, axis=1)) > 1e-3
-    spec = np.fft.rfft(frames, 2 * n)
-    ac = np.fft.irfft(np.abs(spec) ** 2)[:, :n]
-    ac = ac / (ac[:, :1] + 1e-12)
-    lo, hi = 16000 // 400, 16000 // 65
-    lag = lo + np.argmax(ac[:, lo:hi], axis=1)
-    strength = ac[np.arange(len(lag)), lag]
-    f0 = 16000 / lag
-    f0[(strength < 0.45) | ~loud] = np.nan
+    lo, hi = int(fs / F0_HI), int(np.ceil(fs / F0_LO))
+    lags = np.arange(lo, hi + 1)
+    win = np.hanning(n)
+    wac = np.fft.irfft(np.abs(np.fft.rfft(win, 2 * n)) ** 2)[:hi + 2]
+    wac = wac / wac[0]
+    starts = np.arange(0, len(y) - n, h)
+    r = np.empty((len(starts), hi + 2), dtype=np.float32)
+    loud = np.empty(len(starts), dtype=bool)
+    block = 2048  # frames at a time, so a long upload does not fill the memory
+    for s in range(0, len(starts), block):
+        frames = np.lib.stride_tricks.sliding_window_view(y, n)[starts[s:s + block]]
+        frames = (frames - frames.mean(axis=1, keepdims=True)) * win
+        loud[s:s + block] = np.sqrt(np.mean(frames ** 2, axis=1)) > 1e-3
+        ac = np.fft.irfft(np.abs(np.fft.rfft(frames, 2 * n)) ** 2)[:, :hi + 2]
+        r[s:s + block] = ac / (ac[:, :1] + 1e-12) / wac
+    mid = r[:, lo:hi + 1]
+    peak = (mid > r[:, lo - 1:hi]) & (mid >= r[:, lo + 1:hi + 2]) & (mid >= VOICED)
+    score = np.where(peak, mid - OCTAVE_COST * np.log2(lags / lo), -np.inf)
+    best = np.argmax(score, axis=1)
+    rows = np.arange(len(best))
+
+    def hz(i, j):  # the peak at lags[j] of frame i, placed between samples by a parabola through it and its neighbours
+        a, b, c = r[i, lo + j - 1], r[i, lo + j], r[i, lo + j + 1]
+        bend = np.minimum(a - 2 * b + c, -1e-9)
+        return fs / (lags[j] + np.clip(0.5 * (a - c) / bend, -0.5, 0.5))
+
+    f0 = np.where(peak[rows, best] & loud, hz(rows, best), np.nan)
+    lf = np.log2(f0)
+    w = 30  # 0.3 s either side
+    around = np.lib.stride_tricks.sliding_window_view(np.pad(lf, w, constant_values=np.nan), 2 * w + 1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # a window without voice has no median
+        med = np.nanmedian(around, axis=1)
+    enough = np.sum(~np.isnan(around), axis=1) >= 10
+    for i in np.flatnonzero(enough & (np.abs(lf - med) > F0_FIX)):
+        js = np.flatnonzero(peak[i])
+        js = js[np.abs(np.log2(fs / lags[js]) - med[i]) < F0_NEAR]
+        if len(js):
+            f0[i] = hz(i, js[np.argmax(mid[i, js])])
+        elif abs(lf[i] - med[i]) >= F0_JUMP:
+            f0[i] = np.nan
     return f0
 
 
@@ -215,6 +263,47 @@ def _quietest(x: np.ndarray, sr: int, a: float, b: float) -> float:
     return (lo + int(np.argmin(e)) + n // 2) / sr
 
 
+@dataclass
+class _Clipped:
+    start: float  # seconds
+    end: float
+    samples: int
+    pop: bool
+
+
+def _clipping(data: np.ndarray, x: np.ndarray, sr: int) -> list[_Clipped]:
+    """The runs of samples at full scale, and which of them are plosive pops rather than an overdriven voice.
+
+    A pop is the air of a p or b hitting the microphone: one push of low pressure, nearly all of it below POP_HZ, that
+    reaches the ceiling on one side only. An overdriven voice hits the ceiling on its own waveform, where the voice
+    band above VOICE_HZ holds a fair share of the energy. ``data`` is the upload, ``x`` the mono signal without DC.
+    """
+    from scipy import signal
+
+    hit = np.flatnonzero(np.any(np.abs(data) >= 0.999, axis=1))
+    if not len(hit):
+        return []
+    low = signal.butter(4, POP_HZ, "lowpass", fs=sr, output="sos")
+    high = signal.butter(4, VOICE_HZ, "highpass", fs=sr, output="sos")
+    pad, settle = int(0.03 * sr), int(0.1 * sr)
+    found = []
+    for run in np.split(hit, np.flatnonzero(np.diff(hit) > int(0.02 * sr)) + 1):
+        a, b = max(0, run[0] - pad), min(len(x), run[-1] + pad + 1)
+        lo, hi = max(0, a - settle), min(len(x), b + settle)
+        seg = x[lo:hi]
+        if len(seg) < 16:
+            found.append(_Clipped(run[0] / sr, (run[-1] + 1) / sr, len(run), False))
+            continue
+        e_low = np.sum(signal.sosfiltfilt(low, seg)[a - lo:b - lo] ** 2)
+        e_high = np.sum(signal.sosfiltfilt(high, seg)[a - lo:b - lo] ** 2)
+        lowband = 10 * np.log10((e_low + 1e-20) / (e_high + 1e-20)) >= POP_DB
+        peaks = data[run]
+        peaks = peaks[np.abs(peaks) >= 0.999]
+        one_side = max(np.mean(peaks > 0), np.mean(peaks < 0)) >= 0.9
+        found.append(_Clipped(run[0] / sr, (run[-1] + 1) / sr, len(run), bool(lowband and one_side)))
+    return found
+
+
 # ---------------------------------------------------------------- processing
 def _read(path: Path) -> tuple[np.ndarray, int]:
     try:
@@ -250,6 +339,30 @@ def _opening_score(f0: np.ndarray, quiet: np.ndarray, start: float) -> float:
     return st + 4 * float(np.mean(~np.isnan(seg))) - 6 * float(np.mean(q))
 
 
+def _timbre_spans(sp: _Speech, start: float, first: float, last: float) -> list[tuple[float, float]]:
+    """The stretches of the recording that make up the first TIMBRE_S of a clip that starts at ``start``.
+
+    Long pauses shrink to MAX_PAUSE_S, so the stretch runs further than TIMBRE_S into the recording. A clip that starts
+    late and runs out goes on with the part before its start. Half a second extra covers the pauses being found again
+    on the clip itself.
+    """
+    t, left = start, TIMBRE_S + 0.5
+    for a, b in sp.pauses:
+        if a <= t or b - a <= MAX_PAUSE_S:
+            continue
+        if a - t >= left or a >= last:
+            break
+        left -= a - t + MAX_PAUSE_S
+        t = b
+        if left <= 0:
+            break
+    end = t + max(left, 0.0)
+    spans = [(start - 0.2, min(end, last + 0.2))]
+    if end > last and start > first:
+        spans.append((first - 0.2, first + end - last))
+    return spans
+
+
 def _shorten_pauses(x: np.ndarray, sr: int, report: ClipReport) -> np.ndarray:
     sp = _speech(x, sr)
     first, last = _first_speech(sp), _last_speech(sp)
@@ -282,8 +395,11 @@ def process(src: Path, dst: Path) -> ClipReport:
     x = _to_mono(data, sr, report)
     report.before = measure(x, sr)
 
-    clipped = int(np.sum(np.abs(data) >= 0.999))
     x = x - np.mean(x)
+    clips = _clipping(data, x, sr)
+    pops = [c for c in clips if c.pop]
+    report.before["clipped"] = sum(c.samples for c in clips if not c.pop)
+    report.before["pops"] = len(pops)
     if sr >= 2 * HIGHPASS_HZ * 4:
         x = signal.sosfiltfilt(signal.butter(4, HIGHPASS_HZ, "highpass", fs=sr, output="sos"), x)
         report.changes.append("Lage brom onder 70 Hz weggefilterd; de stem zelf zit daarboven.")
@@ -295,14 +411,26 @@ def process(src: Path, dst: Path) -> ClipReport:
     if first > 0.3:
         report.changes.append(f"{first:.1f} s stilte aan het begin weggehaald.".replace(".", ",", 1))
 
-    # The opening: the liveliest stretch that starts after a pause, when it clearly beats the current start.
+    # The opening: the liveliest stretch that starts after a pause, when it clearly beats the current start. A pop in
+    # the first TIMBRE_S would go into the timbre, so a start with one gives way to the liveliest start without.
     f0 = _f0(x, sr)
     onsets = [first] + [b for a, b in sp.pauses if b - a >= 0.25 and first < b < last - OPENING_S]
     scores = {o: _opening_score(f0, sp.quiet, o) for o in onsets}
-    best = max(scores, key=scores.get)
+
+    def popped(o: float) -> bool:
+        return any(c.start < b and c.end > a for a, b in _timbre_spans(sp, o, first, last) for c in pops)
+
+    pool = [o for o in onsets if not popped(o)] or onsets
+    best = max(pool, key=scores.get)
     start = first
-    if best != first and scores[best] - scores[first] >= ROTATE_MARGIN:
+    if best != first and (first not in pool or scores[best] - scores[first] >= ROTATE_MARGIN):
         start = best
+    if scores[start] - scores[first] >= ROTATE_MARGIN:
+        what = f"Het levendigste stuk (vanaf {start:.1f} s)"
+        why = "Chatterbox haalt de spreekstijl uit de eerste 6 seconden."
+    else:
+        what = f"Het stuk vanaf {start:.1f} s"
+        why = "zo zit er geen plof in de eerste 10 seconden, waar Chatterbox de klankkleur uit haalt."
 
     # Cut points sit in the quietest spot of a pause, close to the speech they border: just before the speech that
     # starts after it, or just after the speech that ends before it.
@@ -325,8 +453,7 @@ def process(src: Path, dst: Path) -> ClipReport:
         if len(tail) / sr >= TARGET_S:
             stop = pause_cut_near(begin + MAX_S, begin + MIN_GOOD_S)
             body = x[int(begin * sr):int(stop * sr)]
-            report.changes.append(f"Het levendigste stuk (vanaf {start:.1f} s) gebruikt als begin; Chatterbox haalt de "
-                                  "spreekstijl uit de eerste 6 seconden.".replace(".", ",", 1))
+            report.changes.append(f"{what} gebruikt als begin; {why}".replace(".", ",", 1))
         else:
             head_end = pause_cut_near(begin, first + 1.0) if begin - first > 1.0 else begin
             gap = np.zeros(int(0.35 * sr))
@@ -337,8 +464,7 @@ def process(src: Path, dst: Path) -> ClipReport:
             tail[-f:] *= np.linspace(1, 0, f)
             head[:f] *= np.linspace(0, 1, f)
             body = np.concatenate([tail, gap, head])
-            report.changes.append(f"Het levendigste stuk (vanaf {start:.1f} s) vooraan gezet, de rest erachter; "
-                                  "Chatterbox haalt de spreekstijl uit de eerste 6 seconden.".replace(".", ",", 1))
+            report.changes.append(f"{what} vooraan gezet, de rest erachter; {why}".replace(".", ",", 1))
     else:
         stop = end
         if end - begin > MAX_S + 5:
@@ -374,17 +500,29 @@ def process(src: Path, dst: Path) -> ClipReport:
     report.changes.append("Opgeslagen als mono WAV, 24 bit.")
     report.after = measure(out.astype(np.float64), sr)
 
-    _judge(report, clipped, sp, sr, x)
+    _judge(report, clips, popped(start), sp, sr, x)
     return report
 
 
-def _judge(report: ClipReport, clipped: int, sp: _Speech, sr: int, x: np.ndarray) -> None:
+def _judge(report: ClipReport, clips: list[_Clipped], pop_in_timbre: bool, sp: _Speech, sr: int,
+           x: np.ndarray) -> None:
     """What the processing could not fix, and what it means for the clone."""
     add = report.findings.append
     b, a = report.before, report.after
+    clipped = sum(c.samples for c in clips if not c.pop)
+    pops = sum(1 for c in clips if c.pop)
     if clipped > 10:
         add(Finding("bad", f"De opname is oversturd ({clipped} samples op het maximum). Dat kraakt, en de kloon kraakt "
                            "mee. Neem opnieuw op met de microfoon zachter of verder weg."))
+    if pops:
+        hits = f"{pops} keer slaat de lucht van een p of b tegen de microfoon, tot op het maximum"
+        if pop_in_timbre:
+            add(Finding("bad", f"Ploffen: gebruik een popfilter of spreek langs de microfoon. {hits}, en nergens "
+                               "begint 10 seconden spraak zonder plof. Chatterbox haalt de klankkleur uit die eerste "
+                               "10 seconden, dus de kloon kan de dreun overnemen."))
+        else:
+            add(Finding("warn", f"Ploffen: gebruik een popfilter of spreek langs de microfoon. {hits}. De clip "
+                                "begint met 10 seconden zonder plof, en daar haalt Chatterbox de klankkleur uit."))
     if sp.noise_db > -42:
         add(Finding("bad", f"Veel achtergrondgeluid in de stiltes ({sp.noise_db:.0f} dB). De kloon neemt dat over. "
                            "Neem opnieuw op in een stillere ruimte, dichter op de microfoon."))
