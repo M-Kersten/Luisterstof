@@ -186,6 +186,10 @@ def _say(stage: str, status: str, d: dict[str, Any]) -> tuple[str, str]:  # noqa
             left = int(d.get("blocking") or 0)
             return (f"Tafellezing klaar, {_n(left, 'probleem', 'problemen')} over." if left
                     else "Tafellezing klaar, zonder problemen."), "result"
+        if status == "no_progress":
+            now, best = int(d.get("blocking") or 0), int(d.get("best_blocking") or 0)
+            return (f"Herschrijfronde {d.get('round')} hielp niet ({_n(now, 'probleem', 'problemen')}, eerder "
+                    f"{best}). Nog een ronde maakt het waarschijnlijk niet beter, dus het herschrijven stopt hier."), "result"
         if status == "kept_best":
             return (f"De laatste herschrijving was niet beter ({d.get('last_blocking')} problemen), dus de versie met "
                     f"{_n(int(d.get('blocking') or 0), 'probleem', 'problemen')} blijft staan."), "result"

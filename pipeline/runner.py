@@ -46,6 +46,12 @@ log = logging.getLogger(__name__)
 
 EventFn = Callable[[str, str, dict[str, Any]], None]  # (stage, status, data)
 
+def problems(audit: AuditResult) -> tuple[int, int, int]:
+    """How bad a checked script is, worst first: blocking issues, then what a first-time listener cannot follow,
+    then how the dialogue is shaped. Smaller is better; two scripts compare as tuples."""
+    return len(audit.blocking()), len(comprehension_issues(audit)), len(naturalness_issues(audit))
+
+
 class StageError(RuntimeError):
     pass
 
@@ -333,24 +339,37 @@ class Pipeline:
                   estimated_minutes=round(script.estimated_seconds(self.settings.chars_per_second) / 60, 1))
         audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks, label="na het schrijven")
         tried = [(script, audit)]
-        rounds = 0
-        while rounds < rounds_left and self._needs_rewrite(audit):
-            rounds += 1
-            self.emit("script", "revise", book_id=book_id, chapter=chapter_id, round=rounds,
-                      blocking=len(audit.blocking()), naturalness=len(naturalness_issues(audit)))
-            with self._timed(book_id, chapter_id, "revise", f"ronde {rounds}"):
-                script = writer.revise(script, audit, plan, glossary, also_naturalness=self.settings.quality_mode)
-            script.save(self.paths(book_id).script(chapter_id))
-            audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks, label=f"na ronde {rounds}")
-            tried.append((script, audit))
-        script, audit = self._keep_best(book_id, chapter_id, tried)
-        if self.settings.script_polish:
-            script, audit = self._polish(writer, book_id, chapter_id, script, audit, plan, glossary, llm_checks)
+        try:
+            rounds = 0
+            while rounds < rounds_left and self._needs_rewrite(audit):
+                rounds += 1
+                self.emit("script", "revise", book_id=book_id, chapter=chapter_id, round=rounds,
+                          blocking=len(audit.blocking()), naturalness=len(naturalness_issues(audit)))
+                with self._timed(book_id, chapter_id, "revise", f"ronde {rounds}"):
+                    script = writer.revise(script, audit, plan, glossary, also_naturalness=self.settings.quality_mode)
+                script.save(self.paths(book_id).script(chapter_id))
+                audit = self.audit(book_id, chapter_id, script=script, llm_checks=llm_checks, label=f"na ronde {rounds}")
+                best = min(problems(a) for _, a in tried)
+                tried.append((script, audit))
+                if rounds < rounds_left and self._needs_rewrite(audit) and problems(audit) >= best:
+                    # Each round rewrites whole blocks, and a rewritten block brings sentences of its own that the
+                    # next check can find fault with. A round that did not help is not followed by another one.
+                    self.emit("script", "no_progress", book_id=book_id, chapter=chapter_id, round=rounds,
+                              blocking=len(audit.blocking()), best_blocking=best[0], rounds_left=rounds_left - rounds)
+                    break
+            script, audit = self._keep_best(book_id, chapter_id, tried)
+            if self.settings.script_polish:
+                script, audit = self._polish(writer, book_id, chapter_id, script, audit, plan, glossary, llm_checks,
+                                             tried)
+        except Cancelled:
+            self._restore_checked(book_id, chapter_id, tried)
+            raise
         self.continuity(book_id, chapter_id, script=script)
         return script, audit
 
     def _polish(self, writer: Writer, book_id: str, chapter_id: str, script: Script, audit: AuditResult,
-                plan: ContentPlan, glossary: Glossary, llm_checks: bool) -> tuple[Script, AuditResult]:
+                plan: ContentPlan, glossary: Glossary, llm_checks: bool,
+                tried: list[tuple[Script, AuditResult]] | None = None) -> tuple[Script, AuditResult]:
         """The dialogue edit, then the audit again. The edit stays unless it added blocking issues: a script that
         sounds better with as few problems wins, one that broke a fact goes back to the version before."""
         self.emit("script", "polish", book_id=book_id, chapter=chapter_id, segments=len(script.segments))
@@ -358,11 +377,34 @@ class Pipeline:
             polished = writer.polish(script, audit, plan, glossary)
         polished.save(self.paths(book_id).script(chapter_id))
         polished_audit = self.audit(book_id, chapter_id, script=polished, llm_checks=llm_checks, label="na de tafellezing")
+        if tried is not None:
+            tried.append((polished, polished_audit))
         if len(polished_audit.blocking()) <= len(audit.blocking()):
             self.emit("script", "polished", book_id=book_id, chapter=chapter_id, revision=polished.revision,
                       blocking=len(polished_audit.blocking()))
             return polished, polished_audit
         return self._keep_best(book_id, chapter_id, [(script, audit), (polished, polished_audit)])
+
+    def _restore_checked(self, book_id: str, chapter_id: str, tried: list[tuple[Script, AuditResult]]) -> None:
+        """Stopped halfway through the rewriting: the newest version on disk may not have been checked yet, or be
+        worse than one before it. Put back the checked version with the fewest problems, with its audit, so the
+        chapter can be read and approved without waiting for another check. Sends no events: the job is stopping."""
+        if not tried:
+            return
+        path = self.paths(book_id).script(chapter_id)
+        on_disk = Script.load_or_none(path)
+        newest = max([on_disk.revision if on_disk else 0] + [s.revision for s, _ in tried])
+        best, best_audit = min(reversed(tried), key=lambda item: problems(item[1]))
+        if on_disk is not None and on_disk.revision == best.revision:
+            return
+        restored = best.model_copy(deep=True)
+        restored.revision = newest + 1
+        restored.save(path)
+        audit = best_audit.model_copy(deep=True)
+        audit.script_revision = restored.revision
+        audit.save(self.paths(book_id).audit(chapter_id))
+        log.info("stopped: put back the checked version %d (%d blocking) as revision %d", best.revision,
+                 len(audit.blocking()), restored.revision)
 
     def _keep_best(self, book_id: str, chapter_id: str, tried: list[tuple[Script, AuditResult]]) -> tuple[Script, AuditResult]:
         """A rewrite round can make a script worse: a model told a line is unsupported may start hedging
@@ -371,7 +413,7 @@ class Pipeline:
         as the newest revision, so the file and its audit stay in step."""
         def score(item: tuple[int, tuple[Script, AuditResult]]) -> tuple:
             i, (_, a) = item
-            return (len(a.blocking()), len(naturalness_issues(a)), len(a.warnings()), -i)
+            return (*problems(a), len(a.warnings()), -i)
 
         best_i, (best, best_audit) = min(enumerate(tried), key=score)
         last, last_audit = tried[-1]
@@ -442,15 +484,24 @@ class Pipeline:
 
     # Stage 4
     def approve(self, book_id: str, chapter_id: str, *, note: str | None = None, force: bool = False) -> Approval:
+        """Approve the current revision for recording. ``force`` approves it as it is, problems and all: for a test
+        recording, or when you have read it and accept what the check found. A forced approval does not wait for a
+        check of a revision that has none: that can take hours, and its outcome would not change anything."""
         script = self.load_script(book_id, chapter_id)
         audit = AuditResult.load_or_none(self.paths(book_id).audit(chapter_id))
-        if audit is None or audit.script_revision != script.revision:
+        checked = audit is not None and audit.script_revision == script.revision
+        if not checked and not force:
             audit = self.audit(book_id, chapter_id, script=script)
-        if not audit.passed and not force:
+            checked = True
+        if checked and not audit.passed and not force:
             raise StageError(f"audit has {len(audit.blocking())} blocking issue(s); fix them or approve with force")
-        approval = Approval(episode_id=chapter_id, script_revision=script.revision, audit_passed=audit.passed, note=note)
+        passed = bool(checked and audit.passed)
+        if note is None and not passed:
+            note = (f"toch goedgekeurd met {len(audit.blocking())} problemen" if checked
+                    else "toch goedgekeurd zonder controle van deze versie")
+        approval = Approval(episode_id=chapter_id, script_revision=script.revision, audit_passed=passed, note=note)
         approval.save(self.paths(book_id).approval(chapter_id))
-        self.emit("approve", "done", book_id=book_id, chapter=chapter_id, forced=not audit.passed)
+        self.emit("approve", "done", book_id=book_id, chapter=chapter_id, forced=not passed)
         return approval
 
     def is_approved(self, book_id: str, chapter_id: str) -> bool:
@@ -570,10 +621,11 @@ class Pipeline:
         done["script"] = "script staat er al"
         script = Script.load_or_none(paths.script(chapter_id))
         audit = AuditResult.load_or_none(paths.audit(chapter_id))
-        if script is None or audit is None or audit.script_revision != script.revision:
+        approved = self.is_approved(book_id, chapter_id)
+        if not approved and (script is None or audit is None or audit.script_revision != script.revision):
             done["audit_stale"] = "de audit hoort niet bij deze scriptrevisie"
             return done
-        if self.is_approved(book_id, chapter_id):
+        if approved:  # also when it was approved without a check of this revision: then no check is waited for
             done["approve"] = "deze revisie is al goedgekeurd"
         audio_t = mtime(paths.out_audio(chapter_id))
         if done.get("approve") and audio_t is not None and audio_t >= script_t:

@@ -163,6 +163,33 @@ def test_revise_only_touches_flagged_segments(book, fake_llm, cast, settings):
     assert len({l.id for l in revised.lines()}) == sum(len(s.lines) for s in revised.segments)
 
 
+def test_style_notes_ride_along_with_a_block_that_is_rewritten_anyway(book, fake_llm, cast, settings):
+    """A rewritten block is new text that the next check can find new faults in. So with something really wrong
+    in the quiz, only the quiz is rewritten; the note that a body block sounds stiff, and the one about the whole
+    episode, go along with it. Only a script with nothing wrong in it is rewritten for how it sounds."""
+    plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
+    writer = Writer(fake_llm, cast, settings)
+    script = writer.write(plan, book, None)
+    quiz = next(s for s in script.segments if s.type == "quiz")
+    body = next(s for s in script.segments if s.type == "body")
+    stiff = AuditIssue(check="lint", severity="warning", rule="stiff", line_id=body.lines[0].id, message="klinkt als een boek")
+    flat = AuditIssue(check="lint", severity="warning", rule="too_few_overlaps", message="niemand valt elkaar in de rede")
+    wrong = AuditIssue(check="lint", rule="banned_phrase", line_id=quiz.lines[0].id, message="verboden zin")
+
+    calls_before = len(fake_llm.calls)
+    revised = writer.revise(script, AuditResult(episode_id="ch01", issues=[wrong, stiff, flat]).finalize(), plan, None,
+                            also_naturalness=True)
+    rewrites = fake_llm.calls[calls_before:]
+    assert len(rewrites) == 1 and "verboden zin" in rewrites[0].user and "niemand valt elkaar" in rewrites[0].user
+    assert next(s for s in revised.segments if s.type == "body") is body
+
+    calls_before = len(fake_llm.calls)
+    writer.revise(script, AuditResult(episode_id="ch01", issues=[stiff, flat]).finalize(), plan, None, also_naturalness=True)
+    rewrites = fake_llm.calls[calls_before:]
+    assert any("klinkt als een boek" in c.user for c in rewrites)  # nothing wrong: then it is rewritten for its sound
+    assert all("niemand valt elkaar" in c.user for c in rewrites if "klinkt als een boek" not in c.user)
+
+
 def test_the_writer_sees_how_they_sound_and_their_lives_only_where_a_story_is_told(book, fake_llm, cast, settings):
     plan = plan_chapter_thorough(book, "ch01", fake_llm, cast)
     Writer(fake_llm, cast, settings).write(plan, book, None)

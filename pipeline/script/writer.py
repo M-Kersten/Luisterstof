@@ -1056,41 +1056,32 @@ class Writer:
         """Rewrite only the segments with problems, feeding the problems back to the model.
 
         Blocking issues always go back to the writer, and so does what a listener cannot follow
-        (``COMPREHENSION_RULES``). With ``also_naturalness`` the warnings about the shape of the dialogue go along, which is the only place interruptions and reactions can still
-        come from: the mixer cannot overlap two lines the script never marked.
+        (``COMPREHENSION_RULES``). With ``also_naturalness`` the warnings about the shape of the dialogue go along,
+        which is the only place interruptions and reactions can still come from: the mixer cannot overlap two lines
+        the script never marked. Those notes ride along with the segments that are rewritten anyway; a segment with
+        nothing wrong in it is only rewritten for its shape when nothing else in the script is wrong. A rewritten
+        segment is new text, and new text brings sentences of its own for the next check to find fault with.
         """
-        issues = audit.blocking() + comprehension_issues(audit)
-        if also_naturalness:
-            issues = issues + [i for i in naturalness_issues(audit) if i.rule not in COMPREHENSION_RULES]
-        if not issues:
+        must, must_episode = self._route(script, audit.blocking() + comprehension_issues(audit))
+        style, style_episode = self._route(script, [i for i in naturalness_issues(audit) if i.rule not in COMPREHENSION_RULES]
+                                           if also_naturalness else [])
+        if not must and not must_episode and not style and not style_episode:
             return script
         guest = self.cast.guest(script.guest_id) if script.guest_id else None
         per_segment: dict[int, list[str]] = {}
-        episode_notes: list[str] = []
-        for issue in issues:
-            idx = None
-            if issue.line_id:
-                for i, seg in enumerate(script.segments):
-                    if any(line.id == issue.line_id for line in seg.lines):
-                        idx = i
-                        break
-            elif issue.claim_id:
-                for i, seg in enumerate(script.segments):
-                    if issue.claim_id in seg.covers:
-                        idx = i
-                        break
-                if idx is None:
-                    idx = next((i for i, s in enumerate(script.segments) if s.type == "body"), 0)
-            where = f"regel {issue.line_id}: " if issue.line_id else ""
-            note = f"- {where}{issue.message}" + (f" (suggestie: {issue.suggestion})" if issue.suggestion else "")
-            if idx is None:
-                episode_notes.append(note)  # about the episode as a whole, so no single segment owns it
-                continue
-            per_segment.setdefault(idx, []).append(note)
-        if episode_notes:
+        if must_episode:  # about the episode as a whole, so no single segment owns it
             for idx in self._flat_segments(script):
-                notes = per_segment.setdefault(idx, [])
-                notes += [n for n in episode_notes if n not in notes]
+                notes = must.setdefault(idx, [])
+                notes += [n for n in must_episode if n not in notes]
+        if must:
+            for idx, notes in must.items():
+                per_segment[idx] = notes + style.get(idx, []) + [n for n in style_episode if n not in notes]
+        else:
+            per_segment = style
+            if style_episode:
+                for idx in self._flat_segments(script):
+                    notes = per_segment.setdefault(idx, [])
+                    notes += [n for n in style_episode if n not in notes]
 
         briefs = [SegmentBrief(type=s.type, title=s.title or s.type, covers=list(s.covers), target_chars=max(200, s.char_count),
                                instructions=s.brief or "", speakers=self._segment_speakers(s)) for s in script.segments]
@@ -1122,6 +1113,33 @@ class Writer:
             new_seg = self._materialise(out, briefs[i], _with_max_id(new_script, script))
             new_script.segments.append(new_seg)
         return new_script
+
+    def _route(self, script: Script, issues: list[AuditIssue]) -> tuple[dict[int, list[str]], list[str]]:
+        """The issues as notes for the writer, per segment index, and the ones about the episode as a whole."""
+        per_segment: dict[int, list[str]] = {}
+        episode_notes: list[str] = []
+        for issue in issues:
+            idx = None
+            if issue.line_id:
+                for i, seg in enumerate(script.segments):
+                    if any(line.id == issue.line_id for line in seg.lines):
+                        idx = i
+                        break
+            elif issue.claim_id:
+                for i, seg in enumerate(script.segments):
+                    if issue.claim_id in seg.covers:
+                        idx = i
+                        break
+                if idx is None:
+                    idx = next((i for i, s in enumerate(script.segments) if s.type == "body"), 0)
+            where = f"regel {issue.line_id}: " if issue.line_id else ""
+            note = f"- {where}{issue.message}" + (f" (suggestie: {issue.suggestion})" if issue.suggestion else "")
+            if idx is None:
+                if note not in episode_notes:
+                    episode_notes.append(note)
+                continue
+            per_segment.setdefault(idx, []).append(note)
+        return per_segment, episode_notes
 
     def _segment_speakers(self, seg: Segment) -> list[str]:
         ids = [h.id for h in self.cast.hosts]

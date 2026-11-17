@@ -785,7 +785,10 @@ function renderReviewGuide(data) {
     setGuide("end", "Even wachten", "Goedkeuren kan zodra Luisterstof klaar is met dit hoofdstuk.");
     end = [{ label: "Goedkeuren", disabled: true }];
   } else if (data.approved) {
-    setGuide("review", "Goedgekeurd", `Je hebt deze versie goedgekeurd. Pas je nog iets aan, dan vervalt de goedkeuring en wordt het script opnieuw gecontroleerd.`);
+    const forced = data.approval && !data.approval.audit_passed;
+    setGuide("review", forced ? "Toch goedgekeurd" : "Goedgekeurd", (forced
+      ? `Je hebt deze versie goedgekeurd terwijl ${a === "blocked" ? `de controle nog ${plural(blocking, "probleem", "problemen")} vond` : "hij nog niet gecontroleerd was"}. Hij kan opgenomen worden zoals hij is. `
+      : "Je hebt deze versie goedgekeurd. ") + "Pas je nog iets aan, dan vervalt de goedkeuring en wordt het script opnieuw gecontroleerd.");
     top = [{ label: "Naar opnemen", primary: true, action: () => go(chapterHash(state.book, state.chapter, "record")) }];
     setGuide("end", "Goedgekeurd", "De stemmen kunnen dit hoofdstuk opnemen.");
     end = [{ label: "Naar opnemen", action: () => go(chapterHash(state.book, state.chapter, "record")) }];
@@ -794,16 +797,16 @@ function renderReviewGuide(data) {
       ? "Het script is aangepast sinds de laatste controle. Laat Luisterstof het opnieuw tegen het boek leggen voordat je goedkeurt."
       : "Dit script is nog niet gecontroleerd. Laat Luisterstof het tegen het boek leggen voordat je goedkeurt.");
     top = [recheck(true)];
-    setGuide("end", "Eerst opnieuw controleren", "Goedkeuren kan als de controle van deze versie geslaagd is.");
-    end = [recheck(false)];
+    setGuide("end", "Eerst opnieuw controleren", "Goedkeuren kan als de controle van deze versie geslaagd is. Wil je het toch laten opnemen, bijvoorbeeld om te testen? Dan kan dat zonder controle.");
+    end = [recheck(false), approveAnyway(data, a, blocking)];
   } else if (a === "blocked") {
     setGuide("review", `${plural(blocking, "probleem", "problemen")} om op te lossen`,
       "Luisterstof vond regels die niet kloppen met het boek of tegen de regels ingaan. Ze staan hieronder rood gemarkeerd, met uitleg. Pas de tekst aan en sla op; daarna wordt het opnieuw gecontroleerd. Liever een heel nieuw script? Dat kan onderaan bij Meer, onder Opnieuw maken.");
     const first = firstBlocking(data);
     top = [{ label: first ? "Naar het eerste probleem" : "Bekijk de problemen", primary: true,
       action: () => first ? jumpToLine(first.line_id) : showWork("audit") }];
-    setGuide("end", "Nog niet goed te keuren", `Los eerst ${blocking === 1 ? "het rode probleem" : "de rode problemen"} op.`);
-    end = [{ label: "Goedkeuren", disabled: true }];
+    setGuide("end", "Nog niet goed te keuren", `Los eerst ${blocking === 1 ? "het rode probleem" : "de rode problemen"} op. Wil je het toch laten opnemen, bijvoorbeeld om te testen? Dat kan, met de problemen erin.`);
+    end = [approveAnyway(data, a, blocking)];
   } else {
     const tips = data.audit ? data.audit.issues.filter(i => i.severity === "warning").length : 0;
     setGuide("review", "Lees het gesprek na", "Lees het zoals de luisteraar het straks hoort." +
@@ -1584,14 +1587,23 @@ async function runStage(stage, extra = {}, message = null) {
   } catch (err) { fail(err, STAGES[stage] || stage); return null; }
 }
 
-async function approve(e) {
+async function approve(e, force = false) {
   try {
-    await busy(e.currentTarget, "Bezig...", () => api.send(chapterUrl("/approve"), "POST", {}));
-    log("goedgekeurd; opnemen kan nu");
-    toast("Goedgekeurd. Je kunt het nu laten opnemen.");
+    await busy(e.currentTarget, "Bezig...", () => api.send(chapterUrl("/approve"), "POST", force ? { force: true } : {}));
+    log(force ? "toch goedgekeurd, met wat de controle vond; opnemen kan nu" : "goedgekeurd; opnemen kan nu");
+    toast(force ? "Toch goedgekeurd. Je kunt het nu laten opnemen, problemen en al." : "Goedgekeurd. Je kunt het nu laten opnemen.");
     await loadBook(state.book);
     go(chapterHash(state.book, state.chapter, "record"));
   } catch (err) { fail(err, "Goedkeuren"); }
+}
+
+// Approve a script the check did not pass, or did not check: to hear it recorded anyway, for a test.
+function approveAnyway(data, auditStateNow, blocking) {
+  const what = auditStateNow === "blocked"
+    ? `De controle vond nog ${plural(blocking, "probleem", "problemen")} in dit script. Die blijven erin staan en worden zo ingesproken.`
+    : "Deze versie van het script is nog niet gecontroleerd. Wat er niet aan klopt, wordt zo ingesproken.";
+  return { label: "Toch goedkeuren", outline: true, title: "Laat het opnemen zoals het is, bijvoorbeeld om te testen",
+    action: (e) => confirm(`${what}\n\nToch goedkeuren, zodat het opgenomen kan worden?`) && approve(e, true) };
 }
 
 // --------------------------------------------------------------- voice lab

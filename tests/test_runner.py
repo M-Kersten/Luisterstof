@@ -183,3 +183,96 @@ def test_a_script_the_listener_cannot_follow_goes_back_to_the_writer(ingested):
     before = len([c for c in p.llm.calls if c.task in ("listener", "landing")])
     p.audit("demo", "ch01")
     assert len([c for c in p.llm.calls if c.task in ("listener", "landing")]) == before  # switched off: no calls
+
+
+def _checker(p, blocking_per_revision):
+    """Stands in for the check against the book: revision n gets ``blocking_per_revision[n]`` blocking issues, all on
+    the first line of the first body block. Raises Cancelled for a revision it has no number for."""
+    from pipeline.cancel import Cancelled
+    from pipeline.models import AuditIssue, AuditResult
+
+    checked = {}
+
+    def audit(book_id, chapter_id, *, script=None, llm_checks=True):
+        script = script or p.load_script(book_id, chapter_id)
+        if script.revision not in blocking_per_revision:
+            raise Cancelled()
+        line = next(s for s in script.segments if s.type == "body").lines[0].id
+        result = AuditResult(episode_id=chapter_id, script_revision=script.revision, issues=[
+            AuditIssue(check="lint", rule="x", line_id=line, message=f"probleem {i}")
+            for i in range(blocking_per_revision[script.revision])]).finalize()
+        result.save(p.paths(book_id).audit(chapter_id))
+        checked[script.revision] = script.model_copy(deep=True)
+        return result
+
+    p._audit = audit
+    return checked
+
+
+def test_rewriting_stops_after_a_round_that_did_not_help(ingested):
+    """Three rounds allowed, and the first one made it worse: the second is not started, and the first version
+    stays, as the newest revision."""
+    p = ingested
+    p.plan("demo", "ch01")
+    p.settings = p.settings.with_(script_polish=False, script_revise_rounds=3)
+    checked = _checker(p, {1: 2, 2: 5, 3: 0})
+    script, audit = p.script("demo", "ch01")
+    rewrites = [c for c in p.llm.calls if c.task == "script_segment" and c.metadata.get("revision")]
+    assert len(rewrites) == 1 and sorted(checked) == [1, 2]
+    stopped = [d for s, st, d in p.events if (s, st) == ("script", "no_progress")]
+    assert stopped and stopped[0]["blocking"] == 5 and stopped[0]["best_blocking"] == 2 and stopped[0]["rounds_left"] == 2
+    assert script.revision == 3 and len(audit.blocking()) == 2 and audit.script_revision == 3
+    assert [line.text for line in script.lines()] == [line.text for line in checked[1].lines()]
+
+
+def test_rewriting_goes_on_while_it_helps(ingested):
+    p = ingested
+    p.plan("demo", "ch01")
+    p.settings = p.settings.with_(script_polish=False, script_revise_rounds=3)
+    checked = _checker(p, {1: 4, 2: 2, 3: 1, 4: 0})
+    script, audit = p.script("demo", "ch01")
+    assert sorted(checked) == [1, 2, 3, 4] and audit.passed and script.revision == 4
+    assert ("script", "no_progress") not in {(s, st) for s, st, _ in p.events}
+
+
+def test_a_stop_while_rewriting_leaves_the_best_checked_version(ingested):
+    """Stopped while the rewrite was being checked: the unchecked rewrite does not stay on top, the checked
+    first version comes back with its check, so it can be read and approved straight away."""
+    from pipeline.cancel import Cancelled
+    from pipeline.models import AuditResult
+
+    p = ingested
+    p.plan("demo", "ch01")
+    p.settings = p.settings.with_(script_polish=False, script_revise_rounds=3)
+    checked = _checker(p, {1: 3})  # revision 2 is written, and the stop comes during its check
+    with pytest.raises(Cancelled):
+        p.script("demo", "ch01")
+    on_disk = p.load_script("demo", "ch01")
+    audit = AuditResult.load(p.paths("demo").audit("ch01"))
+    assert on_disk.revision == 3 and audit.script_revision == 3 and len(audit.blocking()) == 3
+    assert [line.text for line in on_disk.lines()] == [line.text for line in checked[1].lines()]
+
+
+def test_approve_anyway_records_it_and_does_not_wait_for_a_check(ingested):
+    p = ingested
+    p.run_chapter("demo", "ch01", upto="script")
+    script = p.load_script("demo", "ch01")
+    script.segments[0].lines[0].text = "Iets anders, nog niet gecontroleerd."
+    p.save_script("demo", "ch01", script)
+    audits = sum(1 for s, st, _ in p.events if (s, st) == ("audit", "start"))
+    assert "audit_stale" in p._done("demo", "ch01")
+    approval = p.approve("demo", "ch01", force=True)
+    assert sum(1 for s, st, _ in p.events if (s, st) == ("audit", "start")) == audits  # no hours of checking first
+    assert not approval.audit_passed and approval.note == "toch goedgekeurd zonder controle van deze versie"
+    done = p._done("demo", "ch01")  # running the book again does not check it after all
+    assert "audit_stale" not in done and done["script"] and done["approve"]
+    assert p.is_approved("demo", "ch01") and p.render("demo", "ch01")[0].is_file()
+
+    _checker(p, {script.revision + 1: 2})
+    script.segments[0].lines[0].text = "En nog iets anders."
+    p.save_script("demo", "ch01", script)
+    p.audit("demo", "ch01")
+    with pytest.raises(StageError):
+        p.approve("demo", "ch01")
+    approval = p.approve("demo", "ch01", force=True)
+    assert not approval.audit_passed and approval.note == "toch goedgekeurd met 2 problemen"

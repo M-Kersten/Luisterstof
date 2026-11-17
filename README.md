@@ -262,6 +262,10 @@ studiepodcast approve statistiek1 ch03
 studiepodcast render statistiek1 ch03
 ```
 
+To record a script the audit still blocks, for a test or because you accept what it found, approve it with `--force` (on the chapter page: **Toch goedkeuren**). A forced approval does not wait for a check of a revision that has none, and `approved.json` says it was forced and with how many problems.
+
+**When rewriting does not converge.** A rewrite round hands the writer whole blocks to write again, with the audit's notes. A rewritten block is new text, and the next audit can find new faults in it: an unsupported sentence that was not there before, a reference that is now out of order. So a round can leave more problems than it fixed. Three things keep that from eating a night: only the blocks with a blocking issue or a line a listener cannot follow are rewritten (the notes about how the dialogue sounds go along with those blocks and pull in no others, unless nothing else is wrong); a round that leaves more problems than the best version so far is the last one (`script no_progress` in the log); and a run stopped halfway puts the best checked version back on top with its audit, so it can be read and approved without another check.
+
 Per speaker turn: cache lookup, three takes with seed and exaggeration jitter, faster-whisper transcription, WER against the script (reject above 5%), pick the take closest to the expected duration, retry once at lower exaggeration, flag the turn in the manifest if everything fails. Edited turns re-render; untouched turns come from `render/cache`.
 
 **M6 Whole book.**
@@ -489,7 +493,7 @@ The web UI shows the same summary (verified turns, alignment fallback count) on 
 | `STUDIEPODCAST_OFFLINE` | `0` | `1`: nothing leaves the local network (see above) |
 | `STUDIEPODCAST_QUALITY_MODE` | `0` | `1`: quality over speed (see above); raises the passes below and rewrites flat scripts |
 | `STUDIEPODCAST_PLAN_REVIEW_ROUNDS`, `STUDIEPODCAST_PLAN_PART_CHARS` | `1`, `8000` | How the content plan and lexicon are made; how much text one plan call reads |
-| `STUDIEPODCAST_REVISE_ROUNDS` | `1` | How often a script is rewritten before it is accepted as it is: when the audit blocks it, when a listener cannot follow a line, or when a hard claim is stated but not explained |
+| `STUDIEPODCAST_REVISE_ROUNDS` | `1` | At most how often a script is rewritten before it is accepted as it is: when the audit blocks it, when a listener cannot follow a line, or when a hard claim is stated but not explained. A round that leaves more problems than the best version so far ends the rewriting early, and the best version is kept |
 | `OPENCODE_URL`, `OPENCODE_PASSWORD` | service.json, then the desktop app's log, then `http://127.0.0.1:4096` | OpenCode server (backend `opencode`) and its Basic-auth password |
 | `OPENCODE_MODEL` | `strata/strata` | `provider/id` (optionally `#variant`) as OpenCode lists them |
 | `OPENCODE_WAKE_TIMEOUT`, `OPENCODE_MODEL_START` | `300`, empty | How long a model that is being started may take; an optional command that starts it directly |
