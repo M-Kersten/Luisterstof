@@ -165,6 +165,7 @@ def mix(
     intro: AudioClip | None = None,
     outro: AudioClip | None = None,
     music: AudioClip | None = None,
+    music_db: float = 0.0,
     music_voices: list[tuple[float, float]] | None = None,
     music_until: float | None = None,
     room_tone_db: float | None = -60.0,
@@ -208,7 +209,7 @@ def mix(
         music_samples = resample(music.samples, music.sr, sr) if music.sr != sr else music.samples
         if music_samples.ndim == 2 and not stereo:
             music_samples = music_samples.mean(axis=1)
-        music_samples = normalise_loudness(even_out(music_samples, sr), sr, line_lufs)  # alone, as loud as a voice
+        music_samples = normalise_loudness(even_out(music_samples, sr), sr, line_lufs + music_db)  # alone: a voice, plus music_db
     total = offset + timeline.duration + tail_s
     outro_samples = None
     if outro is not None:

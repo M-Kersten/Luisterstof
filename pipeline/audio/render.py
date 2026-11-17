@@ -35,7 +35,7 @@ from pipeline.audio.timeline import Timeline, assemble
 from pipeline.audio.turns import Turn, group_turns
 from pipeline.config import Settings
 from pipeline.cues import pure_reaction
-from pipeline.models import Cast, Glossary, RenderManifest, Script, TakeRecord, TurnRender
+from pipeline.models import Cast, Glossary, HookChoice, RenderManifest, Script, TakeRecord, TurnRender
 from pipeline.paths import BookPaths
 from pipeline.tags import exaggeration_for
 
@@ -179,8 +179,11 @@ def render_episode(
     first = script.segments[0] if script.segments else None
     if welcome is not None and welcome.turn_id in rendered:
         # the hook: a teaser from the recording, then the welcome, the music under both; the script follows
+        picked = HookChoice.load_or_none(paths.hook(script.episode_id))
         opened = build_opening(timeline, turns, rendered, welcome, lifts=lifts,
-                               music_s=music.duration_s if music is not None else None, sr=synth.sample_rate, seed=seed)
+                               music_s=music.duration_s if music is not None else None,
+                               choice=(picked.first_line, picked.last_line) if picked else None,
+                               sr=synth.sample_rate, seed=seed)
         timeline = opened.timeline
         music_voices, music_until = opened.layout.voices, opened.layout.music_until
         manifest.opening = opened.record()
@@ -210,7 +213,7 @@ def render_episode(
             record["plaats"] = pans
         manifest.acoustics = record
     mixed, offset = mix(timeline, sr=sr, target_lufs=settings.target_lufs, line_lufs=settings.line_lufs, intro=intro, outro=outro,
-                        music=music, music_voices=music_voices, music_until=music_until,
+                        music=music, music_db=settings.hook_music_db, music_voices=music_voices, music_until=music_until,
                         acoustics=acoustics, finish=finish, pans=pans, breaths=inhales, seed=seed)
 
     audio_path = paths.out_audio(script.episode_id)

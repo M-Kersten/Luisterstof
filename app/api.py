@@ -29,6 +29,7 @@ from pipeline.models import (
     ContentPlan,
     EpisodeTranscript,
     Glossary,
+    HookChoice,
     RenderManifest,
     Script,
 )
@@ -50,6 +51,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 class ApproveRequest(BaseModel):
     note: str | None = None
     force: bool = False
+
+
+class HookRequest(BaseModel):
+    first_line: str
+    last_line: str
 
 
 class BookRunRequest(BaseModel):
@@ -313,6 +319,7 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
             "script": script.model_dump() if script else None,
             "audit": audit.model_dump() if audit else None,
             "approval": approval.model_dump() if approval else None,
+            "hook": (choice.model_dump() if (choice := HookChoice.load_or_none(paths.hook(chapter_id))) else None),
             "approved": reader.is_approved(book_id, chapter_id),
             "manifest": manifest.model_dump() if manifest else None,
             "manifest_quality": manifest_quality,
@@ -356,6 +363,32 @@ def create_app(settings: Settings | None = None, *, fake_llm: bool | None = None
         return manager.submit(book_id, chapter_id, stage, work,
                               settings=settings.with_quality(True) if req.quality else None)
 
+
+    @app.put("/api/books/{book_id}/chapters/{chapter_id}/hook")
+    def put_hook(book_id: str, chapter_id: str, req: HookRequest) -> dict[str, Any]:
+        """Pick the teaser the episode opens with: from one line to another, in the order of the script. It is used
+        from the next recording on; the script and its approval stay as they are."""
+        paths = book_or_404(book_id)
+        validate_id(chapter_id)
+        script = Script.load_or_none(paths.script(chapter_id))
+        if script is None:
+            raise HTTPException(404, "dit hoofdstuk heeft nog geen script")
+        order = [line.id for line in script.lines()]
+        if req.first_line not in order or req.last_line not in order:
+            raise HTTPException(400, "die regel staat niet in het script")
+        if order.index(req.last_line) < order.index(req.first_line):
+            raise HTTPException(400, "de hook eindigt voor hij begint")
+        choice = HookChoice(first_line=req.first_line, last_line=req.last_line)
+        choice.save(paths.hook(chapter_id))
+        return choice.model_dump()
+
+    @app.delete("/api/books/{book_id}/chapters/{chapter_id}/hook")
+    def delete_hook(book_id: str, chapter_id: str) -> dict[str, Any]:
+        """Let Luisterstof pick the teaser again, from the next recording on."""
+        paths = book_or_404(book_id)
+        validate_id(chapter_id)
+        paths.hook(chapter_id).unlink(missing_ok=True)
+        return {"hook": None}
 
     @app.post("/api/books/{book_id}/chapters/{chapter_id}/approve")
     def approve(book_id: str, chapter_id: str, req: ApproveRequest) -> dict[str, Any]:

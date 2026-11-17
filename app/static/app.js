@@ -665,7 +665,70 @@ function renderLinePanel(lineId) {
     ${issues.length ? `<div class="panel__issues">${issues.map(issueLine).join("")}</div>` : ""}
     <h4>Uit het boek</h4>
     ${claims.length ? claims.join("") : '<p class="muted">Deze regel brengt geen feit uit het boek over: een vraag, een reactie of een grap. Dat mag.</p>'}
+    ${hookPanel(lineId)}
   </div>`;
+}
+
+// ------------------------------------------------------------ the hook
+// The teaser the episode opens with: the stretch you picked (data.hook), or else the one the last recording picked.
+const HOOK_LONG_S = 20;  // longer than this and the music is over before the welcome
+function scriptOrder() { return $$("#script-lines .line").map(div => div.dataset.id); }
+function hookRange() {
+  const d = state.data, order = scriptOrder();
+  if (d.hook && order.includes(d.hook.first_line) && order.includes(d.hook.last_line)) return { first: d.hook.first_line, last: d.hook.last_line, mine: true };
+  const t = d.manifest && d.manifest.opening && d.manifest.opening.teaser;
+  const ids = t ? t.line_ids.filter(id => order.includes(id)) : [];
+  return ids.length ? { first: ids[0], last: ids[ids.length - 1], mine: false } : null;
+}
+function hookLines(range) {
+  const order = scriptOrder();
+  return range ? order.slice(order.indexOf(range.first), order.indexOf(range.last) + 1) : [];
+}
+// About how long it takes to say: the speed the pipeline plans with, and a short gap per line.
+function hookSeconds(ids) {
+  return Math.round(ids.reduce((s, id) => s + $(`#script-lines .line[data-id="${CSS.escape(id)}"] .text`).value.length / 15 + 0.3, 0));
+}
+function markHook() {
+  const range = hookRange(), ids = new Set(hookLines(range));
+  for (const div of $$("#script-lines .line")) {
+    div.classList.toggle("in-hook", ids.has(div.dataset.id));
+    $$(".hooktag", div).forEach(tag => tag.parentNode.removeChild(tag));
+    if (range && div.dataset.id === range.first) {
+      $(".line__who", div).insertAdjacentHTML("beforeend", `<span class="hooktag" title="${range.mine ? "Jij koos dit stuk als hook" : "Dit stuk koos Luisterstof bij de laatste opname"}">hook${range.mine ? "" : " (automatisch)"}</span>`);
+    }
+  }
+}
+function hookPanel(lineId) {
+  const d = state.data, range = hookRange(), ids = hookLines(range);
+  const span = range ? `regel ${escapeHtml(range.first)}${range.last !== range.first ? ` tot ${escapeHtml(range.last)}` : ""}, ongeveer ${hookSeconds(ids)} seconden` : "";
+  const status = !range ? "Bij de opname kiest Luisterstof zelf het spannendste stuk van zo'n 7 tot 17 seconden. Wil je zelf kiezen? Zet hier het begin en het eind."
+    : range.mine ? `Jij koos ${span}.${hookSeconds(ids) > HOOK_LONG_S ? " Dat is lang: de muziek duurt een halve minuut en het welkom komt er nog na." : ""}`
+    : `Bij de laatste opname koos Luisterstof ${span}. Liever een ander stuk? Zet hier het begin en het eind.`;
+  const lost = d.manifest && d.manifest.opening && d.manifest.opening.choice_lost;
+  return `<h4>Hook</h4><p class="muted">${status}</p>${lost && !(range && range.mine) ? `<p class="bad small">Bij de laatste opname: ${escapeHtml(lost)}.</p>` : ""}
+    <div class="panel__actions">
+      <button class="btn btn--sm btn--secondary" data-hook="first" data-line-id="${escapeHtml(lineId)}">Hook begint hier</button>
+      <button class="btn btn--sm btn--secondary" data-hook="last" data-line-id="${escapeHtml(lineId)}">Hook eindigt hier</button>
+      ${d.hook ? '<button class="btn btn--sm btn--outline" data-hook="auto">Weer zelf laten kiezen</button>' : ""}
+    </div>`;
+}
+async function setHook(kind, lineId) {
+  const order = scriptOrder(), at = (id) => order.indexOf(id), now = hookRange();
+  try {
+    if (kind === "auto") {
+      await api.send(chapterUrl("/hook"), "DELETE");
+      state.data.hook = null;
+    } else {
+      let first = kind === "first" ? lineId : now ? now.first : lineId;
+      let last = kind === "last" ? lineId : now ? now.last : lineId;
+      if (at(last) < at(first)) { if (kind === "first") last = first; else first = last; }
+      state.data.hook = await api.send(chapterUrl("/hook"), "PUT", { first_line: first, last_line: last });
+    }
+  } catch (err) { fail(err, "Hook kiezen"); return; }
+  markHook();
+  renderLinePanel(state.selectedLine);
+  toast(state.data.final.audio ? "Opgeslagen. Neem opnieuw op om de nieuwe hook te horen; wat al is ingesproken komt uit de cache."
+    : "Opgeslagen. De hook komt erin bij de opname.");
 }
 
 function renderSource() {
@@ -928,6 +991,7 @@ function renderScript(data) {
   root.classList.toggle("only-issues", box.checked);
   root.classList.toggle("show-details", $("#show-details").checked);
   autosizeAll();
+  markHook();
 }
 
 function collectScript() {
@@ -2271,6 +2335,8 @@ $("#script-lines").addEventListener("click", (e) => { const l = e.target.closest
 for (const panel of ["#line-panel", "#claim-panel"]) {
   $(panel).addEventListener("click", (e) => {
     if (e.target.closest("[data-close-panel]")) { panel === "#line-panel" ? renderLinePanel(null) : renderClaimPanel(null); return; }
+    const hook = e.target.closest("[data-hook]");
+    if (hook) { setHook(hook.dataset.hook, hook.dataset.lineId); return; }
     const show = e.target.closest("[data-show-claim]");
     if (show) { showClaimInSource(show.dataset.showClaim); return; }
     const line = e.target.closest("[data-line]");

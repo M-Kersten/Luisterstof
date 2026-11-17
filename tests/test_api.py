@@ -66,6 +66,22 @@ def test_upload_run_edit_approve(settings, sample_pdf):
         chapter = client.get("/api/books/demo/chapters/ch01").json()
         assert chapter["final"]["audio"] and chapter["final"]["transcript"]["blocks"]
         assert client.get(chapter["final"]["audio"]).status_code == 200
+        assert chapter["hook"] is None and chapter["manifest"]["opening"]["teaser"]["chosen"] is False
+
+        # pick the hook: two lines of the second block. The approval stays, the next recording uses it.
+        ids = [line["id"] for seg in chapter["script"]["segments"] for line in seg["lines"]]
+        hook = "/api/books/demo/chapters/ch01/hook"
+        assert client.put(hook, json={"first_line": ids[9], "last_line": ids[8]}).status_code == 400  # backwards
+        assert client.put(hook, json={"first_line": "l999", "last_line": ids[9]}).status_code == 400
+        assert client.put(hook, json={"first_line": ids[8], "last_line": ids[9]}).json()["first_line"] == ids[8]
+        chapter = client.get("/api/books/demo/chapters/ch01").json()
+        assert chapter["hook"]["last_line"] == ids[9] and chapter["approved"]
+        job = _wait(client, client.post("/api/books/demo/chapters/ch01/run", json={"stage": "render", "force": True}).json()["id"])
+        assert job["status"] == "done", job
+        teaser = client.get("/api/books/demo/chapters/ch01").json()["manifest"]["opening"]["teaser"]
+        assert teaser["chosen"] and teaser["line_ids"][0] == ids[8] and ids[9] in teaser["line_ids"]
+        assert client.delete(hook).json() == {"hook": None}
+        assert client.get("/api/books/demo/chapters/ch01").json()["hook"] is None
 
         r = client.post("/api/books/demo/chapters/ch99/run", json={"stage": "plan"})
         assert _wait(client, r.json()["id"])["status"] == "failed"

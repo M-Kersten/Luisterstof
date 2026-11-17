@@ -139,3 +139,30 @@ def test_an_episode_opens_with_teaser_and_welcome(settings, cast):
                                                   synth=NullSynth(jitter=0.0), transcriber=None, aligner=None)
     lines = EpisodeTranscript.load(transcript_path).lines
     assert manifest.opening == {} and lines[0].line_id == "l001" and abs(lines[0].start - 0.3) < 0.1
+
+
+def test_a_picked_teaser_is_used_and_a_lost_one_says_so():
+    from pipeline.audio.opening import build_opening, chosen_teaser, welcome_turn
+    from pipeline.audio.timeline import assemble
+    from pipeline.script.cast import load_cast
+
+    script = _episode()
+    turns, rendered = _rendered(script)
+    teaser = chosen_teaser(turns, rendered, "l004", "l006", sr=SR)
+    assert teaser.line_ids == ["l004", "l005", "l006"] and teaser.why == ["door jou gekozen"]
+    assert chosen_teaser(turns, rendered, "l006", "l004", sr=SR) is None
+    assert chosen_teaser(turns, rendered, "l004", "l404", sr=SR) is None
+
+    cast = load_cast("cast")
+    welcome = welcome_turn(script, cast)
+    synth, aligner = NullSynth(sample_rate=SR, jitter=0.0), UniformAligner()
+    clip = synth.render(welcome.text, VoiceSpec(speaker_id=welcome.speaker), exaggeration=0.5, seed=1)
+    rendered[welcome.turn_id] = (clip, aligner.align(clip, welcome.text))
+    main = assemble(turns, rendered, sr=SR)
+    picked = build_opening(main, turns, rendered, welcome, music_s=30.0, choice=("l004", "l006"), sr=SR)
+    record = picked.record()
+    assert record["teaser"]["line_ids"] == ["l004", "l005", "l006"] and record["teaser"]["chosen"]
+    assert "choice_lost" not in record
+    lost = build_opening(main, turns, rendered, welcome, music_s=30.0, choice=("l004", "l404"), sr=SR).record()
+    assert not lost["teaser"]["chosen"] and lost["teaser"]["line_ids"][0] == "l008"  # picked here, as without a choice
+    assert "l404" in lost["choice_lost"]

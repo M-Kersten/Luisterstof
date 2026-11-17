@@ -198,6 +198,27 @@ def pick_teaser(
     return None
 
 
+def chosen_teaser(
+    turns: list[Turn],
+    rendered: dict[str, tuple[AudioClip, list[WordTiming]]],
+    first_line: str,
+    last_line: str,
+    *,
+    sr: int,
+    seed: int = 7,
+) -> Teaser | None:
+    """The teaser you picked: the turns from the one with ``first_line`` to the one with ``last_line``. A turn is
+    heard whole, so a pick that starts or ends halfway one takes in all of it. None when either line is not in the
+    script (any more), or the last comes before the first."""
+    index = {line_id: i for i, t in enumerate(turns) for line_id in t.line_ids}
+    if first_line not in index or last_line not in index or index[last_line] < index[first_line]:
+        return None
+    chosen = [t for t in turns[index[first_line]: index[last_line] + 1] if t.turn_id in rendered]
+    if not chosen:
+        return None
+    return Teaser(chosen, assemble(chosen, rendered, sr=sr, seed=seed), 0.0, ["door jou gekozen"])
+
+
 def topic_of(script: Script) -> str:
     """What the episode is about, as the host can say it: the question the outline settled on, or the chapter title."""
     topic = (script.outline.question if script.outline else "") or script.title or ""
@@ -274,6 +295,8 @@ class Opening:
     welcome: Turn
     layout: Layout
     timeline: Timeline  # the whole episode: teaser, welcome, then the script, on one clock
+    chosen: bool = False  # the teaser is the one you picked
+    choice_lost: str = ""  # you picked one, and why it could not be used
 
     def record(self) -> dict:
         """For the manifest: what was picked and why, so a choice you do not like can be traced."""
@@ -282,7 +305,9 @@ class Opening:
         if self.teaser is not None:
             out["teaser"] = {"line_ids": self.teaser.line_ids, "at": round(float(self.layout.teaser_at or 0.0), 2),
                              "duration_s": round(float(self.teaser.duration), 2), "score": float(self.teaser.score),
-                             "why": self.teaser.why}
+                             "why": self.teaser.why, "chosen": self.chosen}
+        if self.choice_lost:
+            out["choice_lost"] = self.choice_lost
         return out
 
 
@@ -294,13 +319,21 @@ def build_opening(
     *,
     lifts: dict[str, float] | None = None,
     music_s: float | None = None,
+    choice: tuple[str, str] | None = None,
     sr: int,
     seed: int = 7,
 ) -> Opening:
-    """The episode with its opening in front: the script's own timeline moves back to make room."""
+    """The episode with its opening in front: the script's own timeline moves back to make room. ``choice`` is the
+    first and last line of the teaser you picked; without one, or when its lines are gone, it is picked here."""
     clip, words = rendered[welcome.turn_id]
-    max_s, prefer_s = teaser_room(clip.duration_s, music_s)
-    teaser = pick_teaser(turns, rendered, lifts=lifts, sr=sr, seed=seed, max_s=max_s, prefer_s=prefer_s)
+    teaser, lost = None, ""
+    if choice is not None:
+        teaser = chosen_teaser(turns, rendered, choice[0], choice[1], sr=sr, seed=seed)
+        if teaser is None:
+            lost = (f"regel {choice[0]} tot {choice[1]} staat niet (meer) zo in het script, dus Luisterstof koos zelf")
+    if teaser is None:
+        max_s, prefer_s = teaser_room(clip.duration_s, music_s)
+        teaser = pick_teaser(turns, rendered, lifts=lifts, sr=sr, seed=seed, max_s=max_s, prefer_s=prefer_s)
     layout = lay_out(teaser.duration if teaser else 0.0, clip.duration_s, music_s)
     placements: list[Placement] = []
     if teaser is not None and layout.teaser_at is not None:
@@ -308,4 +341,5 @@ def build_opening(
     placements.append(Placement(welcome, clip, layout.welcome_at, [w.shifted(layout.welcome_at) for w in words],
                                 opening=True))
     placements += [p.moved(layout.main_at) for p in main.placements]
-    return Opening(teaser, welcome, layout, Timeline(placements=placements, sr=main.sr, qa=list(main.qa)))
+    return Opening(teaser, welcome, layout, Timeline(placements=placements, sr=main.sr, qa=list(main.qa)),
+                   chosen=choice is not None and not lost and teaser is not None, choice_lost=lost)

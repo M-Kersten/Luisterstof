@@ -656,6 +656,14 @@ class EpisodeTranscript(Contract):
     created_at: str = Field(default_factory=now_iso)
 
 
+class HookChoice(Contract):
+    """The stretch of the episode you picked for the teaser at the start, by its first and last line. Kept next to
+    the script and not in it, so picking another one does not undo an approval."""
+    first_line: str
+    last_line: str
+    chosen_at: str = Field(default_factory=now_iso)
+
+
 class Approval(Contract):
     episode_id: str
     script_revision: int

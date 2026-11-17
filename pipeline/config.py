@@ -131,6 +131,9 @@ class Settings:
     opening: bool = True
     # Music under that opening: cast/stings/hook.wav, or the jingle in jingle/ when that file is not there.
     hook_music: bool = True
+    # How loud that music is, in dB against a voice line when it plays alone (under the voices it is 14 dB lower
+    # still). -2.5 dB is a quarter less: 0.75 times as loud as a voice.
+    hook_music_db: float = -2.5
 
     @classmethod
     def from_env(cls, dotenv: Path | str | None = ".env", **overrides) -> Settings:
@@ -156,6 +159,7 @@ class Settings:
             script_listener=_env_bool("STUDIEPODCAST_LISTENER", True),
             opening=_env_bool("STUDIEPODCAST_OPENING", True),
             hook_music=_env_bool("STUDIEPODCAST_HOOK_MUSIC", True),
+            hook_music_db=_env_float("STUDIEPODCAST_HOOK_MUSIC_DB", -2.5),
             llm_backend=_env_str("STUDIEPODCAST_LLM_BACKEND", "opencode").strip().casefold(),
             opencode_url=_env_str("OPENCODE_URL"),
             opencode_password=_env_str("OPENCODE_PASSWORD"),

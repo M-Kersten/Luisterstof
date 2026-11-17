@@ -103,6 +103,9 @@ class BookPaths:
     def transcript(self, chapter_id: str) -> Path:
         return self.out_dir / f"{validate_id(chapter_id, 'chapter_id')}.transcript.json"
 
+    def hook(self, chapter_id: str) -> Path:
+        return self.scripts_dir / f"{validate_id(chapter_id, 'chapter_id')}.hook.json"
+
     def approval(self, chapter_id: str) -> Path:
         return self.audits_dir / f"{validate_id(chapter_id, 'chapter_id')}.approved.json"
 

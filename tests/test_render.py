@@ -61,3 +61,11 @@ def test_without_the_opening_the_music_goes_under_the_cold_open(settings, cast):
     plain = first_word("body", "plain")
     assert abs(first_word("cold_open", "hook") - (plain + HOOK_LEAD_S)) < 0.01
     assert abs(first_word("cold_open", "off", replace(bare, hook_music=False)) - plain) < 0.01
+
+
+def test_the_music_is_a_quarter_quieter_than_a_voice_by_default(monkeypatch):
+    from pipeline.config import Settings
+
+    assert Settings().hook_music_db == -2.5 and abs(10 ** (-2.5 / 20) - 0.75) < 0.002
+    monkeypatch.setenv("STUDIEPODCAST_HOOK_MUSIC_DB", "-6")
+    assert Settings.from_env(dotenv=None).hook_music_db == -6.0

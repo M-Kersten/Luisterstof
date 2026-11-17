@@ -139,3 +139,17 @@ def test_hook_music_file(tmp_path):
     sf.write(own, _tone(1.0), SR)
     assert hook_music_path(tmp_path) == own and load_music(own).samples.ndim == 1
     assert load_music(tmp_path / "nothing.wav") is None
+
+
+def test_the_music_level_is_set_against_the_voices():
+    tl = _timeline([Line(id="l001", speaker="tessa", text="Dit is de eerste regel van de test met genoeg woorden erin.")])
+    later = Timeline(placements=[p.moved(HOOK_LEAD_S) for p in tl.placements], sr=SR)
+    t = np.arange(SR * 20) / SR
+    music = AudioClip((0.1 * np.sin(2 * np.pi * 330 * t)).astype(np.float32), SR)
+
+    def music_against_voice(music_db):
+        mixed, offset = mix(later, sr=SR, music=music, music_db=music_db, room_tone_db=None)
+        first = offset + later.placements[0].start
+        return _rms_db(mixed.samples[int(0.3 * SR): int((first - 0.8) * SR)]) - _rms_db(mixed.samples[int((first + 0.8) * SR): int((first + 2.5) * SR)])
+
+    assert abs((music_against_voice(0.0) - music_against_voice(-2.5)) - 2.5) < 0.3
