@@ -335,11 +335,11 @@ API summary: `POST /api/books` (upload, `quality=true` to run it in quality mode
 1. Mix to mono, or keep the better channel when the two channels are not the same recording.
 2. Remove DC offset and filter below 70 Hz (rumble, handling, traffic).
 3. Find the pauses from the signal's energy and cut the silence before the first word.
-4. Measure the pitch range of every candidate opening. When a later stretch starts clearly livelier than the first sentence, the clip starts there and the part before it is added at the end, so no speech is lost.
+4. Measure the pitch range of every candidate opening. When a later stretch starts clearly livelier than the first sentence, the clip starts there and the part before it is added at the end, so no speech is lost. The pitch tracker divides the autocorrelation by the window's own, so a low male voice is not read at its first formant (the oe of a man at 100 Hz peaks near 300 Hz), and a frame that leaps an octave away from the pitch around it is corrected or dropped. When the recording has plosive pops (the air of a p or b on the microphone: nearly all of it below 150 Hz, at full scale on one side only), the clip starts where its first 10 seconds hold none, since that is where the timbre comes from.
 5. Shorten pauses longer than 0.45 s and stop at a pause before 55 seconds.
 6. Level to -20 LUFS with peaks at most -1.5 dBFS, short fades, 24-bit WAV.
 
-The report says what it could not fix: clipping, background noise, room echo, a clip shorter than 30 seconds of speech, low bandwidth (a phone or a compressed file) and a flat start. Each upload is kept in `data/voicelab/<id>/clips/` with the original, the result and `report.json`; nothing goes to `cast/refs/` until you choose a clip.
+The report says what it could not fix: clipping, pops (told apart from an overdriven voice, with the advice to use a pop filter or speak past the microphone), background noise, room echo, a clip shorter than 30 seconds of speech, low bandwidth (a phone or a compressed file) and a flat start. Each upload is kept in `data/voicelab/<id>/clips/` with the original, the result and `report.json`; nothing goes to `cast/refs/` until you choose a clip.
 
 `tic_markers` are phrases only that host may use; the linter blocks a script in which anyone else uses them, or the host itself more than once per segment. `cast/guests.yaml` is a small pool picked by domain when a chapter's plan sets `needs_expert`. `cast/banned_phrases.yaml` is the zero-tolerance list, editable.
 
